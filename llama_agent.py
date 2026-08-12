@@ -365,32 +365,93 @@ def _wait_for_ports(*, listening: bool, timeout: float = 60.0) -> dict[str, dict
 def logs(
     which: str = Query("router"),
     tail: int = Query(200, ge=1, le=5000),
+    since: int | None = Query(None, ge=0),
 ) -> dict:
-    """Last `tail` lines. Seeks from the end rather than reading the file, so a
-    log that grew to gigabytes overnight still costs a fixed read."""
+    """HTTP face of `read_log`. Kept a one-liner because a route's defaults are
+    `Query` objects, not values: anything calling it in-process (the tests do)
+    would get a `Query` wherever it omitted an argument, which is harmless right
+    up until that argument starts being used in arithmetic."""
+    return read_log(which, tail, since)
+
+
+def read_log(which: str, tail: int = 200, since: int | None = None) -> dict:
+    """Two modes over the same file, both a bounded read:
+
+    * `since` omitted — the last `tail` lines. Seeks from the end rather than
+      reading the file, so a log that grew to gigabytes overnight still costs a
+      fixed read.
+    * `since=N` — only the bytes written after offset N. This is what a live
+      pane needs: it APPENDS the answer instead of replacing its contents with
+      a freshly re-fetched tail, which is both ~99% less data and the only way
+      the reader's text selection and scrollback survive an update.
+
+    Always returns `next_offset` to pass back on the next call. A trailing
+    partial line — the server is writing while we read — is withheld rather
+    than shipped truncated, and `next_offset` stops before it, so it arrives
+    complete on the following call.
+
+    `reset: true` means the caller's offset is meaningless and it must REPLACE
+    what it is showing rather than append: either the file shrank under it (the
+    launcher truncates the log on every start, so an offset from before a
+    restart points into the middle of a different file) or the backlog exceeded
+    the tail window, in which case `gap_bytes` says how much was skipped so the
+    pane can admit the discontinuity instead of quietly splicing.
+    """
     if which not in SERVERS:
         raise HTTPException(status_code=404, detail=f"unknown log {which!r}")
     path = LOG_DIR / f"{which}.log"
     if not path.exists():
-        return {"log": which, "path": str(path), "exists": False, "lines": []}
+        # `reset` matters here: a caller holding an offset from before a restart
+        # must drop what it has, not wait to append onto it.
+        return {
+            "log": which,
+            "path": str(path),
+            "exists": False,
+            "lines": [],
+            "next_offset": 0,
+            "reset": bool(since),
+        }
 
     # 400 bytes/line is generous for llama-server output; if the tail-end chunk
-    # turns out to hold fewer lines than asked for, that is the whole file.
+    # turns out to hold fewer lines than asked for, that is the whole file. The
+    # same figure bounds the delta read, so neither mode can slurp the file.
+    window = tail * 400
     with path.open("rb") as handle:
         handle.seek(0, 2)
         size = handle.tell()
-        window = min(size, tail * 400)
-        handle.seek(size - window)
-        chunk = handle.read(window)
-    text = chunk.decode("utf-8", errors="replace")
-    if window < size:
-        text = text.split("\n", 1)[-1]  # drop the partial first line
+        # Shrunk under the caller, or further behind than the window: either way
+        # its offset cannot be appended onto, so fall back to a tail read.
+        reset = since is not None and (since > size or size - since > window)
+        from_end = since is None or reset
+        gap_bytes = max(0, size - window - since) if reset else 0
+        start = size - min(size, window) if from_end else since
+        handle.seek(start)
+        chunk = handle.read(size - start)
+
+    # Cut at the last newline: whatever follows it is a line the server is still
+    # writing, and `next_offset` must stop short of it so it arrives whole next
+    # time. A seek from the end also lands mid-line at the head, which is the
+    # one place a truncated line would otherwise be rendered.
+    end = chunk.rfind(b"\n")
+    text = chunk[: end + 1].decode("utf-8", errors="replace") if end >= 0 else ""
+    if from_end and start > 0:
+        text = text.split("\n", 1)[-1] if "\n" in text else ""
+    if end >= 0:
+        next_offset = start + end + 1
+    else:
+        # Nothing complete in the window. Realigning to a mid-line offset would
+        # emit a truncated line later, so a tail read gives up on it entirely
+        # while a delta read simply waits where it is.
+        next_offset = size if from_end else start
     return {
         "log": which,
         "path": str(path),
         "exists": True,
         "size_bytes": size,
         "lines": [ANSI_RE.sub("", line) for line in text.splitlines()[-tail:]],
+        "next_offset": next_offset,
+        "reset": reset,
+        "gap_bytes": gap_bytes,
     }
 
 
