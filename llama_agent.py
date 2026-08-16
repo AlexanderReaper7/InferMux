@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["fastapi", "uvicorn"]
+# dependencies = ["fastapi", "uvicorn", "textual", "pystray", "pillow"]
 # ///
 """Host-side control agent for llama.cpp — the one process that crosses the
 Docker/host boundary.
@@ -23,31 +23,49 @@ exactly today's behaviour — rather than to a stale flag nobody clears.
 
 Run (from the repo root, on the host):
 
-    uv run hostagent/llama_agent.py
+    uv run hostagent/llama_agent.py             # text UI + tray icon, if a console exists
+    uv run hostagent/llama_agent.py --headless  # the bare HTTP service, as it always was
 
 Binds 127.0.0.1 only. That is both safe and sufficient: Docker Desktop proxies
 `host.docker.internal` from the host side, which is why the containers already
 reach llama-server's own loopback-bound :5001.
+
+The UI lives in `console.py` and is strictly a face: every decision, threshold
+and side effect is still here, so `--headless` is not a reduced agent, it is the
+same agent with nobody watching.
 """
 
 import argparse
 import json
 import logging
+import logging.handlers
 import re
+import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
+from collections import deque
+from datetime import datetime
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 
 log = logging.getLogger("llama-agent")
+
+# The agent's own log lines, for the console's third tab. A bounded deque rather
+# than a file tail because these lines have not been written anywhere yet at the
+# moment the UI wants them, and re-reading our own file to display what we just
+# logged would be a round trip through the disk for no reason.
+RECORDS: deque[str] = deque(maxlen=2000)
 
 LLAMA_DIR = Path(r"C:\selfhosting\llama-cpp")
 LAUNCHER = LLAMA_DIR / "launch-llama-v2.ps1"
 LOG_DIR = LLAMA_DIR / "logs"
+PRESET = LLAMA_DIR / "models-preset.ini"
+PRESET_BACKUP_PREFIX = "models-preset.ini.bak-"
 # Server names must match the launcher's -LogFile naming and its port constants.
 SERVERS = {"router": 5001, "embed": 5002}
 PROCESS_NAME = "llama-server"
@@ -291,14 +309,32 @@ def resources() -> dict:
 _lifecycle_lock = threading.RLock()
 
 
-@app.post("/start")
-def start() -> dict:
+def start_servers(extra_args: list[str] | None = None) -> dict:
+    """Bring both servers up. Idempotent.
+
+    `extra_args` is appended to the launcher's own argument list, which passes it
+    through to llama-server (`-PassthroughArgs`). It exists for benchmark sweeps,
+    which need the same server brought up with one flag changed.
+
+    Still no policy here (0023, 0041): the agent does not decide what a good
+    configuration is, it applies the one it was handed and reports what came
+    back. Every argument's meaning lives in Episteme, next to the run row that
+    recorded why it was tried.
+
+    Split from the route below because `restart` calls it, and because a FastAPI
+    handler is a poor plain function: its parameter default is a `Body` marker
+    object, not a value, so calling it directly hands the body-reading code a
+    sentinel."""
+    extra_args = list(extra_args or [])
     with _lifecycle_lock:
         before = _server_status()
         if all(row["listening"] for row in before.values()):
             return {"started": False, "reason": "already running", "servers": before}
 
-        result = _run_ps(f'& "{LAUNCHER}" server -Detached', timeout=120.0)
+        command = f'& "{LAUNCHER}" server -Detached'
+        if extra_args:
+            command += " " + " ".join(f"'{arg}'" for arg in extra_args)
+        result = _run_ps(command, timeout=120.0)
         output = ((result.stdout or "") + (result.stderr or "")).strip()
         if result.returncode != 0:
             raise HTTPException(
@@ -325,6 +361,11 @@ def start() -> dict:
         return {"started": True, "servers": after, "output": output[-2000:]}
 
 
+@app.post("/start")
+def start(body: dict | None = Body(default=None)) -> dict:
+    return start_servers(_safe_args((body or {}).get("extra_args") or []))
+
+
 @app.post("/stop")
 def stop() -> dict:
     """Kills both llama-servers. Episteme is expected to have paused the pipeline
@@ -341,10 +382,173 @@ def stop() -> dict:
 
 
 @app.post("/restart")
-def restart() -> dict:
+def restart(body: dict | None = Body(default=None)) -> dict:
+    extra_args = _safe_args((body or {}).get("extra_args") or [])
     with _lifecycle_lock:
         stop()
-        return start()
+        return start_servers(extra_args)
+
+
+# --- Model configuration surface (0041) --------------------------------------------
+#
+# The preset file is edited LINE BY LINE rather than round-tripped through
+# configparser, and that is not fussiness. models-preset.ini is half comments,
+# and those comments are the only record of why a setting is what it is - the
+# `ngl = 999` removal that tripled throughput on 2026-08-15 is eleven lines of
+# explanation above a deleted key. A writer that dropped them would destroy more
+# knowledge in one call than the whole benchmarking feature produces.
+
+_ASSIGNMENT = re.compile(r"^(\s*)([A-Za-z0-9_.\-]+)(\s*=\s*)(.*?)(\s*)$")
+_SECTION = re.compile(r"^\s*\[(.+?)\]\s*$")
+
+
+def _parse_preset(text: str) -> dict[str, dict[str, str]]:
+    """Sections to key/value, comments discarded. For READING only: nothing
+    writes back from this, so losing the comments here is harmless."""
+    sections: dict[str, dict[str, str]] = {}
+    current = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith((";", "#")):
+            continue
+        if match := _SECTION.match(line):
+            current = match.group(1)
+            sections.setdefault(current, {})
+            continue
+        if match := _ASSIGNMENT.match(line):
+            sections.setdefault(current, {})[match.group(2)] = match.group(4)
+    return sections
+
+
+def _edit_preset(text: str, overrides: dict[str, dict]) -> tuple[str, list[str]]:
+    """Apply `{section: {key: value_or_None}}`; None deletes the key.
+
+    A key not present in its section is appended at the section's end (before any
+    trailing blank lines, so the file does not grow a gap per edit). A section
+    that does not exist is created at the end of the file. Returns the new text
+    and a human-readable list of what changed, which is what the caller stores
+    beside the numbers.
+    """
+    lines = text.splitlines()
+    changed: list[str] = []
+    # Section name -> [start_index, end_index) over `lines`.
+    bounds: dict[str, list[int]] = {}
+    current = ""
+    start = 0
+    for index, line in enumerate(lines):
+        if match := _SECTION.match(line):
+            bounds.setdefault(current, [start, index])[1] = index
+            current = match.group(1)
+            start = index + 1
+            bounds[current] = [start, len(lines)]
+    bounds.setdefault(current, [start, len(lines)])[1] = len(lines)
+
+    # Applied bottom-up so an insertion never invalidates a later section's
+    # recorded bounds.
+    for section in sorted(overrides, key=lambda name: -bounds.get(name, [len(lines)])[0]):
+        wanted = overrides[section]
+        if section not in bounds:
+            lines.extend(["", f"[{section}]"])
+            bounds[section] = [len(lines), len(lines)]
+        begin, end = bounds[section]
+        for key, value in wanted.items():
+            hit = None
+            for index in range(begin, min(end, len(lines))):
+                match = _ASSIGNMENT.match(lines[index])
+                if match and match.group(2) == key:
+                    hit = index
+                    break
+            if value is None:
+                if hit is not None:
+                    changed.append(f"[{section}] removed {key} (was {lines[hit].strip()})")
+                    # Commented out rather than deleted: this file's own history
+                    # is written in its comments, and a sweep that silently
+                    # vanished a line would be the exact failure mode the
+                    # line-based writer exists to avoid.
+                    lines[hit] = f"; [benchmark] {lines[hit].strip()}"
+                continue
+            if hit is not None:
+                match = _ASSIGNMENT.match(lines[hit])
+                if match.group(4) == str(value):
+                    continue
+                changed.append(f"[{section}] {key}: {match.group(4)} -> {value}")
+                lines[hit] = f"{match.group(1)}{key}{match.group(3)}{value}"
+            else:
+                tail = end
+                while tail > begin and not lines[tail - 1].strip():
+                    tail -= 1
+                lines.insert(tail, f"{key} = {value}")
+                changed.append(f"[{section}] {key} = {value} (added)")
+    return "\n".join(lines) + "\n", changed
+
+
+def _backup_path(name: str) -> Path:
+    """Resolve a caller-supplied backup name, refusing anything that is not one
+    of ours in the llama.cpp directory. The agent binds loopback only, but a path
+    parameter that writes over arbitrary files is not something to leave resting
+    on the network boundary."""
+    candidate = (LLAMA_DIR / Path(name).name).resolve()
+    if candidate.parent != LLAMA_DIR.resolve() or not candidate.name.startswith(
+        PRESET_BACKUP_PREFIX
+    ):
+        raise HTTPException(status_code=400, detail=f"not a preset backup: {name}")
+    if not candidate.exists():
+        raise HTTPException(status_code=404, detail=f"no such backup: {candidate}")
+    return candidate
+
+
+@app.get("/preset")
+def preset() -> dict:
+    if not PRESET.exists():
+        raise HTTPException(status_code=404, detail=f"no preset at {PRESET}")
+    text = PRESET.read_text(encoding="utf-8")
+    return {"path": str(PRESET), "text": text, "sections": _parse_preset(text)}
+
+
+@app.post("/preset")
+def preset_apply(body: dict = Body(...)) -> dict:
+    """Apply overrides, after copying the current file aside.
+
+    The backup is returned rather than remembered, because the agent is
+    stateless by design (0023) and the caller is the one that knows when the
+    experiment is over. A sweep threads the FIRST backup through every variant so
+    the restore at the end puts back the operator's real preset, not variant
+    three's edit of variant two's."""
+    sections = body.get("sections") or {}
+    if not isinstance(sections, dict) or not sections:
+        raise HTTPException(status_code=422, detail="sections must be a non-empty object")
+    if not PRESET.exists():
+        raise HTTPException(status_code=404, detail=f"no preset at {PRESET}")
+    with _lifecycle_lock:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup = LLAMA_DIR / f"{PRESET_BACKUP_PREFIX}{stamp}"
+        shutil.copy2(PRESET, backup)
+        text, changed = _edit_preset(PRESET.read_text(encoding="utf-8"), sections)
+        PRESET.write_text(text, encoding="utf-8")
+    log.info("Preset edited (%d changes), backup at %s", len(changed), backup)
+    return {"backup": backup.name, "changed": changed, "path": str(PRESET)}
+
+
+@app.post("/preset/restore")
+def preset_restore(body: dict = Body(...)) -> dict:
+    backup = _backup_path(body.get("backup") or "")
+    with _lifecycle_lock:
+        shutil.copy2(backup, PRESET)
+    log.info("Preset restored from %s", backup)
+    return {"restored": True, "from": backup.name, "path": str(PRESET)}
+
+
+def _safe_args(args: list) -> list[str]:
+    """Passthrough arguments are interpolated into a PowerShell command line, so
+    they are constrained to what a llama-server flag or value can look like. Not
+    a trust boundary against Episteme (which is the only caller and can already
+    start processes here), but a command line assembled by string joining should
+    not be one quote away from arbitrary execution."""
+    safe = re.compile(r"^[A-Za-z0-9_.:\\/=,+-]+$")
+    for arg in args:
+        if not isinstance(arg, str) or not safe.match(arg):
+            raise HTTPException(status_code=422, detail=f"unsafe launcher argument: {arg!r}")
+    return list(args)
 
 
 def _wait_for_ports(*, listening: bool, timeout: float = 60.0) -> dict[str, dict]:
@@ -434,6 +638,13 @@ def read_log(which: str, tail: int = 200, since: int | None = None) -> dict:
     # one place a truncated line would otherwise be rendered.
     end = chunk.rfind(b"\n")
     text = chunk[: end + 1].decode("utf-8", errors="replace") if end >= 0 else ""
+    # Every line on disk ends "\r\r\n": llama-server writes CRLF and the Windows
+    # CRT translates the \n a second time. splitlines() reads the orphan \r as a
+    # break of its own, which is a blank line between every real one, in the
+    # admin pane and the agent console alike. A LONE \r stays a break on purpose:
+    # llama.cpp uses it to rewrite progress in place, and those are separate
+    # lines that a log file cannot render any other way.
+    text = text.replace("\r\r\n", "\n").replace("\r\n", "\n")
     if from_end and start > 0:
         text = text.split("\n", 1)[-1] if "\n" in text else ""
     if end >= 0:
@@ -455,14 +666,106 @@ def read_log(which: str, tail: int = 200, since: int | None = None) -> dict:
     }
 
 
+class _DequeHandler(logging.Handler):
+    """Feeds `RECORDS`, which is the console's `agent` tab."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        RECORDS.append(self.format(record))
+
+
+def _configure_logging(*, to_console: bool) -> None:
+    """A rotating file, the deque, and stdout only when nothing is drawing on it.
+
+    A `StreamHandler` under the text UI would scribble log lines over Textual's
+    own output and corrupt the display, and uvicorn's default config installs
+    exactly that. Hence `log_config=None` at the uvicorn call: root owns the
+    handlers, and there is one policy rather than two.
+
+    The file rotates rather than truncating, unlike the llama-server logs the
+    launcher manages. Those are megabytes an hour and their value is entirely in
+    the present; this one is a few kilobytes a day and its value is mostly in the
+    run that crashed, which truncate-on-start is precisely how to lose.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    handlers: list[logging.Handler] = [
+        logging.handlers.RotatingFileHandler(
+            LOG_DIR / "agent.log", maxBytes=2_000_000, backupCount=1, encoding="utf-8"
+        ),
+        _DequeHandler(),
+    ]
+    if to_console:
+        handlers.append(logging.StreamHandler())
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    for handler in handlers:
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+
+
+def _console_api():
+    """Bind the console's `AgentAPI` to this module's functions.
+
+    Imported here, not at module scope, for two reasons: `--headless` should not
+    need textual or pystray installed to run, and `tests/test_hostagent.py` loads
+    this file by path, where a sibling import would not resolve.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import console
+
+    return console, console.AgentAPI(
+        server_status=_server_status,
+        resources=resources,
+        read_log=read_log,
+        start=start_servers,
+        stop=stop,
+        restart=lambda: restart(None),
+        servers=SERVERS,
+        log_dir=LOG_DIR,
+        records=RECORDS,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=5003)
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--headless", action="store_true", help="HTTP service only: no text UI, no tray icon"
+    )
+    parser.add_argument(
+        "--hide",
+        action="store_true",
+        help=(
+            "the console belongs to this agent: hide it at startup and remove its close "
+            "button. Set by install-task.ps1; never set it when running from a terminal "
+            "you want to keep."
+        ),
+    )
     args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+
+    # The UI needs a console to draw in. Redirected output (`*>` in the old
+    # scheduled task) and a genuinely console-less service both fail this, and
+    # both must keep working rather than crashing inside Textual, so the fallback
+    # is the behaviour that existed before there was a UI at all.
+    interactive = not args.headless and sys.stdout.isatty()
+    _configure_logging(to_console=not interactive)
+
+    if not interactive:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        return
+
+    console, api = _console_api()
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=args.host, port=args.port, log_config=None, log_level="info")
+    )
+    threading.Thread(target=server.run, name="uvicorn", daemon=True).start()
+    log.info("Agent listening on http://%s:%d", args.host, args.port)
+
+    def shutdown() -> None:
+        server.should_exit = True
+
+    console.run(api, owns_console=args.hide, on_quit=shutdown)
 
 
 if __name__ == "__main__":
