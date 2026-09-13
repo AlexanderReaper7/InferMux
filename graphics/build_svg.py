@@ -106,16 +106,6 @@ class Config:
     net_dip: float = 0.72  # upper rank's sag toward the lower, 0..1 of the gap
     net_clearance: float = 2.4  # node radii the dip must leave between the ranks
 
-    # Waves: the WIP stand-in for the weave. See `_waves`.
-    waves: int = 0
-    wave_color: str = "#ffffff"
-    wave_top: float = 0.46  # first line, as a fraction of height
-    wave_bottom: float = 0.98  # last line
-    wave_amp: float = 0.035  # sine amplitude, as a fraction of height
-    wave_periods: float = 1.6  # sine cycles across the full width
-    wave_pull: float = 0.5  # dip toward the lower tip, relative to line spacing
-    wave_width: float = 1.6  # stroke width at the nearest line, in px
-
 
 Vec = tuple[float, float, float]
 
@@ -510,80 +500,14 @@ def _emit(svg: Svg, samples: list[Sample | None], front_only: bool) -> None:
     svg.run(run)
 
 
-def _waves(svg: Svg, scene: Scene, *, front: bool) -> None:
-    """WIP stand-in for the weave: white sine lines, drawn in screen space.
-
-    Not a distillation of anything - it does not solve the field, and the three
-    claims in README §1 are made only by gesture here. What it keeps is the one
-    that has to survive to 16 px: the lines dip toward the obelisk's LOWER tip, so
-    the mark still says the solid is embedded in the field and bends it, rather
-    than sitting on top of a decorative squiggle. `Config.strands` switches the
-    real solver back on; it works, and it is what replaces this.
-    """
-    k = scene.k
-    if k.waves <= 0:
-        return
-    color = _rgb(k.wave_color)
-    tip = scene.project(scene.tip)
-    tip_x = tip[0] if tip else svg.w / 2
-    tip_y = tip[1] if tip else svg.h * 0.7
-
-    top, bottom = k.wave_top * svg.h, k.wave_bottom * svg.h
-    for i in range(k.waves):
-        # Squared progression, so the lines crowd at the top the way a ground
-        # plane crowds toward its horizon.
-        u = (i / max(1, k.waves - 1)) ** 1.7
-        y0 = top + (bottom - top) * u
-        # On a ground plane, lower on screen is nearer the camera, so a line below
-        # the solid's bottom tip passes in FRONT of it. That two-pass split is the
-        # whole of the "embedded in the field, not placed on it" claim here.
-        if (y0 > tip_y) != front:
-            continue
-        spacing = (bottom - top) / max(1, k.waves - 1)
-        amp = k.wave_amp * svg.h * (0.45 + 0.55 * u)
-        phase = i * 1.9
-        depth = 0.25 + 0.75 * u  # near lines are brighter and thicker
-
-        # The dip is bounded so no line can leave the bottom of the frame,
-        # whatever `wave_bottom` and `wave_pull` are set to. A clamp applied
-        # per-point would flatten the curve against the edge instead, which reads
-        # as a bug; scaling the whole dip keeps the shape and moves the limit into
-        # the parameters, where it is one number rather than a visual check.
-        head_room = svg.h - k.wave_width - (y0 + amp)
-        pull_px = k.wave_pull * spacing
-        if pull_px > 0:
-            pull_px = min(pull_px, max(0.0, head_room))
-
-        pts: list[Sample] = []
-        steps = 96
-        for q in range(steps + 1):
-            x = svg.w * q / steps
-            t = x / svg.w
-            y = y0 + amp * math.sin(t * k.wave_periods * 2 * math.pi + phase)
-            # the well: a gaussian dip toward the tip, falling off with distance
-            dx = (x - tip_x) / (svg.w * 0.26)
-            near = math.exp(-dx * dx)
-            below = max(0.0, min(1.0, (y0 - tip_y) / (svg.h * 0.5) + 0.6))
-            y += pull_px * near * below
-            pts.append(Sample(x, y, 1.0, True))
-
-        d = "M" + " L".join(f"{_fmt(p.x)} {_fmt(p.y)}" for p in rdp(pts, 0.25))
-        svg.body.append(
-            f'<path d="{d}" fill="none" stroke="rgb({color[0]},{color[1]},{color[2]})" '
-            f'stroke-opacity="{_fmt(0.18 + 0.5 * depth)}" '
-            f'stroke-width="{_fmt(k.wave_width * (0.45 + 0.55 * depth))}" '
-            f'stroke-linecap="round"/>'
-        )
-
-
 def _net(svg: Svg, scene: Scene) -> None:
     """The warden mark's field, drawn as a network.
 
-    Not a distillation either - like `_waves` it is screen space and a gesture,
-    and it keeps the same claim: the upper rank SAGS toward the obelisk's lower
-    tip, so the solid is embedded in what it stands in and bends it. What changes
-    is only what the field is made of. The warden runs the network that turns
-    information into knowledge; the project it came from stands in the result.
+    Not a distillation: the solid above it is a port of the 3D model, this is
+    screen space and a gesture. It carries the claim the mark is built on, though
+    - the upper rank SAGS toward the obelisk's lower tip, so the solid is embedded
+    in what it stands in and bends it. The field is a network because that is what
+    this program runs.
 
     Every node is placed against `net_band` with its own radius already
     subtracted, and the sag is clamped against `net_clearance` rather than chosen,
@@ -642,7 +566,6 @@ def render(k: Config, w: float, h: float, title: str, desc: str) -> str:
 
     for samples in lines:  # the whole weave, complete
         _emit(svg, samples, False)
-    _waves(svg, scene, front=False)
     _net(svg, scene)  # behind the solid, which is what makes it stand IN the net
     if k.faces:
         alb = _rgb(k.albedo)
@@ -654,7 +577,6 @@ def render(k: Config, w: float, h: float, title: str, desc: str) -> str:
             svg.polygon(pts, fill, edge)
     for samples in lines:  # near stretches restored on top
         _emit(svg, samples, True)
-    _waves(svg, scene, front=True)
     return svg.document(title, desc)
 
 
@@ -691,7 +613,7 @@ def warden_icon() -> tuple[Path, str]:
     # band, so the solid's lower half sits INSIDE the network and hides part of it.
     # Standing clear of the net would say the two are adjacent; the occlusion is
     # the "embedded in the field" claim, made by overlap rather than asserted.
-    k = Config(**ICON_CAMERA, strands=False, waves=0, net=True)
+    k = Config(**ICON_CAMERA, strands=False, net=True)
     return HERE / "warden-icon.svg", render(
         k,
         256,
