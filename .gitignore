@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# Written by the agent when it edits the preset, one per change, kept as an undo.
+llama/models-preset.ini.bak-*

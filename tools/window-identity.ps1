@@ -1,5 +1,5 @@
 param(
-    [string]$Title = "llama.cpp agent",
+    [string]$Title = "llama-warden",
     [string]$Class = "ConsoleWindowClass",
     [string]$SetId = "",
     [string]$SetIcon = "",

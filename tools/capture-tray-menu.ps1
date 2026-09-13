@@ -34,7 +34,7 @@ public class Tray {
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
   // Found by window CLASS, not by process: pystray names its window
   // "<name><id(self)>SystemTrayIcon", and the agent runs in a CHILD python.exe of
-  // the process whose command line mentions llama_agent, so matching on the
+  // the process whose command line mentions warden, so matching on the
   // command line finds the launcher and none of its windows.
   public static System.Collections.Generic.List<IntPtr> Find(string suffix) {
     var found = new System.Collections.Generic.List<IntPtr>();

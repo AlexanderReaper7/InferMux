@@ -1,0 +1,52 @@
+[project]
+name = "llama-warden"
+version = "0.1.0"
+description = "Decides when the GPU is contended and tells its consumers to let go of it"
+requires-python = ">=3.12"
+# The warden is installed on a host by a person, not baked into an image, so the
+# list is kept short on purpose: the HTTP service, the text UI, and the tray.
+# Everything else it needs (TOML, HTTP client, threads) is the standard library.
+dependencies = [
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.4",
+    "textual>=8.2.8",
+    "pystray>=0.19.5",
+    "pillow>=12.3.0",
+]
+
+[project.scripts]
+warden = "warden.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.16.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/warden"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = [
+    "S603",  # subprocess with a literal argv IS the job here
+    "S607",
+    "B008",  # `= Body(...)` in a signature is how FastAPI declares a body
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The console tests drive Textual, whose `run_test()` harness is async.
+asyncio_mode = "auto"

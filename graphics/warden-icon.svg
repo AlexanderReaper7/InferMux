@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="llama-warden">
+<title>llama-warden</title>
+<desc>An elongated octahedron standing in a neural network that bends toward its lower tip: the local model the warden keeps.</desc>
+<path d="M50.35 239.36 L11.52 129.28" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M50.35 239.36 L69.76 188.72" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M50.35 239.36 L128 208.54" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M128 239.36 L69.76 188.72" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M128 239.36 L128 208.54" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M128 239.36 L186.24 188.72" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M205.65 239.36 L128 208.54" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M205.65 239.36 L186.24 188.72" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M205.65 239.36 L244.48 129.28" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M11.52 129.28 L69.76 188.72" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.59" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M69.76 188.72 L128 208.54" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.59" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M128 208.54 L186.24 188.72" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.59" stroke-width="4.61" stroke-linecap="round"/>
+<path d="M186.24 188.72 L244.48 129.28" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.59" stroke-width="4.61" stroke-linecap="round"/>
+<circle cx="11.52" cy="129.28" r="11.52" fill="rgb(23,217,142)"/>
+<circle cx="69.76" cy="188.72" r="11.52" fill="rgb(23,217,142)"/>
+<circle cx="128" cy="208.54" r="11.52" fill="rgb(23,217,142)"/>
+<circle cx="186.24" cy="188.72" r="11.52" fill="rgb(23,217,142)"/>
+<circle cx="244.48" cy="129.28" r="11.52" fill="rgb(23,217,142)"/>
+<circle cx="50.35" cy="239.36" r="11.52" fill="rgb(23,217,142)"/>
+<circle cx="128" cy="239.36" r="11.52" fill="rgb(23,217,142)"/>
+<circle cx="205.65" cy="239.36" r="11.52" fill="rgb(23,217,142)"/>
+<path d="M128 14.69 L170.81 119.76 L128 128.77 Z" fill="rgb(162,170,180)" stroke="rgba(46,49,52,0.2)" stroke-width="0.8" stroke-linejoin="round"/>
+<path d="M128 14.69 L85.19 119.76 L128 128.77 Z" fill="rgb(46,48,51)" stroke="rgba(46,49,52,0.2)" stroke-width="0.8" stroke-linejoin="round"/>
+<path d="M128 216.67 L170.81 119.76 L128 128.77 Z" fill="rgb(123,130,138)" stroke="rgba(46,49,52,0.2)" stroke-width="0.8" stroke-linejoin="round"/>
+<path d="M128 216.67 L85.19 119.76 L128 128.77 Z" fill="rgb(41,43,46)" stroke="rgba(46,49,52,0.2)" stroke-width="0.8" stroke-linejoin="round"/>
+</svg>

@@ -30,7 +30,7 @@ $cb = [PR.RS+EnumProc]{
     if ($sb.ToString() -eq "ConsoleWindowClass") {
         $tb = New-Object System.Text.StringBuilder 256
         $null = $t::GetWindowTextW($h, $tb, 256)
-        if ($tb.ToString() -eq "llama.cpp agent") { $script:hit = $h }
+        if ($tb.ToString() -eq "llama-warden") { $script:hit = $h }
     }
     return $true
 }

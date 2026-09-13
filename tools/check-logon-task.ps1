@@ -1,4 +1,4 @@
-param([string]$TaskName = "EpistemeLlamaAgentFlashTest", [int]$Port = 5014, [int]$Seconds = 25)
+param([string]$TaskName = "LlamaWardenFlashTest", [int]$Port = 5014, [int]$Seconds = 25)
 
 # Registers a THROWAWAY scheduled task with the same action shape install-task.ps1
 # writes, starts it the way logon would, and watches every ConsoleWindowClass window
@@ -75,7 +75,7 @@ try {
 }
 finally {
     Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pwsh.exe'" |
-        Where-Object { $_.CommandLine -like "*llama_agent.py*--port $Port*" -or $_.CommandLine -like "*run-agent.ps1*--port $Port*" } |
+        Where-Object { $_.CommandLine -like "*-m warden*--port $Port*" -or $_.CommandLine -like "*run-agent.ps1*--port $Port*" } |
         ForEach-Object { "  killing pid $($_.ProcessId)"; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
     "cleaned up"

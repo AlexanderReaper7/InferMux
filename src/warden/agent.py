@@ -1,74 +1,52 @@
-# /// script
-# requires-python = ">=3.12"
-# dependencies = ["fastapi", "uvicorn", "textual", "pystray", "pillow"]
-# ///
-"""Host-side control agent for llama.cpp — the one process that crosses the
-Docker/host boundary.
+"""The warden's HTTP face: the one process that crosses the Docker/host boundary.
 
-Episteme runs in Docker; llama.cpp runs natively on Windows for GPU access. A
-container cannot start a host process, cannot signal one, and cannot read
-another process's console output. This agent is the crossing: a small loopback
-HTTP service on the host that Episteme calls.
+Consumers run in containers; llama.cpp runs natively on Windows for GPU access.
+A container cannot start a host process, cannot signal one, cannot read another
+process's console output, and cannot see a game take the card. This service is
+the crossing, on loopback :5003.
 
-It merges two things the design docs specified separately — the llama.cpp
-lifecycle controller (handoff-llama-control.md §4b) and the "idle monitor"
-(architecture §7 *Scheduling & idle behavior*). They want the same privileges on
-the same box, so they are one process, not two.
+It merges what two design documents specified separately — the llama.cpp
+lifecycle controller and an idle monitor — because they want the same privileges
+on the same box.
 
-Deliberately a *sensor and actuator*, never a decision-maker: `/resources`
-reports measurements and Episteme's governor owns the policy. That keeps every
-threshold in Episteme's config next to the rest of the tuning, keeps this file
-stateless, and means the agent being down degrades to "no opinion" — which is
-exactly today's behaviour — rather than to a stale flag nobody clears.
-
-Run (from the repo root, on the host):
-
-    uv run hostagent/llama_agent.py             # text UI + tray icon, if a console exists
-    uv run hostagent/llama_agent.py --headless  # the bare HTTP service, as it always was
+**The decision lives here** (`policy.py`, driven by `watch.py`), which is the
+one thing that changed when this left Episteme (0001). This module is still only
+measurement and action: `/resources` reports what the sensors saw, `/verdict`
+reports what the policy made of it, and the lifecycle routes do as they are told.
 
 Binds 127.0.0.1 only. That is both safe and sufficient: Docker Desktop proxies
 `host.docker.internal` from the host side, which is why the containers already
 reach llama-server's own loopback-bound :5001.
 
-The UI lives in `console.py` and is strictly a face: every decision, threshold
-and side effect is still here, so `--headless` is not a reduced agent, it is the
-same agent with nobody watching.
+Run it through `python -m warden` (see `__main__.py`), never by importing and
+serving this module alone: the loop that decides is started there.
 """
 
-import argparse
 import json
 import logging
-import logging.handlers
 import re
 import shutil
 import socket
 import subprocess
-import sys
 import threading
 import time
-from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-import uvicorn
 from fastapi import Body, FastAPI, HTTPException, Query
 
-log = logging.getLogger("llama-agent")
+from . import watch
+from .config import (
+    LAUNCHER,
+    LOG_DIR,
+    PRESET,
+    PRESET_BACKUP_PREFIX,
+    PROCESS_NAME,
+    SERVERS,
+)
 
-# The agent's own log lines, for the console's third tab. A bounded deque rather
-# than a file tail because these lines have not been written anywhere yet at the
-# moment the UI wants them, and re-reading our own file to display what we just
-# logged would be a round trip through the disk for no reason.
-RECORDS: deque[str] = deque(maxlen=2000)
+log = logging.getLogger("warden.agent")
 
-LLAMA_DIR = Path(r"C:\selfhosting\llama-cpp")
-LAUNCHER = LLAMA_DIR / "launch-llama-v2.ps1"
-LOG_DIR = LLAMA_DIR / "logs"
-PRESET = LLAMA_DIR / "models-preset.ini"
-PRESET_BACKUP_PREFIX = "models-preset.ini.bak-"
-# Server names must match the launcher's -LogFile naming and its port constants.
-SERVERS = {"router": 5001, "embed": 5002}
-PROCESS_NAME = "llama-server"
 
 # llama-server colors its output, and `--log-file` gets the escape codes verbatim
 # — a log pane would render "\x1b[34m0.00.193\x1b[0m" as literal noise. Stripped
@@ -85,9 +63,10 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 # instances is 3.3s and dominates everything else (nvidia-smi 109ms, Get-Process
 # 30ms). ~1s of that is PDH's own sampling floor — rate counters need two samples
 # — so it is irreducible without giving up per-process attribution, which is the
-# whole reason this sensor is trustworthy. The cost is paid off-page instead: the
-# admin panel loads /resources through an htmx fragment, and the governor polls
-# it on a cron. Nothing waits on it synchronously.
+# whole reason this sensor is trustworthy. The cost is paid off-page instead: a
+# consumer's admin panel loads /resources through its own fragment, and `watch.py`
+# pays it once a tick on a thread of its own. Nothing waits on it synchronously,
+# and `/verdict` reports the last tick's answer without measuring again.
 #
 # Why these two sensors and not others — all three alternatives were measured on
 # the target box (RTX 3080 10GB) while a game was running:
@@ -129,7 +108,8 @@ foreach ($p in $byPid.Keys) {
 
 # Total VRAM only — see the note above on why this is not per-process.
 $vram = @{ used_mb = $null; total_mb = $null; utilization = $null }
-$smi = & nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits 2>$null
+$query = 'utilization.gpu,memory.used,memory.total'
+$smi = & nvidia-smi --query-gpu=$query --format=csv,noheader,nounits 2>$null
 if ($LASTEXITCODE -eq 0 -and $smi) {
     $f = ($smi | Select-Object -First 1) -split ',\s*'
     $vram = @{ utilization = [int]$f[0]; used_mb = [int]$f[1]; total_mb = [int]$f[2] }
@@ -148,8 +128,8 @@ if ($LASTEXITCODE -eq 0 -and $smi) {
 # one, and walking those registry keys costs 250ms every probe otherwise.
 #
 # It reports that a game is *running*, which is not the same claim as "the GPU is
-# contended" — so it is context for the admin panel, not something the governor
-# decides on. Utilization is the signal; this explains it.
+# contended" — so it names the culprit in a verdict rather than being the reason
+# for one. Utilization is the signal; this explains it (`policy.is_contended`).
 GAMES_PS = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $names = foreach ($c in (Get-ChildItem 'HKCU:\System\GameConfigStore\Children')) {
@@ -205,7 +185,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 def _port_open(port: int, timeout: float = 0.5) -> bool:
     """Liveness by connecting, not by inspecting the OS socket table. It is three
-    orders of magnitude cheaper, and it tests the thing Episteme actually depends
+    orders of magnitude cheaper, and it tests the thing a consumer actually depends
     on — that something accepts a connection on that port."""
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=timeout):
@@ -244,7 +224,7 @@ def _server_status() -> dict[str, dict]:
     return rows
 
 
-app = FastAPI(title="llama.cpp host agent")
+app = FastAPI(title="llama-warden")
 
 
 @app.get("/status")
@@ -290,6 +270,22 @@ def resources() -> dict:
     }
 
 
+@app.get("/verdict")
+def verdict() -> dict:
+    """What the policy currently believes, and who has been told.
+
+    Cheap and cached: it reports the last completed tick rather than measuring,
+    so a panel may poll it. `/resources` is the expensive one.
+
+    This route is the difference between this service and the sensor it used to
+    be (0001). Nothing is required to read it — consumers are *told* — but a
+    human asking "why did the pipeline stop?" should not have to read a log to
+    find out."""
+    if watch.current is None:
+        raise HTTPException(status_code=503, detail="No watcher running in this process")
+    return watch.current.as_dict()
+
+
 # Serializes /start. A "is it already listening?" check on its own is a TOCTOU
 # race and loses it: two clicks that arrive before the first server has bound
 # both see nothing listening and both launch. Measured, not theorized — two
@@ -316,10 +312,10 @@ def start_servers(extra_args: list[str] | None = None) -> dict:
     through to llama-server (`-PassthroughArgs`). It exists for benchmark sweeps,
     which need the same server brought up with one flag changed.
 
-    Still no policy here (0023, 0041): the agent does not decide what a good
-    configuration is, it applies the one it was handed and reports what came
-    back. Every argument's meaning lives in Episteme, next to the run row that
-    recorded why it was tried.
+    The warden decides *when* to hand the GPU back (`policy.py`); it does not
+    decide what a good llama-server configuration is. It applies the arguments it
+    was handed and reports what came back, so a benchmark sweep keeps the meaning
+    of every flag next to the run row that recorded why it was tried.
 
     Split from the route below because `restart` calls it, and because a FastAPI
     handler is a poor plain function: its parameter default is a `Body` marker
@@ -368,15 +364,18 @@ def start(body: dict | None = Body(default=None)) -> dict:
 
 @app.post("/stop")
 def stop() -> dict:
-    """Kills both llama-servers. Episteme is expected to have paused the pipeline
-    and waited for a work-unit boundary first — this endpoint has no idea whether
-    a generation is in flight, and says so rather than pretending to check.
+    """Kills both llama-servers. The caller is expected to have stopped its own
+    work at a boundary first — this endpoint has no idea whether a generation is
+    in flight, and says so rather than pretending to check. Note that a *yield*
+    (`policy.py`) is a different act: it asks consumers to stop and leaves the
+    servers running to unload their own models.
 
     Kills by process name, so it also cleans up any orphan a previous crash or
     race left behind."""
     with _lifecycle_lock:
         _run_ps(
-            f"Get-Process -Name '{PROCESS_NAME}' -ErrorAction SilentlyContinue | Stop-Process -Force"
+            f"Get-Process -Name '{PROCESS_NAME}' -ErrorAction SilentlyContinue "
+            "| Stop-Process -Force"
         )
         return {"stopped": True, "servers": _wait_for_ports(listening=False)}
 
@@ -389,7 +388,7 @@ def restart(body: dict | None = Body(default=None)) -> dict:
         return start_servers(extra_args)
 
 
-# --- Model configuration surface (0041) --------------------------------------------
+# --- Model configuration: applied, never chosen ---------------------------------------------
 #
 # The preset file is edited LINE BY LINE rather than round-tripped through
 # configparser, and that is not fussiness. models-preset.ini is half comments,
@@ -487,8 +486,8 @@ def _backup_path(name: str) -> Path:
     of ours in the llama.cpp directory. The agent binds loopback only, but a path
     parameter that writes over arbitrary files is not something to leave resting
     on the network boundary."""
-    candidate = (LLAMA_DIR / Path(name).name).resolve()
-    if candidate.parent != LLAMA_DIR.resolve() or not candidate.name.startswith(
+    candidate = (PRESET.parent / Path(name).name).resolve()
+    if candidate.parent != PRESET.parent.resolve() or not candidate.name.startswith(
         PRESET_BACKUP_PREFIX
     ):
         raise HTTPException(status_code=400, detail=f"not a preset backup: {name}")
@@ -509,9 +508,9 @@ def preset() -> dict:
 def preset_apply(body: dict = Body(...)) -> dict:
     """Apply overrides, after copying the current file aside.
 
-    The backup is returned rather than remembered, because the agent is
-    stateless by design (0023) and the caller is the one that knows when the
-    experiment is over. A sweep threads the FIRST backup through every variant so
+    The backup is returned rather than remembered, because the caller is the one
+    that knows when the experiment is over. The warden holds a verdict and
+    nothing else. A sweep threads the FIRST backup through every variant so
     the restore at the end puts back the operator's real preset, not variant
     three's edit of variant two's."""
     sections = body.get("sections") or {}
@@ -521,7 +520,7 @@ def preset_apply(body: dict = Body(...)) -> dict:
         raise HTTPException(status_code=404, detail=f"no preset at {PRESET}")
     with _lifecycle_lock:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        backup = LLAMA_DIR / f"{PRESET_BACKUP_PREFIX}{stamp}"
+        backup = PRESET.parent / f"{PRESET_BACKUP_PREFIX}{stamp}"
         shutil.copy2(PRESET, backup)
         text, changed = _edit_preset(PRESET.read_text(encoding="utf-8"), sections)
         PRESET.write_text(text, encoding="utf-8")
@@ -541,9 +540,9 @@ def preset_restore(body: dict = Body(...)) -> dict:
 def _safe_args(args: list) -> list[str]:
     """Passthrough arguments are interpolated into a PowerShell command line, so
     they are constrained to what a llama-server flag or value can look like. Not
-    a trust boundary against Episteme (which is the only caller and can already
-    start processes here), but a command line assembled by string joining should
-    not be one quote away from arbitrary execution."""
+    a trust boundary against the caller (which can already start processes here),
+    but a command line assembled by string joining should not be one quote away
+    from arbitrary execution."""
     safe = re.compile(r"^[A-Za-z0-9_.:\\/=,+-]+$")
     for arg in args:
         if not isinstance(arg, str) or not safe.match(arg):
@@ -664,109 +663,3 @@ def read_log(which: str, tail: int = 200, since: int | None = None) -> dict:
         "reset": reset,
         "gap_bytes": gap_bytes,
     }
-
-
-class _DequeHandler(logging.Handler):
-    """Feeds `RECORDS`, which is the console's `agent` tab."""
-
-    def emit(self, record: logging.LogRecord) -> None:
-        RECORDS.append(self.format(record))
-
-
-def _configure_logging(*, to_console: bool) -> None:
-    """A rotating file, the deque, and stdout only when nothing is drawing on it.
-
-    A `StreamHandler` under the text UI would scribble log lines over Textual's
-    own output and corrupt the display, and uvicorn's default config installs
-    exactly that. Hence `log_config=None` at the uvicorn call: root owns the
-    handlers, and there is one policy rather than two.
-
-    The file rotates rather than truncating, unlike the llama-server logs the
-    launcher manages. Those are megabytes an hour and their value is entirely in
-    the present; this one is a few kilobytes a day and its value is mostly in the
-    run that crashed, which truncate-on-start is precisely how to lose.
-    """
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    handlers: list[logging.Handler] = [
-        logging.handlers.RotatingFileHandler(
-            LOG_DIR / "agent.log", maxBytes=2_000_000, backupCount=1, encoding="utf-8"
-        ),
-        _DequeHandler(),
-    ]
-    if to_console:
-        handlers.append(logging.StreamHandler())
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    for handler in handlers:
-        handler.setFormatter(formatter)
-        root.addHandler(handler)
-
-
-def _console_api():
-    """Bind the console's `AgentAPI` to this module's functions.
-
-    Imported here, not at module scope, for two reasons: `--headless` should not
-    need textual or pystray installed to run, and `tests/test_hostagent.py` loads
-    this file by path, where a sibling import would not resolve.
-    """
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import console
-
-    return console, console.AgentAPI(
-        server_status=_server_status,
-        resources=resources,
-        read_log=read_log,
-        start=start_servers,
-        stop=stop,
-        restart=lambda: restart(None),
-        servers=SERVERS,
-        log_dir=LOG_DIR,
-        records=RECORDS,
-    )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=5003)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument(
-        "--headless", action="store_true", help="HTTP service only: no text UI, no tray icon"
-    )
-    parser.add_argument(
-        "--hide",
-        action="store_true",
-        help=(
-            "the console belongs to this agent: hide it at startup and remove its close "
-            "button. Set by install-task.ps1; never set it when running from a terminal "
-            "you want to keep."
-        ),
-    )
-    args = parser.parse_args()
-
-    # The UI needs a console to draw in. Redirected output (`*>` in the old
-    # scheduled task) and a genuinely console-less service both fail this, and
-    # both must keep working rather than crashing inside Textual, so the fallback
-    # is the behaviour that existed before there was a UI at all.
-    interactive = not args.headless and sys.stdout.isatty()
-    _configure_logging(to_console=not interactive)
-
-    if not interactive:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-        return
-
-    console, api = _console_api()
-    server = uvicorn.Server(
-        uvicorn.Config(app, host=args.host, port=args.port, log_config=None, log_level="info")
-    )
-    threading.Thread(target=server.run, name="uvicorn", daemon=True).start()
-    log.info("Agent listening on http://%s:%d", args.host, args.port)
-
-    def shutdown() -> None:
-        server.should_exit = True
-
-    console.run(api, owns_console=args.hide, on_quit=shutdown)
-
-
-if __name__ == "__main__":
-    main()

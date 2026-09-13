@@ -1,27 +1,19 @@
-# No PEP-723 header here on purpose: uv resolves the header of the script it is
-# handed, so `textual`, `pystray` and `pillow` are declared in llama_agent.py
-# beside fastapi and uvicorn. A second header on an imported module would look
-# authoritative and install nothing.
-"""Tray icon, console-window control and a text UI for the host agent.
+"""Tray icon, console-window control and a text UI for the warden.
 
-The agent has always been correct and invisible. What it was not is *present*:
+The warden has always been correct and invisible. What it was not is *present*:
 llama-server ran in whichever terminal the launcher was typed into, the embed
-server owned a minimized taskbar button of its own, and the agent had no face at
-all. Three desktop artefacts for one logical service, and the only way to read a
-log was to have Docker up and the admin page open, which is precisely not the
-case when something is wrong.
+server owned a minimized taskbar button of its own, and the service had no face
+at all. Three desktop artefacts for one logical thing, and the only way to read a
+log was to have Docker up and a consumer's admin page open, which is precisely
+not the case when something is wrong.
 
 So both servers go headless (they already write everything to `logs/*.log`) and
 this module becomes the one window: a tray icon that is also a status light, and
 a console you show and hide from it.
 
 **It is injected, never imported into.** `AgentAPI` below is the entire surface,
-and `llama_agent.main` fills it in. That is not ceremony: `tests/test_hostagent`
-loads the agent by path under the module name `llama_agent`, so a plain
-`import llama_agent` from here would build a SECOND module object with its own
-`_lifecycle_lock` and its own `_games_cache` - two agents disagreeing inside one
-process, which is the kind of bug that presents as "the lock sometimes does
-nothing".
+and `__main__.main` fills it in. That keeps the UI drivable by a test against
+seven lambdas, with no GPU, no llama-server and no policy loop in the process.
 
 Windows notes, both learned the hard way and both load-bearing:
 
@@ -61,9 +53,9 @@ from textual.scrollbar import ScrollBar, ScrollBarRender
 from textual.theme import Theme
 from textual.widgets import RichLog, Static, TabbedContent, TabPane
 
-log = logging.getLogger("llama-agent.console")
+log = logging.getLogger("warden.console")
 
-# Episteme's palette, copied token for token from web/static/style.css so this
+# The palette, inherited token for token from Episteme's web/static/style.css so this
 # window and the admin page are recognisably the same program - and so the tray
 # light and a status chip agree about what green means. Black is #000000 on
 # purpose, not a near-black: the project is OLED-first everywhere.
@@ -121,11 +113,17 @@ class AgentAPI:
 
     Deliberately callables rather than the module, so this file states its
     dependencies instead of reaching for whatever happens to be in scope, and so
-    a test can drive the whole UI against six lambdas.
+    a test can drive the whole UI against seven lambdas.
+
+    `verdict` returns the watcher's `as_dict()`: the last measurement AND what
+    was decided from it. The UI does not measure. Calling `agent.resources()`
+    from here would run a second ~3.5 s counter sweep beside the watch thread's
+    own, on a box where the entire purpose of that sweep is to notice that the
+    GPU is busy.
     """
 
     server_status: Callable[[], dict[str, dict]]
-    resources: Callable[[], dict]
+    verdict: Callable[[], dict]
     read_log: Callable[..., dict]
     start: Callable[[], dict]
     stop: Callable[[], dict]
@@ -156,7 +154,7 @@ VT_LPWSTR = 31
 # the one the shell would infer.
 APPMODEL_FMTID = (0x9F4C2855, 0x9F79, 0x4B39, (0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3))
 PKEY_APPUSERMODEL_ID = 5
-TASKBAR_APP_ID = "Episteme.HostAgent"
+TASKBAR_APP_ID = "LlamaWarden"
 STD_OUTPUT_HANDLE = -11
 IDANI_CAPTION = 3
 SPI_GETANIMATION = 0x0048
@@ -563,15 +561,14 @@ def set_taskbar_identity(app_id: str = TASKBAR_APP_ID) -> bool:
 
 # --- the tray icon is the mark, and the mark is a status light -----------------------
 
-# The host agent's mark, from `graphics/logo/hostagent-icon.svg`: the Episteme
-# obelisk standing in a neural network instead of the Episteme mark's field of
-# lines. Same solid, same claim - the structure bends what it stands in, which is
-# why the network sags toward the lower tip - with the field named as the thing
-# this program actually runs. No new shape to learn, one word changed.
+# The warden's mark, from `graphics/warden-icon.svg`: an obelisk standing in a
+# neural network that sags toward its lower tip, because the structure bends what
+# it stands in. Inherited from Episteme, whose mark is the same solid in a field
+# of plain lines, and free to diverge from it since the split.
 #
 # The facet greys are the generator's output, read off the four `<path>` fills it
 # emits, so the taskbar and the design tree cannot drift into two different
-# obelisks. They are NOT imported: `graphics/logo/build_svg.py` is a uv script
+# obelisks. They are NOT imported: `graphics/build_svg.py` is a uv script
 # with a header of its own and no relationship to the agent's dependencies, and
 # an agent that could not draw its own icon without the design folder present
 # would be a worse agent.
@@ -582,7 +579,7 @@ MARK_DARK_LOWER = (41, 43, 46)
 
 # Layout in a unit box, read off the same four `<path>`s as the greys and divided
 # by the 256 viewBox, so the tray obelisk stands exactly where the generator puts
-# it - and where it puts the Episteme mark's, which is the same camera. The lower
+# it. The camera is the generator's, copied with it at the split. The lower
 # half lands INSIDE the network and hides part of it: standing clear of the net
 # would say the two are adjacent, and the occlusion is the "embedded in the field"
 # claim made by overlap.
@@ -710,7 +707,7 @@ def icon_image(colors: list[tuple[int, int, int]], size: int = 64) -> Image.Imag
         for b in upper:
             if abs(a[0] - b[0]) < NET_REACH * big:
                 draw.line([a, b], fill=(*edge_color, 185), width=width)
-    for a, b in zip(upper, upper[1:]):
+    for a, b in zip(upper, upper[1:], strict=False):  # pairs, so the last node has no partner
         draw.line([a, b], fill=(*edge_color, 150), width=width)
     for point in upper + lower:
         draw.ellipse(
@@ -741,7 +738,7 @@ def write_icon_file(path: Path, colors: list[tuple[int, int, int]]) -> Path:
     """Write the mark as a Windows .ico, at every size the shell asks for.
 
     One function, three consumers - this window's icon, the desktop shortcut's,
-    and `graphics/logo/hostagent.ico` in the repo - so the tray light and the
+    and `graphics/warden.ico` in the repo - so the tray light and the
     taskbar button are the same picture by construction rather than by two
     implementations agreeing.
 
@@ -768,13 +765,13 @@ def tooltip(status: dict[str, dict]) -> str:
         f"{label(name)} :{row['port']} {'up' if row.get('listening') else 'down'}"
         for name, row in status.items()
     ]
-    return "llama.cpp agent - " + ", ".join(parts) if parts else "llama.cpp agent"
+    return "llama-warden - " + ", ".join(parts) if parts else "llama-warden"
 
 
 # --- the text UI -------------------------------------------------------------------
 
-EPISTEME_THEME = Theme(
-    name="episteme",
+WARDEN_THEME = Theme(
+    name="warden",
     background=BG,
     surface=SURFACE,
     panel=BORDER,
@@ -834,7 +831,9 @@ class SnappedScrollBarRender(ScrollBarRender):
         position: float = 0,
         **kwargs,
     ) -> Segments:
-        thumb = min(size, max(1, round(size * window_size / virtual_size))) if virtual_size else size
+        thumb = size
+        if virtual_size:
+            thumb = min(size, max(1, round(size * window_size / virtual_size)))
         travel = size - thumb
         span = virtual_size - window_size
         if travel <= 0 or span <= 0:
@@ -943,14 +942,15 @@ class TitleBar(Horizontal):
 class AgentConsole(App):
     """Status, both server logs and the agent's own, in one window.
 
-    Every call into the agent is a threaded worker. `server_status` shells out to
-    PowerShell (~885 ms) and `resources` costs ~3.5 s by design (0023), while
-    `start` can legitimately block for a minute waiting on ports; any of them on
-    the UI thread would freeze the display for exactly as long as the thing you
-    were watching took.
+    Every call into the warden is a threaded worker. `server_status` shells out
+    to PowerShell (~885 ms) and `start` can legitimately block for a minute
+    waiting on ports; either on the UI thread would freeze the display for
+    exactly as long as the thing you were watching took. `verdict` is the
+    exception and is cheap on purpose: it reads the last completed tick instead
+    of measuring again (0001).
     """
 
-    TITLE = "llama.cpp agent"
+    TITLE = "llama-warden"
     # Every height here is 1fr for one reason: TabPane and ContentSwitcher size to
     # their content by default, so a pane holding 400 log lines makes the SCREEN
     # taller than the window. Textual then grows a second scrollbar outside the
@@ -980,10 +980,12 @@ class AgentConsole(App):
     ]
 
     # Poll intervals, chosen against the measured cost of each probe rather than
-    # against what feels responsive: status is a subprocess, resources is 3.5 s
-    # of performance counters, and the logs are an ordinary bounded file read.
+    # against what feels responsive: status is a subprocess and the logs are an
+    # ordinary bounded file read. The verdict is a dictionary the watch thread
+    # already built, so its interval is about how stale the line on screen may
+    # look, not about what asking for it costs.
     STATUS_SECONDS = 5.0
-    RESOURCE_SECONDS = 30.0
+    VERDICT_SECONDS = 3.0
     LOG_SECONDS = 1.0
 
     # How often the window is asked what state it is in. Cheap (`IsIconic` and
@@ -1009,7 +1011,7 @@ class AgentConsole(App):
         self._offsets: dict[str, int | None] = dict.fromkeys(api.servers)
         self._records_seen = 0
         self._status: dict[str, dict] = {}
-        self._resources: dict = {}
+        self._watch: dict = {}
         self._tray: TrayIcon | None = None
 
     def compose(self) -> ComposeResult:
@@ -1023,17 +1025,17 @@ class AgentConsole(App):
                 yield RichLog(id="log-agent", wrap=False, markup=False, max_lines=2000)
 
     def on_mount(self) -> None:
-        self.register_theme(EPISTEME_THEME)
-        self.theme = "episteme"
+        self.register_theme(WARDEN_THEME)
+        self.theme = "warden"
         self.set_interval(self.STATUS_SECONDS, self.poll_status)
-        self.set_interval(self.RESOURCE_SECONDS, self.poll_resources)
+        self.set_interval(self.VERDICT_SECONDS, self.poll_verdict)
         self.set_interval(self.LOG_SECONDS, self.poll_logs)
         # Unconditional: a guest console is never minimized-to-tray by us, but it
         # can still be shown and hidden from the tray menu, which is the other
         # half of what this tick reports.
         self.set_interval(self.WINDOW_SECONDS, self.watch_window)
         self.poll_status()
-        self.poll_resources()
+        self.poll_verdict()
         self.poll_logs()
 
     def watch_window(self) -> None:
@@ -1072,14 +1074,18 @@ class AgentConsole(App):
         status = self.api.server_status()
         self.call_from_thread(self._apply_status, status)
 
-    @work(thread=True, exclusive=True, group="resources")
-    def poll_resources(self) -> None:
+    def poll_verdict(self) -> None:
+        """Read what the watch thread last decided. No worker, no thread.
+
+        It is a dictionary lookup, so a thread would cost more than it saves and
+        would hand the UI a race in exchange for nothing.
+        """
         try:
-            self._resources = self.api.resources()
+            self._watch = self.api.verdict()
         except Exception as exc:  # noqa: BLE001 - a dead sensor must not kill the UI
-            log.debug("resource probe failed: %s", exc)
-            self._resources = {}
-        self.call_from_thread(self._render_status)
+            log.debug("verdict unavailable: %s", exc)
+            self._watch = {}
+        self._render_status()
 
     @work(thread=True, exclusive=True, group="logs")
     def poll_logs(self) -> None:
@@ -1124,7 +1130,7 @@ class AgentConsole(App):
             chips.append(
                 f"[{color}]{label(name)} :{row['port']} {'up' if up else 'down'}{pid}[/]"
             )
-        res = self._resources
+        res = self._watch.get("resources") or {}
         vram = (
             f"VRAM {res['vram_used_mb'] / 1024:.1f}/{res['vram_total_mb'] / 1024:.1f} GB"
             if res.get("vram_total_mb")
@@ -1135,8 +1141,36 @@ class AgentConsole(App):
             f"[grey62]GPU {percent(res.get('gpu_percent'))}  "
             f"foreign {percent(res.get('foreign_gpu_percent'))}  {vram}  games: {games}[/]"
         )
-        third = key_hints(self.BINDINGS)
-        self.query_one("#status", Static).update("\n".join(["  ".join(chips), second, third]))
+        self.query_one("#status", Static).update(
+            "\n".join(
+                ["  ".join(chips), second, self._verdict_line(), key_hints(self.BINDINGS)]
+            )
+        )
+
+    def _verdict_line(self) -> str:
+        """Why the consumers are doing what they are doing, in one line.
+
+        The reason text comes from `policy.is_contended` and reaches here
+        unchanged, because a pipeline that stopped on its own has to be able to
+        say what it saw. A verdict with nobody to tell is still shown: a warden
+        configured with no consumers is a valid way to run one, and a line
+        reading "nobody to tell" is how that is visible rather than mysterious.
+        """
+        verdict = self._watch.get("verdict") or {}
+        if not verdict:
+            return "[grey62]no verdict yet[/]"
+        color, word = ("yellow", "YIELDED") if verdict.get("yielded") else ("green", "running")
+        parts = [f"[{color}]{word}[/] [grey62]{verdict.get('reason', '')}[/]"]
+        if not self._watch.get("enabled", True):
+            parts.append("[grey62](policy off)[/]")
+        heard = [
+            f"{name}: {row.get('action') or '-'}" + ("!" if row.get("error") else "")
+            for name, row in (self._watch.get("consumers") or {}).items()
+        ]
+        parts.append(f"[grey62]{', '.join(heard) if heard else 'nobody to tell'}[/]")
+        if self._watch.get("probe_error"):
+            parts.append(f"[red]probe: {self._watch['probe_error']}[/]")
+        return "  ".join(parts)
 
     def _append_log(self, name: str, lines: list[str], reset: bool) -> None:
         """Follow the tail only while the pane is already at the tail.
@@ -1246,9 +1280,9 @@ class TrayIcon:
         # whether anything is still up. Both showing at once is not a
         # contradiction; it is the half-up state, stated.
         self.icon = pystray.Icon(
-            "episteme-llama-agent",
+            "llama-warden",
             icon_image(icon_colors({}, list(api.servers))),
-            "llama.cpp agent",
+            "llama-warden",
             menu=pystray.Menu(
                 # Still `default` while invisible: pystray dispatches a
                 # double-click through the unfiltered item list, so the icon's
@@ -1364,7 +1398,7 @@ def adopt_console_window() -> None:
         # Both servers drawn as up, like the .ico and the shortcut: a taskbar
         # button is an identity. The status light is the tray icon, which is a
         # different picture updated on a different clock.
-        path = Path(tempfile.gettempdir()) / "episteme-hostagent-window.ico"
+        path = Path(tempfile.gettempdir()) / "llama-warden-window.ico"
         write_icon_file(path, [OK, OK])
         if not set_console_icon(path):
             log.debug("window icon not applied; taskbar keeps the host's own")

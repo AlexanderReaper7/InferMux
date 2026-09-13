@@ -6,9 +6,9 @@ meant a PowerShell string, inside a Task Scheduler argument, containing a nested
 quoted command - three levels of escaping for something nobody could then read
 back out of `Get-ScheduledTask`.
 
-It does one thing the agent cannot do for itself: keep the console off the screen
-*immediately*. The agent hides its own window too (`--hide`), but only once uv has
-resolved the environment and Python has started.
+It does one thing the warden cannot do for itself: keep the console off the
+screen *immediately*. The warden hides its own window too (`--hide`), but only
+once uv has resolved the environment and Python has started.
 
 There are two ways to be off the screen and only one of them is any good. Hiding
 after the fact (the `-Show`-less branch below) still shows the window first:
@@ -36,7 +36,6 @@ param(
 )
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$AgentPy = Join-Path $PSScriptRoot "llama_agent.py"
 
 if ($Spawn) {
     # A window created hidden is one `-Show` could never show: SW_HIDE has already
@@ -53,9 +52,9 @@ if ($Spawn) {
     return
 }
 
-# --hide tells the agent this console is its own, which is what licenses it to
+# --hide tells the warden this console is its own, which is what licenses it to
 # remove the close button AND to hide itself at startup. `-Show` has to withhold
-# it, not merely skip the hide below: the agent would otherwise hide the window
+# it, not merely skip the hide below: the warden would otherwise hide the window
 # half a second after this script decided to leave it up, which is a debugging
 # switch that does not debug.
 #
@@ -74,4 +73,7 @@ if (-not $Show) {
     $agentArgs += "--hide"
 }
 
-& uv run --directory $RepoRoot $AgentPy @agentArgs @PassthroughArgs
+# `python -m warden`, not a path to a script: the warden is a package now, and
+# `--directory` is what makes uv resolve THIS project's lockfile rather than
+# whatever project the caller's working directory happens to sit in.
+& uv run --directory $RepoRoot python -m warden @agentArgs @PassthroughArgs

@@ -27,7 +27,7 @@ if (-not $ProcessId) {
     # processes and only the child ever paints. Picked as the one whose parent is
     # also a candidate rather than by pid order, which is not a tree.
     $candidates = @(Get-CimInstance Win32_Process |
-        Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -match 'llama_agent' })
+        Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -match 'warden' })
     if (-not $candidates) { throw "agent not running and no -ProcessId given" }
     $parents = $candidates.ProcessId
     $leaf = $candidates | Where-Object { $parents -contains $_.ParentProcessId } | Select-Object -First 1
