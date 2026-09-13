@@ -84,7 +84,6 @@ def _console_api(watcher: watch.Watcher):
 
     return console, console.AgentAPI(
         server_status=agent._server_status,
-        resources=agent.resources,
         read_log=agent.read_log,
         start=agent.start_servers,
         stop=agent.stop,

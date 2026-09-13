@@ -449,6 +449,23 @@ def test_the_ui_has_no_way_to_measure_anything(console):
     assert "resources" not in fields
 
 
+def test_the_process_can_actually_build_the_console_api():
+    """The other half of the seam, and the half that was missing.
+
+    `AgentAPI` losing its `resources` field is checked above; that `__main__`
+    stopped passing one was not, and nothing else reaches `_console_api` -
+    `--headless` skips it entirely. So the warden ran green on 81 tests and then
+    died at logon with `TypeError: unexpected keyword argument 'resources'`,
+    after the watch thread had already logged that it was watching. Constructing
+    it here costs a millisecond and is the only thing that covers the path the
+    scheduled task takes.
+    """
+    from warden import __main__ as entry
+
+    _, api = entry._console_api(entry.build_watcher())
+    assert callable(api.verdict)
+
+
 async def test_the_key_hints_are_on_screen_and_derived_from_the_bindings(console):
     """Textual's `Footer` does not survive this window: it docks to the last row,
     which conhost clips when the window height is not a whole multiple of the cell

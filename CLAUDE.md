@@ -8,10 +8,13 @@ This file is rules and navigation only.
 - [docs/decisions/](docs/decisions/README.md) is why anything is the way it is. **`(0001)` means `docs/decisions/0001-*.md`.** Grep it before changing something that looks arbitrary; add to it when we decide something new.
 - [graphics/README.md](graphics/README.md) is what the mark means and what the tray light maps to.
 - [tools/README.md](tools/README.md) is the win32 traps, written down after each cost an hour.
+- [CLAUDE-TODO.md](CLAUDE-TODO.md) is what is built but not yet watched running. Read it before claiming a path works.
 
 ## Current state
 
-Split out of Episteme 2026-09-13, carrying `hostagent/`'s git history. What was live-verified **there** (2026-08-01, against a running Battlefield 6) was the measurement and the decision table, both of which moved unchanged. What has NOT been watched running here is the announcement path: the POST to a consumer, the re-announce, and a consumer taking it.
+Split out of Episteme 2026-09-13, carrying `hostagent/`'s git history. What was live-verified **there** (2026-08-01, against a running Battlefield 6) was the measurement and the decision table, both of which moved unchanged.
+
+The announcement path was live-verified here 2026-09-13 against a real game (`WardogsClient-Win64-Shipping` at 70%): PAUSE decided at foreign 74% >= 25%, the POST taken by Episteme 2 ms later, the 300 s repeat firing unattended, the warden killed mid-pause leaving the consumer correctly paused with a frozen freshness clock, and a restarted warden announcing into that pause without re-authoring it. Episteme's side is its 0057. Still unwatched: the warden choosing to **resume** (the game ran throughout, so the quiet window never opened), a real logon through the `LlamaWarden` task, and the tray icon as an input device. See [CLAUDE-TODO.md](CLAUDE-TODO.md).
 
 ## Commands
 
