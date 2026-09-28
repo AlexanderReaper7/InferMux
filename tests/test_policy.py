@@ -12,13 +12,15 @@ models. Here the same table is eight synchronous calls.
 from datetime import UTC, datetime, timedelta
 
 from warden.config import Policy
-from warden.policy import Verdict, decide, is_contended
+from warden.policy import ComfyIdle, Verdict, comfyui_free_due, decide, is_contended
 
-POLICY = Policy(gpu_busy_percent=25.0, min_free_vram_mb=6000, resume_quiet_seconds=300)
+POLICY = Policy(
+    gpu_busy_percent=25.0, min_free_vram_mb=6000, resume_quiet_seconds=300, comfyui_idle_seconds=600
+)
 NOW = datetime(2026, 9, 13, 20, 0, tzinfo=UTC)
 
-FREE = {"foreign_gpu_percent": 1.0, "vram_free_mb": 9000, "games_running": []}
-BUSY = {"foreign_gpu_percent": 91.0, "vram_free_mb": 900, "games_running": ["bf6"]}
+FREE = {"foreign_gpu_percent": 1.0, "vram_free_mb": 9000, "culprits": []}
+BUSY = {"foreign_gpu_percent": 91.0, "vram_free_mb": 900, "culprits": ["bf6"]}
 
 
 # --- what counts as contention ---------------------------------------------------
@@ -44,10 +46,10 @@ def test_a_game_on_the_card_is_contention_and_says_which_one():
 
 
 def test_free_vram_is_only_read_when_we_hold_none():
-    """Per-process VRAM cannot be attributed on Windows - the counter reported
-    22 GB for dwm on a 10 GB card - so the figure is only somebody else's while
-    our own models are unloaded. While we hold them it is ignored rather than
-    guessed at, which is the difference between these two calls."""
+    """The figure is only somebody else's while our own models are unloaded.
+    Windows forced that, since its counter reported 22 GB for dwm on a 10 GB
+    card. NVML could attribute it on Linux, but the port kept the rule (0002),
+    and this pins it until somebody decides otherwise."""
     tight = {"foreign_gpu_percent": 2.0, "vram_free_mb": 400}
     assert is_contended(tight, our_models_loaded=True, policy=POLICY)[0] is False
     assert is_contended(tight, our_models_loaded=False, policy=POLICY)[0] is True
@@ -128,3 +130,48 @@ def test_a_running_verdict_keeps_its_start_time():
     assert second.yielded is False
     assert second.since == first.since
     assert second.sampled_at == NOW + timedelta(minutes=5)
+
+
+# --- ComfyUI ---------------------------------------------------------------------
+
+
+def test_a_queued_comfyui_job_is_contention_before_it_draws_any_power():
+    """The queue is read so the router unloads before ComfyUI starts loading
+    weights, not one tick after the utilization shows it (0002)."""
+    queued = {**FREE, "comfyui_jobs": 2}
+    contended, why = is_contended(queued, our_models_loaded=True, policy=POLICY)
+    assert contended is True
+    assert why == "ComfyUI has 2 jobs queued"
+
+
+def test_an_unreadable_comfyui_queue_is_not_contention():
+    down = {**FREE, "comfyui_jobs": None}
+    assert is_contended(down, our_models_loaded=True, policy=POLICY)[0] is False
+
+
+def test_comfyui_is_freed_once_after_the_idle_window():
+    state = ComfyIdle(busy_at=NOW)
+    state, due = comfyui_free_due(state, 0, now=NOW + timedelta(seconds=599), policy=POLICY)
+    assert due is False
+    state, due = comfyui_free_due(state, 0, now=NOW + timedelta(seconds=600), policy=POLICY)
+    assert due is True and state.freed is True
+    # Once per idle stretch: a free also empties the cache the next job reuses.
+    state, due = comfyui_free_due(state, 0, now=NOW + timedelta(hours=2), policy=POLICY)
+    assert due is False
+
+
+def test_a_job_restarts_the_idle_clock():
+    state = ComfyIdle(busy_at=NOW, freed=True)
+    later = NOW + timedelta(hours=1)
+    state, due = comfyui_free_due(state, 1, now=later, policy=POLICY)
+    assert due is False
+    assert state == ComfyIdle(busy_at=later, freed=False)
+    _, due = comfyui_free_due(state, 0, now=later + timedelta(seconds=600), policy=POLICY)
+    assert due is True
+
+
+def test_an_unreadable_queue_moves_nothing():
+    """ComfyUI down or slow to answer is no opinion, as with a failed probe."""
+    state = ComfyIdle(busy_at=NOW)
+    after, due = comfyui_free_due(state, None, now=NOW + timedelta(hours=1), policy=POLICY)
+    assert (after, due) == (state, False)

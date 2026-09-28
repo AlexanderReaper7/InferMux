@@ -1,38 +1,31 @@
 # CLAUDE.md
 
-llama-warden: who gets the GPU, and who is told to let go of it. One process on the Windows host that runs llama.cpp's servers, measures what else is using the card, decides whether that other work is at stake, and pushes `pause`/`resume` to its consumers.
+llama-warden: who gets the GPU, and who is told to let go of it. One systemd service on the NixOS host that measures what else is using the card, decides whether that other work is at stake, unloads the llama.cpp router, frees an idle ComfyUI, and pushes `pause`/`resume` to its consumers.
 
 This file is rules and navigation only.
 
 - [README.md](README.md) is how to run and configure it.
 - [docs/decisions/](docs/decisions/README.md) is why anything is the way it is. **`(0001)` means `docs/decisions/0001-*.md`.** Grep it before changing something that looks arbitrary; add to it when we decide something new.
-- [graphics/README.md](graphics/README.md) is what the mark means and what the tray light maps to.
-- [tools/README.md](tools/README.md) is the win32 traps, written down after each cost an hour.
+- [graphics/README.md](graphics/README.md) is what the mark means.
 - [CLAUDE-TODO.md](CLAUDE-TODO.md) is what is built but not yet watched running. Read it before claiming a path works.
+- The NixOS configuration that deploys this is `~/Projects/nixcfg` (`modules/nixos/llm.nix` for the router and the warden, `packages/comfyui` for ComfyUI).
 
 ## Current state
 
-Split out of Episteme 2026-09-13, carrying `hostagent/`'s git history. What was live-verified **there** (2026-08-01, against a running Battlefield 6) was the measurement and the decision table, both of which moved unchanged.
-
-The announcement path was live-verified here 2026-09-13 against a real game (`WardogsClient-Win64-Shipping` at 70%): PAUSE decided at foreign 74% >= 25%, the POST taken by Episteme 2 ms later, the 300 s repeat firing unattended, the warden killed mid-pause leaving the consumer correctly paused with a frozen freshness clock, and a restarted warden announcing into that pause without re-authoring it. Episteme's side is its 0057. Still unwatched: the warden choosing to **resume** (the game ran throughout, so the quiet window never opened), a real logon through the `LlamaWarden` task, and the tray icon as an input device. See [CLAUDE-TODO.md](CLAUDE-TODO.md).
+Linux only since 2026-09-28 (0002). The Windows program, its console, tray, launcher and preset, is in git history at `b87f39b`. What was live-verified on Windows (the announcement path into Episteme, 0001) was the push and the decision table, both unchanged by the port. The Linux probe, the router unload and the ComfyUI free are tested but not yet watched deciding anything on the real host. See [CLAUDE-TODO.md](CLAUDE-TODO.md).
 
 ## Commands
 
 ```sh
-uv run python -m warden             # text UI + tray icon; --headless for the bare service
-uv run pytest -q                    # 81 tests, no GPU and no llama-server needed
-uv run ruff check src tests tools
-pwsh scripts/install-task.ps1       # the logon task (-Remove). Old name: EpistemeLlamaAgent
-./scripts/open-agent.ps1            # start it, or show the running one; one door
+nix develop -c pytest -q               # 51 tests, no GPU, router or ComfyUI needed
+nix develop -c ruff check src tests
+nix develop -c ruff format --check src tests
+nix build                              # the package; runs the tests too
+nix develop -c python -m warden        # from the checkout, reads ./warden.toml
 
-curl http://127.0.0.1:5003/verdict  # what it decided, and who has heard it
-curl http://127.0.0.1:5003/resources  # a fresh ~3.5s sweep, on purpose
-
-# Both are GENERATED. The .ico is not a conversion of the SVG - it re-renders
-# console.py's own icon_image, so the tray, the taskbar and the shortcut are one
-# picture by construction.
-uv run graphics/build_svg.py
-uv run tools/build_ico.py
+curl 127.0.0.1:5003/verdict            # what it decided, and who has heard it
+curl 127.0.0.1:5003/resources          # a fresh NVML probe
+journalctl -u llama-warden -f
 ```
 
 ## The rules that have to fire without being looked up
@@ -40,17 +33,16 @@ uv run tools/build_ico.py
 - **The machine that measures is the machine that decides** (0001). A threshold that lives in a consumer's config is the thing this project was created to end.
 - **A pause is a message, not a lease.** Nothing expires, so a warden that dies while a consumer is paused leaves it paused. The mitigations are in `consumers.py` and the residual risk is stated in 0001. Do not add a second, quieter mitigation without reading that section; the real fix, if it is ever needed, is the lease.
 - **An announcement must be idempotent at the other end.** The verdict is re-sent every 300 s, so a consumer that re-stamps `since` on every `pause` erases the one fact its panel shows.
-- **A failed probe leaves the verdict alone.** A probe that cannot run is not evidence that the GPU is free, and resuming on it is the one mistake this loop exists to avoid.
-- **Free VRAM is only read while our own models are unloaded.** Per-process VRAM cannot be attributed on Windows: the counter reported 22 GB for dwm on a 10 GB card. `loading` counts as loaded (0001).
-- **The UI measures nothing.** `AgentAPI` has `verdict`, not `resources`, and that absence is the enforcement. A probe costs ~3.5 s and the watch thread already pays it.
+- **A failed probe leaves the verdict alone, and so does an unreadable ComfyUI queue.** Neither is evidence that the GPU is free.
+- **The router is unloaded on the transition only** (0002). Unloading every tick would fight a client the user chose to let through.
+- **Free VRAM is only read while the router holds no model.** Linux can attribute it now, but the rule was kept, not re-decided (0002). `loading` counts as loaded (0001).
+- **ComfyUI is contention, never ours.** It is not in `our_units` and it is not a consumer. It is a tenant the warden watches and frees (0002).
 - **`watch` and `agent` never import each other.** `__main__` wires the probe into the loop, which is what keeps the FastAPI app testable without a GPU and the loop testable without a server.
-- **Never `-WindowStyle Hidden` where `conhost --headless` is meant.** Both scripts that start the warden go through `conhost.exe <command>` on purpose: Windows Terminal's handoff leaves `GetConsoleWindow()` pointing at a window the UI does not live in, so hide-to-tray moves nothing. The comments in `scripts/install-task.ps1` carry the measurements.
-- **The llama.cpp binaries are not ours.** They are an unpacked upstream release in `C:\selfhosting\llama-cpp`, reached through `LLAMA_CPP_DIR`. The launcher and `models-preset.ini` are ours and live in `llama/`.
-- **The preset is edited line by line, never round-tripped through configparser.** It is half comments and those comments are the only record of why a setting is what it is.
+- **The HTTP service is read-only.** Starting, stopping and configuring the servers is systemd's and nixcfg's job now.
 
 ## Engineering principles (user feedback, hard)
 
 - **Fix root causes, not symptoms.** A consumer-side workaround is acceptable only as an explicitly temporary bridge, agreed with the user.
 - **Don't self-authorize known design debt.** Surface the smell and the proper fix; the user decides.
 - **Build the simplest mechanism that satisfies the stated requirement.**
-- **"Tests pass" and live verification are different claims.** Say which one was done. The window makes claims pytest cannot reach, which is what `tools/` is for.
+- **"Tests pass" and live verification are different claims.** Say which one was done.

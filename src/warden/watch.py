@@ -1,56 +1,38 @@
-"""The loop: measure, decide, announce. One thread, one tick at a time.
+"""The loop: measure, decide, act, announce. One thread, one tick at a time.
 
-A thread rather than an asyncio task because the measurement is a PowerShell
-subprocess that takes ~3.5s wall-clock, and the HTTP service must answer the
-admin panel while it runs. `agent.py` never imports this module and this module
-never imports `agent.py`: the probe is handed in by `__main__`, which is what
-keeps the FastAPI app testable without a GPU and the loop testable without a
-server.
+A thread rather than an asyncio task so the HTTP service answers while a tick
+waits on the router or ComfyUI. `agent.py` never imports this module and this
+module never imports `agent.py`: the probe is handed in by `__main__`, which is
+what keeps the FastAPI app testable without a GPU and the loop testable without
+a server.
 
-`current` is the live watcher, for the `/verdict` route and the console status
-line. There is exactly one per process, set when the loop starts.
+A tick does two things of its own beyond announcing (0002):
+
+* On the transition to *yielded* it tells the router to unload its models.
+  Only on the transition: a model that a client loads again during the pause
+  stays loaded, as the user chose.
+* It keeps ComfyUI's idle clock and sends `/free` once per idle stretch.
+
+`current` is the live watcher, for the `/verdict` route. There is exactly one
+per process, set when the loop starts.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
-import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from . import comfyui, router
 from .config import Policy, Settings
 from .consumers import Announcer
-from .policy import Verdict, decide
+from .policy import ComfyIdle, Verdict, comfyui_free_due, decide
 
 log = logging.getLogger("warden.watch")
 
 current: Watcher | None = None
-
-
-def router_holds_vram(router_url: str, *, timeout: float = 2.0) -> bool:
-    """Is our own decode server holding a model in VRAM right now?
-
-    Only llama-server in *router* mode reports a per-model `status.value`; a
-    plain single-model server reports none, which counts as holding nothing.
-    Everything else counts as loaded, and that deliberately includes the
-    transient `loading`: a model halfway into VRAM occupies it just as much as a
-    resident one, and reading it as free is what once let a governor pause and
-    unload the model it was in the middle of loading.
-
-    A down or silent router holds nothing, which is the same no-opinion
-    direction the rest of this takes.
-    """
-    try:
-        with urllib.request.urlopen(  # noqa: S310 - fixed scheme, loopback
-            f"{router_url.rstrip('/')}/v1/models", timeout=timeout
-        ) as response:
-            rows = json.loads(response.read().decode("utf-8")).get("data") or []
-    except Exception:
-        return False
-    return any(((row.get("status") or {}).get("value")) not in (None, "unloaded") for row in rows)
 
 
 class Watcher:
@@ -62,25 +44,35 @@ class Watcher:
         *,
         resources: Callable[[], dict],
         models_loaded: Callable[[], bool] | None = None,
+        unload: Callable[[], list[str]] | None = None,
+        comfyui_queue: Callable[[], int | None] | None = None,
+        comfyui_free: Callable[[], None] | None = None,
         announcer: Announcer | None = None,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.settings = settings
         self.policy: Policy = settings.policy
         self._resources = resources
-        self._models_loaded = models_loaded or (
-            lambda: router_holds_vram(settings.router_url)
-        )
+        self._models_loaded = models_loaded or (lambda: router.holds_vram(settings.router_url))
+        self._unload = unload or (lambda: router.unload_all(settings.router_url))
+        url = settings.comfyui_url
+        self._comfyui_queue = comfyui_queue or ((lambda: comfyui.queue_depth(url)) if url else None)
+        self._comfyui_free = comfyui_free or ((lambda: comfyui.free(url)) if url else None)
         self.announcer = announcer or Announcer(settings.consumers)
+        self._now = now
         self.verdict = Verdict()
+        self.comfyui = ComfyIdle(busy_at=now())
         self.last_resources: dict = {}
         self.last_error: str | None = None
+        self.last_unload: list[str] | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     # --- one tick ---------------------------------------------------------
 
     def tick(self) -> Verdict:
-        """Measure once, decide, tell whoever needs telling.
+        """Measure once, decide, act on the router and ComfyUI, tell whoever
+        needs telling.
 
         A failed measurement leaves the verdict alone rather than reading as
         "quiet". A probe that cannot run is not evidence that the GPU is free,
@@ -94,21 +86,42 @@ class Watcher:
             log.warning("Probe failed, verdict unchanged: %s", self.last_error)
             return self.verdict
 
+        now = self._now()
+        if self._comfyui_queue is not None:
+            jobs = self._comfyui_queue()
+            resources = {**resources, "comfyui_jobs": jobs}
+            self._comfyui_tick(jobs, now)
+
         self.last_resources = resources
         before = self.verdict
         self.verdict = decide(
             before,
             resources,
-            now=datetime.now(UTC),
+            now=now,
             our_models_loaded=self._models_loaded(),
             policy=self.policy,
         )
         if before.yielded != self.verdict.yielded:
-            log.info(
-                "Verdict: %s — %s", self.verdict.action.upper(), self.verdict.reason
-            )
+            log.info("Verdict: %s - %s", self.verdict.action.upper(), self.verdict.reason)
+        if self.verdict.yielded and not before.yielded:
+            self.last_unload = self._unload()
+            log.info("Router unloaded: %s", ", ".join(self.last_unload) or "nothing was loaded")
         self.announcer.sync(self.verdict)
         return self.verdict
+
+    def _comfyui_tick(self, jobs: int | None, now: datetime) -> None:
+        after, due = comfyui_free_due(self.comfyui, jobs, now=now, policy=self.policy)
+        if not due:
+            self.comfyui = after
+            return
+        try:
+            self._comfyui_free()
+        except Exception as exc:
+            # Not marked freed, so the next tick tries again.
+            log.warning("ComfyUI did not take /free: %s: %s", type(exc).__name__, exc)
+            return
+        self.comfyui = after
+        log.info("ComfyUI idle for %ds: models freed", self.policy.comfyui_idle_seconds)
 
     # --- the thread -------------------------------------------------------
 
@@ -121,11 +134,13 @@ class Watcher:
         self._thread = threading.Thread(target=self._run, name="warden-watch", daemon=True)
         self._thread.start()
         log.info(
-            "Watching every %.0fs: busy >= %.0f%%, resume after %ds quiet, consumers: %s",
+            "Watching every %.0fs: busy >= %.0f%%, resume after %ds quiet, consumers: %s, "
+            "ComfyUI: %s",
             self.policy.poll_seconds,
             self.policy.gpu_busy_percent,
             self.policy.resume_quiet_seconds,
             ", ".join(c.name for c in self.announcer.consumers) or "none",
+            self.settings.comfyui_url or "none",
         )
 
     def stop(self) -> None:
@@ -138,11 +153,9 @@ class Watcher:
                 self.tick()
             except Exception:  # a tick must never be the last one
                 log.exception("Tick failed")
-            # Measured from the start of the tick, so the probe's own ~3.5s is
-            # inside the interval rather than added to it.
             self._stop.wait(max(1.0, self.policy.poll_seconds - (time.monotonic() - started)))
 
-    # --- what the HTTP surface and the console show -----------------------
+    # --- what /verdict shows ----------------------------------------------
 
     def as_dict(self) -> dict:
         return {
@@ -153,8 +166,15 @@ class Watcher:
                 "min_free_vram_mb": self.policy.min_free_vram_mb,
                 "resume_quiet_seconds": self.policy.resume_quiet_seconds,
                 "poll_seconds": self.policy.poll_seconds,
+                "comfyui_idle_seconds": self.policy.comfyui_idle_seconds,
             },
             "consumers": self.announcer.state(),
+            "comfyui": {
+                "url": self.settings.comfyui_url,
+                "busy_at": self.comfyui.busy_at.isoformat() if self.comfyui.busy_at else None,
+                "freed": self.comfyui.freed,
+            },
+            "last_unload": self.last_unload,
             "probe_error": self.last_error,
             "resources": self.last_resources,
         }

@@ -57,6 +57,11 @@ error every night is an icon nobody reads by the second week.
 
 ## Files
 
+Since the Linux port (0002) there is no tray icon and no console, so the status
+light below and `warden.ico`'s generator are gone. `tools/build_ico.py` and
+`console.py` are in git history at `b87f39b`, and so are the `net_layout` tests
+the constraints above refer to. The `.ico` stays as the last one generated.
+
 | File | What it is |
 | --- | --- |
 | `build_svg.py` | The generator. `uv run graphics/build_svg.py` rewrites `warden-icon.svg`; `--list` says what it would write. A port of Episteme's canvas prototype, which stays the authority on the geometry it was copied from. |

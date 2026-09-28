@@ -2,32 +2,52 @@
 
 Who gets the GPU, and who is told to let go of it.
 
-One process on the Windows host. It runs llama.cpp's servers, watches what else is using the card, decides whether that other work is at stake, and tells its consumers to pause or resume. A game starting is noticed within 30 seconds; the pipeline that was writing articles stops, hands back VRAM, and comes back five minutes after the game is gone.
+One systemd service on the NixOS host. It watches what else is using the card through NVML, decides whether that other work is at stake, and acts on it. The llama.cpp router is told to unload its models, its consumers are told to pause, and ComfyUI is told to drop its models once it has sat idle. A game or a ComfyUI job is noticed within 5 seconds. The consumers resume five minutes after the GPU goes quiet.
 
-It was Episteme's `hostagent/` until 2026-09-13. The policy came with it ([0001](docs/decisions/0001-the-warden-decides-and-says-so.md)).
+It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-warden-decides-and-says-so.md)) and a Windows program until 2026-09-28 ([0002](docs/decisions/0002-linux-nvml-router-unload-comfyui.md)).
 
 ## Run it
 
-```pwsh
-uv run python -m warden                 # text UI + tray icon
-uv run python -m warden --headless      # the bare service
-pwsh scripts/install-task.ps1           # at logon, hidden, tray icon (-Remove)
-pwsh scripts/install-shortcut.ps1       # Start menu entry (-Desktop, -Remove)
-./scripts/open-agent.ps1                # start it, or show the running one
+On NixOS, through the flake's module:
+
+```nix
+# flake inputs
+llama-warden = {
+  url = "git+https://github.com/AlexanderReaper7/llama-warden";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# a NixOS module
+imports = [ inputs.llama-warden.nixosModules.default ];
+services.llama-warden = {
+  enable = true;
+  settings.agent.comfyui_url = "http://127.0.0.1:8188";
+};
 ```
 
-The console is one window with three tabs: the router's log, the embedder's log, and the warden's own. It is born hidden behind the tray icon, which doubles as a status light. The icon's **nodes are the decode server** (:5001) and its **edges are the embedder** (:5002); grey is down, never red.
+From a checkout:
+
+```sh
+nix develop -c python -m warden        # reads ./warden.toml
+journalctl -u llama-warden -f          # the service's log
+```
 
 ## Configure it
 
-Everything is in [`warden.toml`](warden.toml): where llama.cpp is unpacked, the four policy numbers, and one table per consumer. Absent or partial is fine, every value has a default, and a fresh clone runs with no consumers and therefore nothing to announce to.
+Everything is in [`warden.toml`](warden.toml), or the module's `settings`, which is the same file as an attribute set. Absent or partial is fine, every value has a default, and a fresh clone runs with no consumers and therefore nothing to announce to.
 
 ```toml
+[agent]
+router_url = "http://127.0.0.1:5001"   # unloaded on a yield
+comfyui_url = "http://127.0.0.1:8188"  # omit when there is no ComfyUI
+our_units = ["llama-cpp.service", "llama-embed.service"]
+
 [policy]
 gpu_busy_percent = 25.0       # foreign GPU load at or above this is contention
-min_free_vram_mb = 6000       # only read while our own models are unloaded
+min_free_vram_mb = 3000       # only read while the router holds no model
 resume_quiet_seconds = 300    # yield at once, come back slowly
-poll_seconds = 30.0
+poll_seconds = 5.0
+comfyui_idle_seconds = 600    # empty queue this long, then POST /free
 
 [[consumers]]
 name = "episteme"
@@ -36,50 +56,47 @@ url = "http://127.0.0.1:8200"
 
 ## Talk to it
 
-Loopback :5003, no auth.
+Loopback :5003, no auth, read-only.
 
 ```sh
-curl http://127.0.0.1:5003/verdict          # what it decided, and who has heard it
-curl http://127.0.0.1:5003/status           # ports, PIDs, uptime
-curl http://127.0.0.1:5003/resources        # a fresh ~3.5s sweep, on purpose
-curl -X POST http://127.0.0.1:5003/start    # idempotent; /stop, /restart
-curl "http://127.0.0.1:5003/logs?which=router&tail=200"
+curl http://127.0.0.1:5003/verdict      # what it decided, who has heard it, ComfyUI's idle clock
+curl http://127.0.0.1:5003/status       # which services are listening, the router's models
+curl http://127.0.0.1:5003/resources    # a fresh NVML probe, on purpose
 ```
 
-## What it tells a consumer
+## What it does on a yield
 
-One POST per transition, to every configured consumer, repeated every five minutes until it lands:
+1. `POST /models/unload` to the router for each model it holds. Once, on the transition. A client that asks for a model during the pause loads it again.
+2. One POST to every configured consumer, repeated every five minutes until it lands:
 
 ```json
-{"action": "pause", "reason": "foreign GPU load 91% >= 25% (bf6)",
- "since": "2026-09-13T18:04:11+00:00", "warden": "llama-warden"}
+{"action": "pause", "reason": "ComfyUI has 1 job queued",
+ "since": "2026-09-28T18:04:11+00:00", "warden": "llama-warden"}
 ```
 
 What a consumer does about that is the consumer's business. **The endpoint must be idempotent**: re-announcing `pause` to an already-paused consumer must not re-stamp when the pause began.
 
-Nothing expires. A warden that dies while a consumer is paused leaves it paused, and that trade is argued in [0001](docs/decisions/0001-the-warden-decides-and-says-so.md#push-not-a-lease) rather than glossed over.
+Nothing expires. A warden that dies while a consumer is paused leaves it paused, and that trade is argued in [0001](docs/decisions/0001-the-warden-decides-and-says-so.md#push-not-a-lease).
 
 ## Layout
 
 | path | what it is |
 |---|---|
-| `src/warden/policy.py` | the decision. Pure functions over a measurement dictionary. |
-| `src/warden/watch.py` | the loop: measure, decide, announce. One thread. |
+| `src/warden/policy.py` | the decision, and ComfyUI's idle clock. Pure functions. |
+| `src/warden/watch.py` | the loop: measure, decide, unload, free, announce. One thread. |
+| `src/warden/probe.py` | NVML, and which processes are ours by their cgroup. |
+| `src/warden/router.py` | the llama.cpp router: does it hold a model, unload them all. |
+| `src/warden/comfyui.py` | ComfyUI: queue depth, `/free`. |
 | `src/warden/consumers.py` | the push, and what each consumer was last known to accept. |
-| `src/warden/agent.py` | the actuator: start/stop/restart, logs, the probe, the preset. |
-| `src/warden/console.py` | the tray icon and the text UI. Measures nothing. |
-| `llama/` | the launcher and `models-preset.ini`, versioned. The binaries are not. |
-| `tools/` | win32 instruments for the claims pytest cannot reach. Read its README. |
+| `src/warden/agent.py` | the read-only HTTP service. |
+| `nix/` | the package and the NixOS module. |
 | `graphics/` | the mark, and the generator that emits it. |
-
-The llama.cpp binaries stay in `C:\selfhosting\llama-cpp` as an unpacked upstream release, reached through `LLAMA_CPP_DIR`. The launcher is ours and lives here.
 
 ## Develop
 
 ```sh
-uv sync
-uv run pytest -q
-uv run ruff check src tests tools
-uv run graphics/build_svg.py    # the mark
-uv run tools/build_ico.py       # the .ico, re-rendered from console.py's own drawing
+nix develop -c pytest -q
+nix develop -c ruff check src tests
+nix develop -c ruff format --check src tests
+nix build                              # runs the tests as part of the build
 ```

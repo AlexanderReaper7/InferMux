@@ -1,26 +1,26 @@
-"""Where the thresholds and the paths live.
+"""Where the thresholds and the addresses live.
 
-One TOML file, `warden.toml` beside the repository root, read once at import.
-TOML rather than environment variables because the consumer list is a list of
-tables, and a list of tables does not survive `KEY=value`. `tomllib` is in the
-standard library, so this costs no dependency.
+One TOML file, read once at import. `WARDEN_CONFIG` names it; the NixOS module
+sets that to a file it generates, and a checkout falls back to `warden.toml`
+beside the repository root. TOML rather than environment variables because the
+consumer list is a list of tables, and a list of tables does not survive
+`KEY=value`. `tomllib` is in the standard library, so this costs no dependency.
 
 **Every threshold that used to sit in Episteme's settings is here** (0001).
 That is the whole point of the split: the machine that measures the GPU is the
 machine that decides, and a reader who wants to know why the pipeline stopped
 has one file to look at rather than two projects to correlate.
 
-The llama.cpp *binaries* are not ours and are not in this repository. `llama_dir`
-points at the unpacked upstream release, which also owns the logs the servers
-write; `LLAMA_CPP_DIR` overrides it for a second unpack. The launcher and the
-preset it reads travel with this repository, in `llama/`.
+The llama.cpp servers are not the warden's to run any more. systemd runs them
+(`llama-cpp.service` and `llama-embed.service` in the NixOS configuration), and
+the warden only talks to the router over HTTP (0002).
 """
 
 from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -53,44 +53,41 @@ class Policy:
     """The decision table's numbers. See `policy.decide` for what each one does.
 
     `poll_seconds` is the yield latency: a game that starts now is noticed
-    within one tick. It is not free — a tick shells out to PowerShell for the
-    per-process GPU counter, whose PDH sampling floor makes it ~3.5s — so this
-    is a deliberate trade of host CPU for how long Episteme keeps a 20 GB model
-    resident after somebody alt-tabs into a game. Under Episteme's old */2 cron
-    the answer was "up to two minutes".
+    within one tick. On Windows a tick cost ~3.5 s of PowerShell and PDH
+    sampling, so it was 30. NVML answers in ~6 ms (measured 2026-09-28 on the
+    3080), which makes a short tick nearly free.
+
+    `min_free_vram_mb` is only read while the router holds no model. The
+    Windows value was 6000. On this Linux desktop the compositor, the browser
+    and the Electron apps hold 4.2 to 4.7 GB of the 10 GB between them, so 6000
+    would read an idle desktop as contended and never resume.
+
+    `comfyui_idle_seconds` is how long ComfyUI's queue stays empty before the
+    warden asks it to drop its models (0002).
     """
 
     gpu_busy_percent: float = 25.0
-    min_free_vram_mb: int = 6000
+    min_free_vram_mb: int = 3000
     resume_quiet_seconds: int = 300
-    poll_seconds: float = 30.0
+    poll_seconds: float = 5.0
+    comfyui_idle_seconds: int = 600
     enabled: bool = True
 
 
 @dataclass(frozen=True)
 class Settings:
-    llama_dir: Path
-    models_dir: Path
     host: str
     port: int
     policy: Policy
     consumers: tuple[Consumer, ...]
-    # The router's own address, asked whether it is holding a model in VRAM.
-    # Free VRAM is only readable as *someone else's* while we hold nothing, so
-    # this answer decides whether the memory half of the policy applies at all.
+    # The router's own address: asked whether it holds a model, and told to
+    # unload them all when the warden yields.
     router_url: str = "http://127.0.0.1:5001"
-
-    @property
-    def launcher(self) -> Path:
-        return ROOT / "llama" / "launch-llama-v2.ps1"
-
-    @property
-    def preset(self) -> Path:
-        return ROOT / "llama" / "models-preset.ini"
-
-    @property
-    def log_dir(self) -> Path:
-        return self.llama_dir / "logs"
+    # None when there is no ComfyUI to watch.
+    comfyui_url: str | None = None
+    # The systemd units whose GPU work is ours, not contention. Matched against
+    # the last component of /proc/<pid>/cgroup.
+    our_units: tuple[str, ...] = field(default=("llama-cpp.service", "llama-embed.service"))
 
 
 def _load(path: Path) -> dict:
@@ -107,30 +104,17 @@ def load(path: Path | None = None) -> Settings:
     data = _load(path or CONFIG_PATH)
     policy = Policy(**(data.get("policy") or {}))
     consumers = tuple(Consumer(**row) for row in (data.get("consumers") or []))
-    paths = data.get("paths") or {}
-    llama_dir = Path(
-        os.environ.get("LLAMA_CPP_DIR") or paths.get("llama_dir") or r"C:\selfhosting\llama-cpp"
-    )
     agent = data.get("agent") or {}
+    units = agent.get("our_units")
     return Settings(
-        llama_dir=llama_dir,
-        models_dir=Path(paths.get("models_dir") or r"C:\selfhosting\models"),
         host=agent.get("host", "127.0.0.1"),
         port=int(agent.get("port", 5003)),
         router_url=agent.get("router_url", "http://127.0.0.1:5001"),
+        comfyui_url=agent.get("comfyui_url") or None,
+        our_units=tuple(units) if units else Settings.__dataclass_fields__["our_units"].default,
         policy=policy,
         consumers=consumers,
     )
 
 
 settings = load()
-
-# Server names must match the launcher's -LogFile naming and its port constants.
-SERVERS = {"router": 5001, "embed": 5002}
-PROCESS_NAME = "llama-server"
-PRESET_BACKUP_PREFIX = "models-preset.ini.bak-"
-
-LLAMA_DIR = settings.llama_dir
-LAUNCHER = settings.launcher
-LOG_DIR = settings.log_dir
-PRESET = settings.preset
