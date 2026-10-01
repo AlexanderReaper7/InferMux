@@ -8,6 +8,7 @@ This file is rules and navigation only.
 - [docs/decisions/](docs/decisions/README.md) is why anything is the way it is. **`(0001)` means `docs/decisions/0001-*.md`.** Grep it before changing something that looks arbitrary; add to it when we decide something new.
 - [graphics/README.md](graphics/README.md) is what the mark means.
 - [CLAUDE-TODO.md](CLAUDE-TODO.md) is what is built but not yet watched running. Read it before claiming a path works.
+- [Multiple model routers](docs/decisions/0003-multiple-model-routers.md) records the second runtime, compatibility, and the limit on request coordination.
 - The NixOS configuration that deploys this is `~/Projects/nixcfg` (`modules/nixos/llm.nix` for the router and the warden, `packages/comfyui` for ComfyUI).
 
 ## Current state

@@ -64,7 +64,10 @@ def resources() -> dict:
 def status() -> dict:
     """Which of the services the warden watches are listening, and which models
     the router has loaded."""
-    urls = {"router": settings.router_url}
+    urls = {
+        "router" if index == 0 else f"router_{index + 1}": url
+        for index, url in enumerate(settings.router_urls)
+    }
     if settings.comfyui_url:
         urls["comfyui"] = settings.comfyui_url
     return {
@@ -73,4 +76,11 @@ def status() -> dict:
             {"id": row.get("id"), "status": (row.get("status") or {}).get("value")}
             for row in router.models(settings.router_url)
         ],
+        "additional_router_models": {
+            url: [
+                {"id": row.get("id"), "status": (row.get("status") or {}).get("value")}
+                for row in router.models(url)
+            ]
+            for url in settings.router_urls[1:]
+        },
     }

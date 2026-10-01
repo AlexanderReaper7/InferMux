@@ -39,6 +39,7 @@ Everything is in [`warden.toml`](warden.toml), or the module's `settings`, which
 ```toml
 [agent]
 router_url = "http://127.0.0.1:5001"   # unloaded on a yield
+additional_router_urls = ["http://127.0.0.1:5004"] # optional second runtime
 comfyui_url = "http://127.0.0.1:8188"  # omit when there is no ComfyUI
 our_units = ["llama-cpp.service", "llama-embed.service"]
 

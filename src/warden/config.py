@@ -88,6 +88,16 @@ class Settings:
     # The systemd units whose GPU work is ours, not contention. Matched against
     # the last component of /proc/<pid>/cgroup.
     our_units: tuple[str, ...] = field(default=("llama-cpp.service", "llama-embed.service"))
+    additional_router_urls: tuple[str, ...] = ()
+
+    @property
+    def router_urls(self) -> tuple[str, ...]:
+        """Every router, once each; keep router_url as the primary for existing clients."""
+        return tuple(
+            dict.fromkeys(
+                url.rstrip("/") for url in (self.router_url, *self.additional_router_urls)
+            )
+        )
 
 
 def _load(path: Path) -> dict:
@@ -110,6 +120,7 @@ def load(path: Path | None = None) -> Settings:
         host=agent.get("host", "127.0.0.1"),
         port=int(agent.get("port", 5003)),
         router_url=agent.get("router_url", "http://127.0.0.1:5001"),
+        additional_router_urls=tuple(agent.get("additional_router_urls") or ()),
         comfyui_url=agent.get("comfyui_url") or None,
         our_units=tuple(units) if units else Settings.__dataclass_fields__["our_units"].default,
         policy=policy,

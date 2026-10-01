@@ -53,8 +53,12 @@ class Watcher:
         self.settings = settings
         self.policy: Policy = settings.policy
         self._resources = resources
-        self._models_loaded = models_loaded or (lambda: router.holds_vram(settings.router_url))
-        self._unload = unload or (lambda: router.unload_all(settings.router_url))
+        self._models_loaded = models_loaded or (
+            lambda: any(router.holds_vram(url) for url in settings.router_urls)
+        )
+        self._unload = unload or (
+            lambda: [name for url in settings.router_urls for name in router.unload_all(url)]
+        )
         url = settings.comfyui_url
         self._comfyui_queue = comfyui_queue or ((lambda: comfyui.queue_depth(url)) if url else None)
         self._comfyui_free = comfyui_free or ((lambda: comfyui.free(url)) if url else None)
