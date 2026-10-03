@@ -31,10 +31,18 @@ import (
 
 // Key is one client's entry in keys.yaml.
 type Key struct {
-	SHA256 string   `yaml:"sha256" json:"sha256"`
-	Class  Class    `yaml:"class" json:"class"`
-	Allow  []string `yaml:"allow,omitempty" json:"allow,omitempty"`
+	SHA256 string    `yaml:"sha256" json:"sha256"`
+	Class  Class     `yaml:"class" json:"class"`
+	Allow  ModelList `yaml:"allow,omitempty" json:"allow,omitzero"`
 }
+
+// ModelList is an allow list. nil, written as no list at all, is every
+// model; empty, written as [], is none. omitempty alone would drop the empty
+// one when infermux-ui rewrites the file, and widen that key to every model.
+type ModelList []string
+
+// IsZero is what omitempty (yaml) and omitzero (json) ask.
+func (l ModelList) IsZero() bool { return l == nil }
 
 // KeyFile is keys.yaml.
 type KeyFile struct {

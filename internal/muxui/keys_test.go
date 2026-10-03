@@ -271,6 +271,29 @@ func TestTheKeysPageOverHTTP(t *testing.T) {
 	u.want(code, 200, out, "delete")
 }
 
+// allow: [] is a key that may use no model, a host's key for discovery. An
+// absent list is every model, so the two must not collapse into each other
+// on their way through the page and back into the file.
+func TestAKeyAllowedNoModelStaysThatWay(t *testing.T) {
+	u := newUI(t)
+	code, out := u.call("PUT", "/api/keys/episteme-batch", map[string]any{"class": "batch", "allow": []string{}})
+	u.want(code, 200, out, "edit to allow nothing")
+	if k := keysOnDisk(t, u.f).Keys["episteme-batch"]; k.Allow == nil {
+		t.Fatalf("on disk the key may use every model: %+v", k)
+	}
+	code, out = u.call("GET", "/api/keys", nil)
+	u.want(code, 200, out, "list")
+	listed := out["keys"].(map[string]any)["episteme-batch"].(map[string]any)
+	if allow, ok := listed["allow"].([]any); !ok || len(allow) != 0 {
+		t.Fatalf("the page is told it may use every model: %v", listed)
+	}
+	code, out = u.call("PUT", "/api/keys/episteme-batch", map[string]any{"class": "batch"})
+	u.want(code, 200, out, "edit back to every model")
+	if k := keysOnDisk(t, u.f).Keys["episteme-batch"]; k.Allow != nil {
+		t.Fatalf("on disk the key still may use only %v", k.Allow)
+	}
+}
+
 func TestTheKeysFilesAreCommittedWithTheRest(t *testing.T) {
 	f := newFixture(t)
 	withSops(t, f)
