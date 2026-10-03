@@ -64,6 +64,8 @@ With `ui.kvKernels` set, the UI marks a model whose K-V cache pair has no compil
 
 The Keys tab makes, edits and revokes keys. With `ui.keySecrets`, a new key's plaintext goes to that sops file, so the tab can show it again; keys.yaml gets only its SHA-256. The sops file opens with the user's age identity at `ui.ageIdentity`, encrypted with `age -p`; the tab asks for its passphrase for Make key (after the first), Show and Revoke, and forgets it when the tab closes. `ui.daemonKeyFile` is the UI's own key for the daemon. The browser needs none for the UI; it does for the llama-swap tab, which asks with a Basic prompt (any user name, the key as password).
 
+A models file may hold llama-swap `peers:` instead, such as OpenRouter with `apiKey: ${env.OPENROUTER_API_KEY}`. The Models tab edits each peer's model list, and the proxy and key stay as written. The check fills every `${env.NAME}` with a placeholder, because the daemon's environment is not the UI's. A models file that is a symlink is written through, so two hosts' directories can share one peers file, and Changes shows and commits the file it points to.
+
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
 
 ## Talk to it

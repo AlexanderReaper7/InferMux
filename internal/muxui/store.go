@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -192,6 +193,10 @@ func (s *Store) apply(files []modelFile, changed map[string][]byte) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
+	models := filepath.Join(tmp, "models")
+	if err := os.Mkdir(models, 0o755); err != nil {
+		return err
+	}
 	for _, f := range files {
 		if _, ok := changed[f.name]; ok {
 			continue
@@ -200,7 +205,7 @@ func (s *Store) apply(files []modelFile, changed map[string][]byte) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(tmp, f.name), raw, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(models, f.name), withoutDaemonEnv(raw), 0o644); err != nil {
 			return err
 		}
 	}
@@ -208,11 +213,19 @@ func (s *Store) apply(files []modelFile, changed map[string][]byte) error {
 		if raw == nil {
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(tmp, name), raw, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(models, name), withoutDaemonEnv(raw), 0o644); err != nil {
 			return err
 		}
 	}
-	if _, err := config.LoadConfigSources(s.BaseConfig, tmp); err != nil {
+	base, err := os.ReadFile(s.BaseConfig)
+	if err != nil {
+		return err
+	}
+	baseCopy := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(baseCopy, withoutDaemonEnv(base), 0o644); err != nil {
+		return err
+	}
+	if _, err := config.LoadConfigSources(baseCopy, models); err != nil {
 		return fmt.Errorf("llama-swap would refuse this: %w", err)
 	}
 	names := make([]string, 0, len(changed))
@@ -240,7 +253,23 @@ func (s *Store) apply(files []modelFile, changed map[string][]byte) error {
 
 // writeAtomic replaces path in one rename. The temporary name does not end in
 // .yaml, so the daemon's directory watcher never reads a half-written file.
+// daemonEnv is llama-swap's ${env.NAME}.
+var daemonEnv = regexp.MustCompile(`\$\{env\.[a-zA-Z_][a-zA-Z0-9_]*\}`)
+
+// withoutDaemonEnv fills every ${env.NAME} with a placeholder, for the check
+// only. The daemon's environment is not the UI's: a peer's key reaches the
+// daemon alone, and the UI never holds it. A name missing from the daemon's
+// environment fails at the daemon's reload instead.
+func withoutDaemonEnv(raw []byte) []byte {
+	return daemonEnv.ReplaceAll(raw, []byte("infermux-ui-placeholder"))
+}
+
+// writeAtomic replaces the file at path, or the file a symlink there points
+// to: a file shared between hosts' directories stays one file.
 func writeAtomic(path string, raw []byte) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".tmp")
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return err
@@ -378,9 +407,20 @@ func (s *Store) IntentToAdd() error {
 }
 
 // paths is what Git shows and Commit commits. The keys' two files count once
-// they exist: git refuses a path that matches nothing.
+// they exist: git refuses a path that matches nothing. A models file that is a
+// symlink brings the file it points to, which may sit outside ModelsDir.
 func (s *Store) paths() []string {
 	paths := []string{s.ModelsDir, s.WardenFile}
+	if entries, err := os.ReadDir(s.ModelsDir); err == nil {
+		for _, e := range entries {
+			if e.Type()&fs.ModeSymlink == 0 {
+				continue
+			}
+			if real, err := filepath.EvalSymlinks(filepath.Join(s.ModelsDir, e.Name())); err == nil {
+				paths = append(paths, real)
+			}
+		}
+	}
 	keys, _ := s.keysPath()
 	for _, p := range []string{keys, s.KeySecrets} {
 		if _, err := os.Stat(p); p != "" && err == nil {

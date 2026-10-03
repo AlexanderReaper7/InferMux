@@ -27,6 +27,7 @@ export const api = {
   createModel: (m: Model) => call<Model>("POST", "/api/models", m),
   saveModel: (original: string, m: Model) => call<Model>("PUT", `/api/models/${encodeURIComponent(original)}`, m),
   deleteModel: (name: string) => call("DELETE", `/api/models/${encodeURIComponent(name)}`),
+  savePeer: (name: string, models: string[]) => call("PUT", `/api/peers/${encodeURIComponent(name)}`, { models }),
   ggufs: () => call<GGUF[]>("GET", "/api/gguf"),
   saveWarden: (cfg: WardenConfig) => call<WardenConfig>("PUT", "/api/warden", cfg),
   keys: () => call<KeysState>("GET", "/api/keys"),

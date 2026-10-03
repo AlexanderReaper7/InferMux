@@ -145,8 +145,17 @@ export interface WardenConfig {
   consumers: Consumer[] | null;
 }
 
+// A cloud API in llama-swap's peers: (0006, 6). The UI edits only the list.
+export interface Peer {
+  name: string;
+  proxy: string;
+  models: string[];
+  file: string;
+}
+
 export interface UIState {
   models: Model[];
+  peers: Peer[];
   runtimes: Record<string, string>;
   warden: WardenConfig;
   // Per runtime macro, the K-V pairs with a compiled FlashAttention kernel.

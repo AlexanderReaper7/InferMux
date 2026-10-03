@@ -5,6 +5,7 @@
   import { kvPair, kvWarning } from "../lib/kv";
   import BuildPanel from "./BuildPanel.svelte";
   import ModelEditor from "./ModelEditor.svelte";
+  import Peers from "./Peers.svelte";
 
   let ui = $state<UIState | null>(null);
   let ggufs = $state<GGUF[]>([]);
@@ -103,6 +104,8 @@
       </tbody>
     </table>
   </div>
+
+  <Peers peers={ui.peers} onsaved={load} />
 
   {#if unused.length}
     <div class="card mt-4">

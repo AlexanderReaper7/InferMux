@@ -43,8 +43,14 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 			fail(rw, err)
 			return
 		}
+		peers, err := store.Peers()
+		if err != nil {
+			fail(rw, err)
+			return
+		}
 		reply(rw, map[string]any{
 			"models":     models,
+			"peers":      peers,
 			"runtimes":   runtimes,
 			"warden":     wcfg,
 			"kv_kernels": store.KVKernels,
@@ -88,6 +94,19 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 		}
 		build.Outdated()
 		reply(rw, map[string]bool{"deleted": true})
+	})
+	mux.HandleFunc("PUT /api/peers/{name}", func(rw http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Models []string `json:"models"`
+		}
+		if !decode(rw, r, &body) {
+			return
+		}
+		if err := store.SavePeerModels(r.PathValue("name"), body.Models); err != nil {
+			fail(rw, err)
+			return
+		}
+		reply(rw, body)
 	})
 	mux.HandleFunc("GET /api/gguf", func(rw http.ResponseWriter, r *http.Request) {
 		files, err := store.GGUFs()
