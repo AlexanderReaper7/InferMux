@@ -25,10 +25,17 @@ The user's choices, 2026-10-03:
 
 The daemon's sandbox changed: with `configDir` set, `ProtectHome=tmpfs` plus `BindReadOnlyPaths=configDir`, instead of `ProtectHome=true`, so a directory under `/home` is visible to it read-only and nothing else in `/home` is.
 
+## Later the same day: the tailnet, and the KV kernels
+
+After the first deployment the user chose two follow-ups.
+
+8. **The UI and the daemon on the tailnet through `tailscale serve`.** Serve terminates HTTPS with Tailscale's certificate on `https://<node>.<tailnet>.ts.net:5010` and `:5001` and proxies to loopback, so neither process binds a routable address, the same reasoning as the T3 server in nixcfg's 2026-09-20 entry. Serve passes the tailnet name through as the `Host` (measured: `Host: nixos-desktop.tail.ts.net:5019` behind a test entry), so the warden file's `trusted_hosts` lists that name, and both guards treat it like a loopback name. Rejected: binding the tailnet address directly, which has no TLS and a runtime address. Whoever can reach the tailnet name can use it, so access is the tailnet ACL's business; the `Tailscale-User-Login` header serve adds is not checked.
+9. **A warning about a missing FlashAttention kernel, and a prebuild button.** The module passes, per runtime macro, the K-V pairs llama.cpp was compiled for (`ui.kvKernels`, from the llama-cpp package's `faPairs`). The UI marks a model whose pair is missing, in the list and in the editor. "Build now" runs `nix build --no-link` on `ui.prebuild` as the user, after `git add --intent-to-add` on the models dir, because a flake built from a git checkout sees only tracked files. It does not switch: the runtime's store path is in the base config, so only a switch puts a new kernel in use, and the switch needs root and nixcfg's commit-and-push first. Rejected for now: compiling every pair (`GGML_CUDA_FA_ALL_QUANTS`), which would make the warning unnecessary at a build cost nobody has measured.
+
 ## What the user gives up, and the open items
 
-- **A browser page on another origin can no longer POST to the models.** The Origin check covers every POST, `/v1/chat/completions` included. Clients that are not browsers send no `Origin` and are unaffected. No such browser client is in use here; a list of allowed origins is the fix if one appears.
-- **The KV-cache kernels are still built from the files.** nixcfg reads the `--cache-type-k`/`-v` pairs out of `models/*.yaml` to decide which FlashAttention quantizations llama.cpp compiles. A pair changed in the UI works at once, but on the slow path until the next rebuild. The UI does not warn about this.
+- **A browser page on another origin can no longer POST to the models.** The Origin check covers every POST, `/v1/chat/completions` included. Clients that are not browsers send no `Origin` and are unaffected. The user's answer is the tailnet (8): llama-swap's own UI and InferMux's are same-origin there.
+- **The KV-cache kernels are still built from the files.** nixcfg reads the `--cache-type-k`/`-v` pairs out of `models/*.yaml` to decide which FlashAttention quantizations llama.cpp compiles. A pair changed in the UI works at once, but on the slow path until a rebuild and a switch; the UI says so (9). Bonsai's runtime is not checked, because its package sets no kernel list.
 - **A reload stops a batch request in flight.** Only interactive traffic delays it.
-- **The UI is only for this user on this host.** It runs as one user and refuses non-loopback hosts. A phone client needs authentication first.
+- **The UI is for this user.** It runs as one user and edits that user's checkout. Over the tailnet (8) it does no authentication of its own.
 - **`infermux-ui` links NVML** through its import of `internal/warden` for the config types and the origin check. It does not call it.

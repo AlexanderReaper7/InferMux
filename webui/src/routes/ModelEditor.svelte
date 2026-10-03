@@ -1,18 +1,22 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { api, basename, gib } from "../lib/api";
+  import { kvWarning } from "../lib/kv";
   import type { GGUF, Model } from "../lib/types";
+  import BuildPanel from "./BuildPanel.svelte";
 
   let {
     model,
     original,
     runtimes,
+    kvKernels,
     ggufs,
     onclose,
   }: {
     model: Model;
     original: string; // "" for a new model
     runtimes: Record<string, string>;
+    kvKernels: Record<string, string[]> | null;
     ggufs: GGUF[];
     onclose: (saved: boolean) => void;
   } = $props();
@@ -23,6 +27,7 @@
   let ttlText = $state(m.ttl === null ? "" : String(m.ttl));
   let error = $state<string | null>(null);
   let saving = $state(false);
+  const warning = $derived(kvWarning(m, kvKernels));
 
   function addFlag() {
     m.flags.push({ name: "--", value: "" });
@@ -163,6 +168,13 @@
     <div class="mt-1 text-xs text-neutral-500">
       --port and --model come from the runtime and GGUF fields. The flags go to the runtime as written, for example
       --ctx-size 262144, -fa on, --cache-type-k q4_0.
+    </div>
+  {/if}
+
+  {#if warning}
+    <div class="mt-4 rounded border border-amber-900 px-3 py-2 text-sm text-amber-300">
+      {warning} Save first: the build reads the pair from the file.
+      <BuildPanel />
     </div>
   {/if}
 

@@ -2,6 +2,9 @@ package muxui
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const base = `macros:
@@ -269,7 +273,7 @@ func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
 
 func TestTheUIAnswersOnLoopbackAndTakesOnlyMarkedSameOriginWrites(t *testing.T) {
 	f := newFixture(t)
-	h := Handler(f.store, &url.URL{Scheme: "http", Host: "127.0.0.1:1"})
+	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"})
 	do := func(method, host string, header map[string]string) int {
 		req := httptest.NewRequest(method, "/api/models/qwen", strings.NewReader("{}"))
 		req.Host = host
@@ -294,6 +298,32 @@ func TestTheUIAnswersOnLoopbackAndTakesOnlyMarkedSameOriginWrites(t *testing.T) 
 	}
 }
 
+func TestTheUIAnswersOnATrustedHostFromTheWardenFile(t *testing.T) {
+	f := newFixture(t)
+	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"})
+	get := func() int {
+		req := httptest.NewRequest("GET", "/api/state", nil)
+		req.Host = "box.tail.ts.net:5010"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := get(); c != http.StatusMisdirectedRequest {
+		t.Fatalf("before trusting it: %d", c)
+	}
+	cfg, err := f.store.Warden()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.TrustedHosts = []string{"box.tail.ts.net"}
+	if err := f.store.SaveWarden(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if c := get(); c != http.StatusOK {
+		t.Fatalf("after trusting it: %d", c)
+	}
+}
+
 func TestTheDaemonSeesInferMuxUIAndNotTheBrowser(t *testing.T) {
 	var got *http.Request
 	daemon := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -302,7 +332,7 @@ func TestTheDaemonSeesInferMuxUIAndNotTheBrowser(t *testing.T) {
 	}))
 	defer daemon.Close()
 	u, _ := url.Parse(daemon.URL)
-	h := Handler(newFixture(t).store, u)
+	h := Handler(newFixture(t).store, &Builder{}, u)
 	req := httptest.NewRequest("POST", "/daemon/warden/forgive", nil)
 	req.Host = "127.0.0.1:5010"
 	req.Header.Set("Origin", "http://127.0.0.1:5010")
@@ -311,5 +341,89 @@ func TestTheDaemonSeesInferMuxUIAndNotTheBrowser(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || got.URL.Path != "/warden/forgive" || got.Header.Get("Origin") != "" || got.Header.Get("X-InferMux") == "" {
 		t.Fatalf("%d %s %v", rec.Code, got.URL.Path, got.Header)
+	}
+}
+
+// --- the prebuild ------------------------------------------------------------
+
+func TestOneBuildAtATimeWithItsLogAndPaths(t *testing.T) {
+	release := make(chan struct{})
+	prepared := 0
+	var got []string
+	b := &Builder{
+		Installable: "flake#unit",
+		Prepare:     func() error { prepared++; return nil },
+		run: func(args []string, stdout, stderr io.Writer) error {
+			got = args
+			fmt.Fprintln(stderr, "building llama-cpp")
+			<-release
+			fmt.Fprintln(stdout, "/nix/store/x-unit")
+			return nil
+		},
+	}
+	if err := b.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(); !errors.Is(err, ErrBuildRunning) {
+		t.Fatalf("second start: %v", err)
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for b.State().Running && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	st := b.State()
+	if st.Running || st.OK == nil || !*st.OK || st.Output != "/nix/store/x-unit" || prepared != 1 {
+		t.Fatalf("state %+v, prepared %d", st, prepared)
+	}
+	if len(st.Log) != 1 || st.Log[0] != "building llama-cpp" {
+		t.Fatalf("log %q", st.Log)
+	}
+	if got[len(got)-1] != "flake#unit" {
+		t.Fatalf("args %q", got)
+	}
+}
+
+func TestAFailedPrepareIsAFailedBuild(t *testing.T) {
+	ran := false
+	b := &Builder{
+		Installable: "flake#unit",
+		Prepare:     func() error { return errors.New("git add: no") },
+		run:         func([]string, io.Writer, io.Writer) error { ran = true; return nil },
+	}
+	b.Start()
+	for b.State().Running {
+		time.Sleep(time.Millisecond)
+	}
+	if st := b.State(); ran || st.OK == nil || *st.OK || st.Error != "git add: no" {
+		t.Fatalf("ran %v, state %+v", ran, st)
+	}
+}
+
+func TestIntentToAddMakesANewModelVisibleToGit(t *testing.T) {
+	f := newFixture(t)
+	repo := filepath.Dir(f.store.ModelsDir)
+	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "start"}} {
+		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s", args, out)
+		}
+	}
+	m := f.model(t, "qwen")
+	m.Name = "fresh"
+	if err := f.store.SaveModel("", m); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := f.store.git("ls-files", "--", f.store.ModelsDir); strings.Contains(out, "fresh") {
+		t.Fatalf("tracked before: %q", out)
+	}
+	if err := f.store.IntentToAdd(); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := f.store.git("ls-files", "--", f.store.ModelsDir); !strings.Contains(out, "fresh.yaml") {
+		t.Fatalf("not tracked after: %q", out)
+	}
+	// Only the path is recorded: the content is still the user's to commit.
+	if staged, _ := f.store.git("diff", "--cached", "--name-only"); strings.Contains(staged, "fresh") {
+		t.Fatalf("content staged: %q", staged)
 	}
 }

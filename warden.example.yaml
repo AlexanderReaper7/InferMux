@@ -20,6 +20,12 @@ desktop_processes: [cosmic-comp, electron]
 # interactive and never killed. Labels, not secrets. (Default: none.)
 batch_api_keys: [episteme-batch]
 
+# Host names besides localhost, 127.0.0.1 and [::1] that a browser may write
+# on, here and in infermux-ui: the name `tailscale serve` publishes them on,
+# which it passes through as the Host. A name someone else's DNS could point
+# at 127.0.0.1 undoes the rebinding check. (Default: none.)
+trusted_hosts: [host.tailnet.ts.net]
+
 policy:
   # Foreign GPU utilization at or above this is contention.
   gpu_busy_percent: 25

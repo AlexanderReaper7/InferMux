@@ -13,6 +13,9 @@ Claude's working list for InferMux: what is built and shipping but has not been 
 
 ## Not yet verified live
 
+- **The tailnet (0005, 8)**: the UI and the daemon through `tailscale serve` from another device, and a browser write there.
+- **The KV warning and "Build now" (0005, 9)**: a model with a pair the kernels lack, and a build that compiles llama.cpp.
+
 - **An owed unload being paid**: contention lasting past `interactive_recent_seconds` after the last interactive request, and the models unloading then. Covered by `TestAnInteractiveRequestInFlightDefersTheUnload` only.
 - **ComfyUI's `/free` after the idle window**, and the VRAM actually coming back.
 - **The race in 0002**: what ComfyUI does when a job starts loading into a card a model has not yet let go of. 0004 widens it: an interactive request can now keep a model loaded beside a ComfyUI job on purpose.

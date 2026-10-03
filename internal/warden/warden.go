@@ -331,7 +331,7 @@ func (w *Warden) comfyTick(jobs *int, now time.Time) {
 func (w *Warden) Wrap(next http.Handler) http.Handler {
 	api := w.api()
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if refused := guard(r); refused != "" {
+		if refused := w.guard(r); refused != "" {
 			writeJSON(rw, http.StatusForbidden, map[string]string{"detail": refused})
 			return
 		}

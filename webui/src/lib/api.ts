@@ -1,4 +1,4 @@
-import type { GGUF, GitState, Model, UIState, VerdictState, WardenConfig } from "./types";
+import type { BuildState, GGUF, GitState, Model, UIState, VerdictState, WardenConfig } from "./types";
 
 // Every request carries X-InferMux: infermux-ui refuses a write without it,
 // and a page from another origin cannot add it.
@@ -30,6 +30,8 @@ export const api = {
   ggufs: () => call<GGUF[]>("GET", "/api/gguf"),
   saveWarden: (cfg: WardenConfig) => call<WardenConfig>("PUT", "/api/warden", cfg),
   git: () => call<GitState>("GET", "/api/git"),
+  build: () => call<BuildState>("GET", "/api/build"),
+  startBuild: () => call<BuildState>("POST", "/api/build"),
   commit: (message: string) => call<{ commit: string }>("POST", "/api/git/commit", { message }),
 
   verdict: () => call<VerdictState>("GET", "/daemon/warden/verdict"),

@@ -44,6 +44,13 @@ type Config struct {
 	// authentication of its own.
 	BatchAPIKeys []string `yaml:"batch_api_keys" json:"batch_api_keys"`
 
+	// TrustedHosts are host names, besides the loopback ones, on which a
+	// browser may write: the name `tailscale serve` answers on, which it
+	// passes through as the Host. Nobody can point a DNS name of the tailnet
+	// at a page of theirs, which is what keeps this from undoing the
+	// rebinding check (0005).
+	TrustedHosts []string `yaml:"trusted_hosts" json:"trusted_hosts"`
+
 	Policy    Policy     `yaml:"policy" json:"policy"`
 	Consumers []Consumer `yaml:"consumers" json:"consumers"`
 }

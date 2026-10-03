@@ -212,6 +212,28 @@ func TestWritesFromAnotherOriginAndUnmarkedControlsAreRefused(t *testing.T) {
 	}
 }
 
+func TestATrustedHostTakesBrowserWritesAfterAReload(t *testing.T) {
+	h := newHarness(t, nil)
+	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {}))
+	ts := map[string]string{"Host": "box.tail.ts.net:5001", "Origin": "https://box.tail.ts.net:5001"}
+	if rec := postHost(handler, "/v1/chat/completions", ts); rec.Code != http.StatusForbidden {
+		t.Fatalf("untrusted tailnet name got %d", rec.Code)
+	}
+	cfg := h.w.config()
+	cfg.TrustedHosts = []string{"Box.tail.ts.net."}
+	h.w.Reload(cfg)
+	if rec := postHost(handler, "/v1/chat/completions", ts); rec.Code != http.StatusOK {
+		t.Fatalf("trusted tailnet name got %d", rec.Code)
+	}
+	other := map[string]string{"Host": "box.tail.ts.net:5001", "Origin": "https://evil.example"}
+	if rec := postHost(handler, "/v1/chat/completions", other); rec.Code != http.StatusForbidden {
+		t.Fatalf("another origin on the trusted name got %d", rec.Code)
+	}
+	if rec := postHost(handler, "/v1/chat/completions", map[string]string{"Host": "evil.ts.net", "Origin": "https://evil.ts.net"}); rec.Code != http.StatusForbidden {
+		t.Fatalf("another tailnet name got %d", rec.Code)
+	}
+}
+
 // postHost is post, with a Host header setting the request's host.
 func postHost(handler http.Handler, path string, header map[string]string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"qwen"}`))

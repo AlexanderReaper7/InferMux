@@ -6,7 +6,7 @@
   let path = $state("");
   let error = $state<string | null>(null);
   let saved = $state(false);
-  let lists = $state({ our_units: "", desktop_processes: "", batch_api_keys: "" });
+  let lists = $state({ our_units: "", desktop_processes: "", batch_api_keys: "", trusted_hosts: "" });
 
   async function load() {
     try {
@@ -18,6 +18,7 @@
         our_units: (cfg.our_units ?? []).join("\n"),
         desktop_processes: (cfg.desktop_processes ?? []).join("\n"),
         batch_api_keys: (cfg.batch_api_keys ?? []).join("\n"),
+        trusted_hosts: (cfg.trusted_hosts ?? []).join("\n"),
       };
     } catch (e) {
       error = (e as Error).message;
@@ -40,6 +41,7 @@
       our_units: lines(lists.our_units),
       desktop_processes: lines(lists.desktop_processes),
       batch_api_keys: lines(lists.batch_api_keys),
+      trusted_hosts: lines(lists.trusted_hosts),
     };
     try {
       await api.saveWarden(body);
@@ -103,6 +105,14 @@
           <span class="text-xs text-neutral-500">Requests with one are batch; all others are yours.</span>
         </label>
       </div>
+      <label class="mt-4 flex flex-col gap-1">
+        <span class="label">Trusted hosts</span>
+        <textarea class="h-16 font-mono text-sm" bind:value={lists.trusted_hosts}></textarea>
+        <span class="text-xs text-neutral-500"
+          >Names besides loopback that the UI and the daemon answer browsers on, such as the tailnet name tailscale serve
+          uses.</span
+        >
+      </label>
       <label class="mt-4 flex flex-col gap-1">
         <span class="label">ComfyUI URL, empty for none</span>
         <input bind:value={cfg.comfyui_url} />

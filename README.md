@@ -58,6 +58,10 @@ services.infermux = {
 
 Then open http://127.0.0.1:5010. A model's command is edited as runtime, GGUF and flags when it has the form `${runtime} --port ${PORT} --model <file> <flags>`, and as text otherwise. Every save is validated with llama-swap's loader first. The Changes tab commits the files to the repository they live in, when asked; it never pushes.
 
+Both answer on loopback names only, plus the warden file's `trusted_hosts`. To reach them from another device, publish them with `tailscale serve --bg --https=5010 http://127.0.0.1:5010` (and 5001) and add the node's tailnet name to `trusted_hosts`.
+
+With `ui.kvKernels` set, the UI marks a model whose K-V cache pair has no compiled FlashAttention kernel, which llama.cpp runs by converting the cache to f16 on every decode step. `ui.prebuild` adds a "Build now" button that runs `nix build` on that installable as the user, ahead of the switch that puts the new kernels in use.
+
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
 
 ## Talk to it
@@ -78,7 +82,7 @@ curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/cancel-batch
 curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/comfyui/free
 ```
 
-A manual pause or resume holds until the warden's own verdict changes, then the warden takes over again. A browser POST from another origin, or to a name that is not loopback, gets 403.
+A manual pause or resume holds until the warden's own verdict changes, then the warden takes over again. A browser POST from another origin, or to a name that is neither loopback nor in `trusted_hosts`, gets 403.
 
 A batch client marks its requests with its key, as `Authorization: Bearer <key>` or `x-api-key: <key>`. While the verdict is pause such a request gets:
 

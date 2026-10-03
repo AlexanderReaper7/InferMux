@@ -76,6 +76,34 @@ in
         default = [ ];
         description = "Directories the UI offers GGUF files from.";
       };
+      kvKernels = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+        default = { };
+        example = {
+          llama-server = [
+            "q4_0-q4_0"
+            "q8_0-q8_0"
+            "f16-f16"
+            "bf16-bf16"
+          ];
+        };
+        description = ''
+          Per runtime macro, the K-V cache pairs its FlashAttention kernels
+          were compiled for. The UI warns about a model whose pair is missing,
+          which llama.cpp runs by converting the cache to f16 on every decode
+          step. A runtime not listed is not checked.
+        '';
+      };
+      prebuild = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = ''/home/alice/nixcfg#nixosConfigurations.host.config.systemd.units."infermux.service".unit'';
+        description = ''
+          A flake installable the UI's "Build now" button builds as the user,
+          ahead of a switch: what the daemon's runtimes come from. null hides
+          the button. Nothing is switched.
+        '';
+      };
     };
 
     warden = lib.mkOption {
@@ -185,23 +213,34 @@ in
       description = "InferMux web UI";
       wantedBy = [ "default.target" ];
       unitConfig.ConditionUser = cfg.ui.user;
-      path = [ pkgs.git ];
+      path = [
+        pkgs.git
+        config.nix.package
+      ];
       serviceConfig = {
-        ExecStart = lib.escapeShellArgs [
-          "${cfg.package}/bin/infermux-ui"
-          "-listen"
-          cfg.ui.listen
-          "-daemon"
-          "http://${cfg.listen}"
-          "-models-dir"
-          modelsDir
-          "-warden-config"
-          wardenFile
-          "-base-config"
-          baseConfig
-          "-gguf-dirs"
-          (lib.concatStringsSep "," cfg.ui.ggufDirs)
-        ];
+        ExecStart = lib.escapeShellArgs (
+          [
+            "${cfg.package}/bin/infermux-ui"
+            "-listen"
+            cfg.ui.listen
+            "-daemon"
+            "http://${cfg.listen}"
+            "-models-dir"
+            modelsDir
+            "-warden-config"
+            wardenFile
+            "-base-config"
+            baseConfig
+            "-gguf-dirs"
+            (lib.concatStringsSep "," cfg.ui.ggufDirs)
+            "-kv-kernels"
+            (pkgs.writeText "kv-kernels.json" (builtins.toJSON cfg.ui.kvKernels))
+          ]
+          ++ lib.optionals (cfg.ui.prebuild != null) [
+            "-prebuild"
+            cfg.ui.prebuild
+          ]
+        );
         Restart = "always";
         RestartSec = 5;
       };

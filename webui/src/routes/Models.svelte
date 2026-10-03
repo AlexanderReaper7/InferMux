@@ -2,6 +2,8 @@
   import { api, basename, gib } from "../lib/api";
   import { live } from "../lib/live.svelte";
   import type { GGUF, Model, UIState } from "../lib/types";
+  import { kvPair, kvWarning } from "../lib/kv";
+  import BuildPanel from "./BuildPanel.svelte";
   import ModelEditor from "./ModelEditor.svelte";
 
   let ui = $state<UIState | null>(null);
@@ -37,6 +39,7 @@
     return m;
   }
 
+  const slow = $derived(ui ? ui.models.filter((m) => kvWarning(m, ui!.kv_kernels)) : []);
   const unused = $derived(ggufs.filter((g) => !g.used_by.length && !g.path.includes("mmproj")));
 </script>
 
@@ -49,6 +52,7 @@
     model={editing.model}
     original={editing.original}
     runtimes={ui.runtimes}
+    kvKernels={ui.kv_kernels}
     {ggufs}
     onclose={(saved) => {
       editing = null;
@@ -61,6 +65,17 @@
     <button class="btn-primary ml-auto" onclick={() => (editing = { model: copyFlags(blank()), original: "" })}>New model</button>
   </div>
 
+  {#if slow.length}
+    <div class="card mb-4 border-amber-900">
+      <div class="text-sm text-amber-300">
+        {slow.map((m) => m.name).join(", ")}: no FlashAttention kernel for {[...new Set(slow.map(kvPair))].join(", ")}. The cache
+        is converted to f16 on every decode step, about a quarter slower at 32k context, until a rebuild compiles the
+        kernel and a switch puts it in use. The rebuild reads the pairs from the model files.
+      </div>
+      <BuildPanel />
+    </div>
+  {/if}
+
   <div class="card">
     <table class="w-full text-sm">
       <thead class="text-left text-neutral-500">
@@ -72,6 +87,7 @@
       <tbody>
         {#each ui.models as m (m.name)}
           {@const state = live.state?.models[m.name]}
+          {@const warning = kvWarning(m, ui.kv_kernels)}
           <tr class="cursor-pointer border-t border-neutral-900 hover:bg-neutral-900" onclick={() => (editing = { model: m, original: m.name })}>
             <td class="py-2">
               <div>{m.name}</div>
@@ -80,7 +96,7 @@
             <td class="text-neutral-400">{m.raw ? "text" : m.runtime}</td>
             <td class="text-neutral-400">{m.raw ? "" : basename(m.gguf)}</td>
             <td>{flag(m, "--ctx-size") || flag(m, "-c")}</td>
-            <td>{flag(m, "--cache-type-k") || flag(m, "-ctk")}</td>
+            <td class={warning ? "text-amber-400" : ""} title={warning ?? ""}>{kvPair(m)}{warning ? " ⚠" : ""}</td>
             <td class={state ? "text-sky-300" : "text-neutral-600"}>{state ?? "stopped"}</td>
           </tr>
         {/each}

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,8 @@ func main() {
 	wardenFile := flag.String("warden-config", "", "the daemon's -warden-config")
 	baseConfig := flag.String("base-config", "", "the daemon's -config: the runtimes' macros and global settings")
 	ggufDirs := flag.String("gguf-dirs", "", "comma-separated directories to look for .gguf files in")
+	kvKernels := flag.String("kv-kernels", "", "a JSON file: per runtime macro, the K-V cache pairs with a FlashAttention kernel")
+	prebuild := flag.String("prebuild", "", "a flake installable the UI may build ahead of a switch; empty hides the button")
 	flag.Parse()
 
 	if *modelsDir == "" || *wardenFile == "" || *baseConfig == "" {
@@ -38,8 +41,19 @@ func main() {
 			store.GGUFDirs = append(store.GGUFDirs, d)
 		}
 	}
+	if *kvKernels != "" {
+		data, err := os.ReadFile(*kvKernels)
+		if err == nil {
+			err = json.Unmarshal(data, &store.KVKernels)
+		}
+		if err != nil {
+			slog.Error("bad -kv-kernels", "error", err)
+			os.Exit(2)
+		}
+	}
+	build := &muxui.Builder{Installable: *prebuild, Prepare: store.IntentToAdd}
 	slog.Info("infermux-ui listening", "address", "http://"+*listen, "daemon", *daemon, "models-dir", *modelsDir)
-	if err := http.ListenAndServe(*listen, muxui.Handler(store, daemonURL)); err != nil {
+	if err := http.ListenAndServe(*listen, muxui.Handler(store, build, daemonURL)); err != nil {
 		slog.Error("infermux-ui stopped", "error", err)
 		os.Exit(1)
 	}

@@ -25,6 +25,9 @@ type Store struct {
 	WardenFile string   // the warden's -warden-config
 	BaseConfig string   // llama-swap's -config, from Nix: the runtimes' macros and global settings
 	GGUFDirs   []string // where to look for model files
+	// KVKernels is, per runtime macro, the K-V cache pairs its FlashAttention
+	// kernels were compiled for. A runtime missing here is not checked.
+	KVKernels map[string][]string
 
 	mu sync.Mutex
 }
@@ -241,6 +244,17 @@ func (s *Store) Warden() (warden.Config, error) {
 	return warden.LoadConfig(s.WardenFile)
 }
 
+// TrustedHosts is the warden file's trusted_hosts, read on every request so a
+// change applies without a restart. A file that does not load trusts only
+// loopback.
+func (s *Store) TrustedHosts() []string {
+	cfg, err := s.Warden()
+	if err != nil {
+		return nil
+	}
+	return cfg.TrustedHosts
+}
+
 // SaveWarden writes every setting out, defaults included, keeping the file's
 // leading comment.
 func (s *Store) SaveWarden(cfg warden.Config) error {
@@ -341,6 +355,14 @@ type GitState struct {
 	Branch  string   `json:"branch"`
 	Changes []string `json:"changes"` // `git status --porcelain` lines
 	Diff    string   `json:"diff"`
+}
+
+// IntentToAdd marks new model files with `git add -N`, so a flake built
+// from the repository sees them; Nix copies only what git tracks. The files'
+// content stays unstaged, and Commit adds it as before.
+func (s *Store) IntentToAdd() error {
+	_, err := s.git("add", "--intent-to-add", "--", s.ModelsDir)
+	return err
 }
 
 func (s *Store) paths() []string { return []string{s.ModelsDir, s.WardenFile} }

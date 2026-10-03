@@ -189,16 +189,16 @@ func (w *Warden) waitingLocked() []string {
 // send. CORS keeps such a page from reading an answer, not from sending a
 // simple POST, so a page open in Firefox could otherwise unload the models or
 // pause Episteme. A browser write has to come from InferMux's own origin on a
-// loopback name: a page that rebinds its own DNS name to 127.0.0.1 is same
-// origin, but not loopback by name. Clients that are not browsers send no
+// loopback name or a trusted host: a page that rebinds its own DNS name to
+// 127.0.0.1 is same origin, but neither. Clients that are not browsers send no
 // Origin and pass. /warden/ writes also need X-InferMux, which no page can add
 // without a preflight that llama-swap's CORS settings refuse (0005).
-func guard(r *http.Request) string {
+func (w *Warden) guard(r *http.Request) string {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return ""
 	}
-	if refused := SameLoopbackOrigin(r); refused != "" {
+	if refused := SameOrigin(r, w.config().TrustedHosts); refused != "" {
 		return refused
 	}
 	if strings.HasPrefix(r.URL.Path, "/warden/") && r.Header.Get("X-InferMux") == "" {
@@ -207,9 +207,9 @@ func guard(r *http.Request) string {
 	return ""
 }
 
-// SameLoopbackOrigin is guard's origin rule, shared with infermux-ui: no
-// Origin, or the request's own origin on localhost, 127.0.0.1 or [::1].
-func SameLoopbackOrigin(r *http.Request) string {
+// SameOrigin is guard's origin rule, shared with infermux-ui: no Origin, or
+// the request's own origin on a known host.
+func SameOrigin(r *http.Request, trusted []string) string {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return ""
@@ -217,15 +217,30 @@ func SameLoopbackOrigin(r *http.Request) string {
 	if origin != "http://"+r.Host && origin != "https://"+r.Host {
 		return "cross-origin writes are refused: " + origin
 	}
-	host, _, err := net.SplitHostPort(r.Host)
+	if !KnownHost(r.Host, trusted) {
+		return "browser writes are only taken on a loopback name or a trusted host, not " + r.Host
+	}
+	return ""
+}
+
+// KnownHost is true for localhost, 127.0.0.1, [::1] and the trusted names,
+// with or without a port.
+func KnownHost(hostport string, trusted []string) bool {
+	host, _, err := net.SplitHostPort(hostport)
 	if err != nil {
-		host = r.Host
+		host = hostport
 	}
-	switch strings.Trim(host, "[]") {
+	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
+	switch host {
 	case "localhost", "127.0.0.1", "::1":
-		return ""
+		return true
 	}
-	return "browser writes are only taken on a loopback name, not " + r.Host
+	for _, t := range trusted {
+		if strings.EqualFold(host, strings.TrimSuffix(t, ".")) {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Warden) controls(mux *http.ServeMux) {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -25,7 +24,7 @@ var dist embed.FS
 //	/api/...     the files, through Store
 //	/daemon/...  the daemon at Daemon, with X-InferMux added
 //	/            the web app
-func Handler(store *Store, daemon *url.URL) http.Handler {
+func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/state", func(rw http.ResponseWriter, r *http.Request) {
@@ -45,9 +44,10 @@ func Handler(store *Store, daemon *url.URL) http.Handler {
 			return
 		}
 		reply(rw, map[string]any{
-			"models":   models,
-			"runtimes": runtimes,
-			"warden":   wcfg,
+			"models":     models,
+			"runtimes":   runtimes,
+			"warden":     wcfg,
+			"kv_kernels": store.KVKernels,
 			"paths": map[string]any{
 				"models_dir": store.ModelsDir, "warden_file": store.WardenFile,
 				"base_config": store.BaseConfig, "gguf_dirs": store.GGUFDirs,
@@ -102,6 +102,16 @@ func Handler(store *Store, daemon *url.URL) http.Handler {
 		}
 		reply(rw, cfg)
 	})
+	mux.HandleFunc("GET /api/build", func(rw http.ResponseWriter, r *http.Request) {
+		reply(rw, build.State())
+	})
+	mux.HandleFunc("POST /api/build", func(rw http.ResponseWriter, r *http.Request) {
+		if err := build.Start(); err != nil {
+			writeJSON(rw, http.StatusConflict, map[string]string{"detail": err.Error()})
+			return
+		}
+		reply(rw, build.State())
+	})
 	mux.HandleFunc("GET /api/git", func(rw http.ResponseWriter, r *http.Request) {
 		st, err := store.Git()
 		if err != nil {
@@ -145,7 +155,7 @@ func Handler(store *Store, daemon *url.URL) http.Handler {
 		files.ServeHTTP(rw, r)
 	})
 
-	return guardUI(mux)
+	return guardUI(store, mux)
 }
 
 // daemonProxy passes /daemon/<path> to the daemon. The browser's Origin is
@@ -164,23 +174,19 @@ func daemonProxy(daemon *url.URL) http.Handler {
 	}
 }
 
-// guardUI answers only on a loopback name, which a page rebinding its own DNS
-// name to 127.0.0.1 cannot use, and takes a write only from its own origin
-// with X-InferMux, which no other page can add without a refused preflight.
-func guardUI(next http.Handler) http.Handler {
+// guardUI answers only on a loopback name or one of the warden file's
+// trusted_hosts, which a page rebinding its own DNS name to 127.0.0.1 cannot
+// use, and takes a write only from its own origin with X-InferMux, which no
+// other page can add without a refused preflight.
+func guardUI(store *Store, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.Host)
-		if err != nil {
-			host = r.Host
-		}
-		switch strings.Trim(host, "[]") {
-		case "localhost", "127.0.0.1", "::1":
-		default:
-			http.Error(rw, "infermux-ui answers on a loopback name only", http.StatusMisdirectedRequest)
+		trusted := store.TrustedHosts()
+		if !warden.KnownHost(r.Host, trusted) {
+			http.Error(rw, "infermux-ui answers on a loopback name or a trusted host only", http.StatusMisdirectedRequest)
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			if refused := warden.SameLoopbackOrigin(r); refused != "" {
+			if refused := warden.SameOrigin(r, trusted); refused != "" {
 				http.Error(rw, refused, http.StatusForbidden)
 				return
 			}

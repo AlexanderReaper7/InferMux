@@ -49,7 +49,7 @@
           {live.state.action}{live.state.manual ? " (by hand)" : ""}
         </span>
       {/if}
-      <a class="text-neutral-400 hover:text-neutral-200" href="http://127.0.0.1:5001/ui/" target="_blank" rel="noreferrer"
+      <a class="text-neutral-400 hover:text-neutral-200" href={`${location.protocol}//${location.hostname}:5001/ui/`} target="_blank" rel="noreferrer"
         >llama-swap ↗</a
       >
     </div>

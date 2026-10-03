@@ -119,6 +119,7 @@ export interface WardenConfig {
   our_units: string[] | null;
   desktop_processes: string[] | null;
   batch_api_keys: string[] | null;
+  trusted_hosts: string[] | null;
   policy: Policy;
   consumers: Consumer[] | null;
 }
@@ -127,6 +128,8 @@ export interface UIState {
   models: Model[];
   runtimes: Record<string, string>;
   warden: WardenConfig;
+  // Per runtime macro, the K-V pairs with a compiled FlashAttention kernel.
+  kv_kernels: Record<string, string[]> | null;
   paths: { models_dir: string; warden_file: string; base_config: string; gguf_dirs: string[] };
 }
 
@@ -141,4 +144,16 @@ export interface GitState {
   branch: string;
   changes: string[];
   diff: string;
+}
+
+export interface BuildState {
+  configured: boolean;
+  installable: string;
+  running: boolean;
+  started: string | null;
+  ended: string | null;
+  ok: boolean | null;
+  error: string;
+  output: string;
+  log: string[] | null;
 }
