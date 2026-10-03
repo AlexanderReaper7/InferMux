@@ -23,11 +23,12 @@
   }
   let tab = $state<Tab>(fromHash());
 
-  // llama-swap's own UI, from the daemon's origin. Its fetches are absolute
-  // paths on that origin, so it is framed rather than proxied (0005).
-  let daemonPort = $state("5001");
-  api.state().then((s) => (daemonPort = s.daemon_port || daemonPort), () => {});
-  const swapUI = $derived(`${location.protocol}//${location.hostname}:${daemonPort}/ui/`);
+  // llama-swap's own UI. Its fetches are absolute paths, so it is framed
+  // rather than proxied under this origin (0005): from infermux-ui's second
+  // listener, which adds the UI's key, or else from the daemon, which asks.
+  let swapPort = $state("5001");
+  api.state().then((s) => (swapPort = s.swap_port || s.daemon_port || swapPort), () => {});
+  const swapUI = $derived(`${location.protocol}//${location.hostname}:${swapPort}/ui/`);
   // Mounted on first visit and kept, so a tab switch does not reload it and
   // lose a playground conversation.
   let swapOpened = $state(false);

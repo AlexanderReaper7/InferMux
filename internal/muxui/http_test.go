@@ -22,7 +22,7 @@ type ui struct {
 
 func newUI(t *testing.T) ui {
 	f := newFixture(t)
-	return ui{t: t, f: f, h: Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:5001"}, "")}
+	return ui{t: t, f: f, h: Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:5001"}, "", "")}
 }
 
 // call sends what the web app sends: a loopback Host, its own Origin on a
@@ -64,7 +64,7 @@ func TestStateCarriesWhatTheAppReads(t *testing.T) {
 	u.f.store.KVKernels = map[string][]string{"llama-server": {"f16-f16"}}
 	code, out := u.call("GET", "/api/state", nil)
 	u.want(code, 200, out, "state")
-	for _, key := range []string{"models", "runtimes", "warden", "kv_kernels", "daemon_port", "paths"} {
+	for _, key := range []string{"models", "runtimes", "warden", "kv_kernels", "daemon_port", "swap_port", "paths"} {
 		if _, ok := out[key]; !ok {
 			t.Errorf("no %s in %v", key, out)
 		}

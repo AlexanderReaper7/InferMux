@@ -163,6 +163,7 @@ export interface UIState {
   // Per runtime macro, the K-V pairs with a compiled FlashAttention kernel.
   kv_kernels: Record<string, string[]> | null;
   daemon_port: string;
+  swap_port: string;
   // Whether a model may name its files on Hugging Face (-hf-dir is set).
   hf: boolean;
   paths: { models_dir: string; warden_file: string; base_config: string; gguf_dirs: string[] };

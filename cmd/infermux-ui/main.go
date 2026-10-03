@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 func main() {
 	muxui.GPGShim()
 	listen := flag.String("listen", "127.0.0.1:5010", "address to serve the UI on")
+	swapListen := flag.String("swap-listen", "", "address to serve llama-swap's own UI on, with the UI's key, so the llama-swap tab asks for none; empty frames the daemon")
 	daemon := flag.String("daemon", "http://127.0.0.1:5001", "the InferMux daemon")
 	keySecrets := flag.String("key-secrets", "", "the sops file a new key's plaintext goes to, so it can be read again")
 	sops := flag.String("sops", "sops", "the sops binary")
@@ -74,8 +76,22 @@ func main() {
 		store.HF = &muxui.Downloads{Dir: *hfDir, TokenFile: *hfTokenFile}
 	}
 	build := &muxui.Builder{Installable: *prebuild, Prepare: store.IntentToAdd}
-	slog.Info("infermux-ui listening", "address", "http://"+*listen, "daemon", *daemon, "models-dir", *modelsDir)
-	if err := http.ListenAndServe(*listen, muxui.Handler(store, build, daemonURL, daemonKey)); err != nil {
+	swapPort := ""
+	if *swapListen != "" {
+		_, port, err := net.SplitHostPort(*swapListen)
+		if err != nil {
+			slog.Error("bad -swap-listen", "error", err)
+			os.Exit(2)
+		}
+		swapPort = port
+		go func() {
+			err := http.ListenAndServe(*swapListen, muxui.SwapHandler(store, daemonURL, daemonKey))
+			slog.Error("infermux-ui's llama-swap listener stopped", "error", err)
+			os.Exit(1)
+		}()
+	}
+	slog.Info("infermux-ui listening", "address", "http://"+*listen, "swap", *swapListen, "daemon", *daemon, "models-dir", *modelsDir)
+	if err := http.ListenAndServe(*listen, muxui.Handler(store, build, daemonURL, daemonKey, swapPort)); err != nil {
 		slog.Error("infermux-ui stopped", "error", err)
 		os.Exit(1)
 	}

@@ -218,7 +218,7 @@ def main():
         stdout=daemon_log, stderr=subprocess.STDOUT, env=env,
     )
     ui = subprocess.Popen(
-        [BIN / "infermux-ui", "-listen", "127.0.0.1:5110", "-daemon", DAEMON, "-models-dir", models,
+        [BIN / "infermux-ui", "-listen", "127.0.0.1:5110", "-swap-listen", "127.0.0.1:5111", "-daemon", DAEMON, "-models-dir", models,
          "-warden-config", cfg / "warden.yaml", "-base-config", base, "-gguf-dirs", gguf, "-kv-kernels", kv,
          "-daemon-key-file", root / "ui-key", "-key-secrets", cfg / "secrets" / "infermux.yaml",
          "-age-identity", identity],
@@ -256,8 +256,9 @@ def git(cfg, *args):
 def run(cfg, models, gguf):
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
-        # The browser's key for llama-swap's UI, given at the Basic prompt.
-        page = browser.new_page(viewport={"width": 2560, "height": 1300}, color_scheme="dark", http_credentials={"username": "me", "password": "my-key"})
+        # No key: llama-swap's UI comes through infermux-ui's second listener,
+        # which adds the UI's, so a Basic prompt would fail the tab's check.
+        page = browser.new_page(viewport={"width": 2560, "height": 1300}, color_scheme="dark")
         errors = []
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
         page.on("console", lambda m: m.type == "error" and errors.append(f"console: {m.text}"))
@@ -524,7 +525,8 @@ def run(cfg, models, gguf):
         # --- llama-swap's own UI --------------------------------------------------------
         open_tab("llama-swap")
         frame = page.frame_locator('iframe[title="llama-swap"]')
-        check("the llama-swap tab shows its UI", visible(frame.get_by_text("Activity"), 15))
+        check("the llama-swap tab shows its UI without a key", visible(frame.get_by_text("Activity"), 15))
+        check("the tab frames infermux-ui's llama-swap listener", ":5111/ui/" in (page.locator('iframe[title="llama-swap"]').get_attribute("src") or ""))
         check("its model list has ours", visible(frame.get_by_text(re.compile("^alph")), 5))
         shot("llama-swap")
         open_tab("status")

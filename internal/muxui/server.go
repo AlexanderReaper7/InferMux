@@ -24,7 +24,10 @@ var dist embed.FS
 //	/api/...     the files, through Store
 //	/daemon/...  the daemon, with X-InferMux and the UI's own key added
 //	/            the web app
-func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) http.Handler {
+//
+// swapPort is SwapHandler's port, which the llama-swap tab frames; empty
+// frames the daemon itself, which asks for a key.
+func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey, swapPort string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/state", func(rw http.ResponseWriter, r *http.Request) {
@@ -58,6 +61,7 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 			// The browser reaches llama-swap's own UI on this port, on whatever
 			// host it reached infermux-ui: loopback, or the tailnet name.
 			"daemon_port": daemon.Port(),
+			"swap_port":   swapPort,
 			"paths": map[string]any{
 				"models_dir": store.ModelsDir, "warden_file": store.WardenFile,
 				"base_config": store.BaseConfig, "gguf_dirs": store.GGUFDirs,
@@ -290,6 +294,45 @@ func daemonProxy(daemon *url.URL, key string) http.Handler {
 		},
 		FlushInterval: -1, // llama-swap's /api/events is a stream
 	}
+}
+
+// SwapHandler is llama-swap's own UI without a key prompt: every request
+// goes to the daemon with the UI's key, as /daemon/ does. It is a listener of
+// its own because that UI fetches absolute paths, /api/ among them, which
+// are this UI's. The browser gets the daemon's guard here, since the daemon
+// sees only this process: a known Host, and a write or WebSocket from this
+// origin only. No X-InferMux is added, so /warden/ writes stay refused, as
+// they are to a browser on the daemon.
+func SwapHandler(store *Store, daemon *url.URL, key string) http.Handler {
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(daemon)
+			pr.Out.Header.Del("Origin")
+			pr.Out.Header.Del("Referer")
+			for _, h := range []string{"Authorization", "X-Api-Key"} {
+				pr.Out.Header.Del(h)
+			}
+			if key != "" {
+				pr.Out.Header.Set("Authorization", "Bearer "+key)
+			}
+		},
+		FlushInterval: -1,
+	}
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		trusted := store.TrustedHosts()
+		if !warden.KnownHost(r.Host, trusted) {
+			http.Error(rw, "infermux-ui answers on a loopback name or a trusted host only", http.StatusMisdirectedRequest)
+			return
+		}
+		write := r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions
+		if write || strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			if refused := warden.SameOrigin(r, trusted); refused != "" {
+				http.Error(rw, refused, http.StatusForbidden)
+				return
+			}
+		}
+		proxy.ServeHTTP(rw, r)
+	})
 }
 
 // guardUI answers only on a loopback name or one of the warden file's

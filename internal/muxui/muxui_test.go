@@ -276,7 +276,7 @@ func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
 
 func TestTheUIAnswersOnLoopbackAndTakesOnlyMarkedSameOriginWrites(t *testing.T) {
 	f := newFixture(t)
-	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "")
+	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "", "")
 	do := func(method, host string, header map[string]string) int {
 		req := httptest.NewRequest(method, "/api/models/qwen", strings.NewReader("{}"))
 		req.Host = host
@@ -303,7 +303,7 @@ func TestTheUIAnswersOnLoopbackAndTakesOnlyMarkedSameOriginWrites(t *testing.T) 
 
 func TestTheUIAnswersOnATrustedHostFromTheWardenFile(t *testing.T) {
 	f := newFixture(t)
-	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "")
+	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "", "")
 	get := func() int {
 		req := httptest.NewRequest("GET", "/api/state", nil)
 		req.Host = "box.tail.ts.net:5010"
@@ -335,7 +335,7 @@ func TestTheDaemonSeesInferMuxUIAndNotTheBrowser(t *testing.T) {
 	}))
 	defer daemon.Close()
 	u, _ := url.Parse(daemon.URL)
-	h := Handler(newFixture(t).store, &Builder{}, u, "ui-key")
+	h := Handler(newFixture(t).store, &Builder{}, u, "ui-key", "")
 	req := httptest.NewRequest("POST", "/daemon/warden/forgive", nil)
 	req.Host = "127.0.0.1:5010"
 	req.Header.Set("Origin", "http://127.0.0.1:5010")
@@ -349,6 +349,50 @@ func TestTheDaemonSeesInferMuxUIAndNotTheBrowser(t *testing.T) {
 	}
 	if got.Header.Get("Authorization") != "Bearer ui-key" || got.Header.Get("X-Api-Key") != "" {
 		t.Fatalf("the daemon saw the key %q, %q, not the UI's", got.Header.Get("Authorization"), got.Header.Get("X-Api-Key"))
+	}
+}
+
+// llama-swap's own UI on its listener: the daemon gets the UI's key and none
+// of the browser's, and the browser gets the daemon's guard.
+func TestTheLlamaSwapListenerAddsTheKeyAndKeepsTheGuard(t *testing.T) {
+	var got *http.Request
+	daemon := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		got = r
+	}))
+	defer daemon.Close()
+	u, _ := url.Parse(daemon.URL)
+	h := SwapHandler(newFixture(t).store, u, "ui-key")
+	send := func(method, path, host, origin string, header map[string]string) int {
+		got = nil
+		req := httptest.NewRequest(method, path, nil)
+		req.Host = host
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := send("POST", "/api/models/unload", "127.0.0.1:5011", "http://127.0.0.1:5011", map[string]string{"Authorization": "Bearer the-browsers", "X-Api-Key": "the-browsers"}); c != 200 || got == nil {
+		t.Fatalf("a same-origin write: %d", c)
+	}
+	if got.URL.Path != "/api/models/unload" || got.Header.Get("Authorization") != "Bearer ui-key" || got.Header.Get("X-Api-Key") != "" || got.Header.Get("Origin") != "" || got.Header.Get("X-InferMux") != "" {
+		t.Fatalf("the daemon saw %s %v", got.URL.Path, got.Header)
+	}
+	if c := send("GET", "/ui/", "127.0.0.1:5011", "", nil); c != 200 || got == nil {
+		t.Fatalf("the page: %d", c)
+	}
+	for name, c := range map[string]int{
+		"another origin's write":     send("POST", "/v1/chat/completions", "127.0.0.1:5011", "https://evil.example", nil),
+		"another origin's WebSocket": send("GET", "/v1/realtime", "127.0.0.1:5011", "https://evil.example", map[string]string{"Upgrade": "websocket", "Connection": "Upgrade"}),
+		"a rebound name":             send("GET", "/ui/", "evil.example:5011", "", nil),
+	} {
+		if c < 400 || got != nil {
+			t.Errorf("%s: %d, reached the daemon %v", name, c, got != nil)
+		}
 	}
 }
 
@@ -439,7 +483,7 @@ func TestIntentToAddMakesANewModelVisibleToGit(t *testing.T) {
 func TestAModelSaveMakesTheLastBuildStale(t *testing.T) {
 	f := newFixture(t)
 	b := &Builder{Installable: "flake#unit", run: func([]string, io.Writer, io.Writer) error { return nil }}
-	h := Handler(f.store, b, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "")
+	h := Handler(f.store, b, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "", "")
 	b.Start()
 	for b.State().Running {
 		time.Sleep(time.Millisecond)

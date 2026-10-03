@@ -97,6 +97,15 @@ in
         type = lib.types.str;
         default = "127.0.0.1:5010";
       };
+      swapListen = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = "127.0.0.1:5011";
+        description = ''
+          Where infermux-ui serves llama-swap's own UI with its daemon key, so
+          the llama-swap tab asks for none. null: the tab frames the daemon,
+          which asks for a key.
+        '';
+      };
       ggufDirs = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
@@ -372,6 +381,10 @@ in
               (lib.concatStringsSep "," cfg.ui.ggufDirs)
               "-kv-kernels"
               (pkgs.writeText "kv-kernels.json" (builtins.toJSON cfg.ui.kvKernels))
+            ]
+            ++ lib.optionals (cfg.ui.swapListen != null) [
+              "-swap-listen"
+              cfg.ui.swapListen
             ]
             ++ lib.optionals (cfg.ui.prebuild != null) [
               "-prebuild"
