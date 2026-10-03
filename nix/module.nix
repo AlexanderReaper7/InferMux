@@ -75,6 +75,18 @@ in
       '';
     };
 
+    codexPrompt = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      example = lib.literalExpression ''"''${pkgs.codex.src}/codex-rs/models-manager/prompt.md"'';
+      description = ''
+        The prompt.md of the Codex that uses this host. With it, Codex's own
+        request for `/v1/models` gets the models in its catalog format, with
+        their context windows and reasoning efforts; Codex refuses a catalog
+        entry without these base instructions. Decision 0007.
+      '';
+    };
+
     ui = {
       enable = lib.mkEnableOption "infermux-ui, the web UI, as a user service of `ui.user`";
       user = lib.mkOption {
@@ -199,6 +211,10 @@ in
           ++ lib.optionals (cfg.configDir != null) [
             "-config-dir"
             modelsDir
+          ]
+          ++ lib.optionals (cfg.codexPrompt != null) [
+            "-codex-prompt"
+            cfg.codexPrompt
           ]
         );
         Restart = "always";

@@ -17,20 +17,21 @@ This file is rules and navigation only.
 |---|---|
 | `internal/warden/` | ours: config, policy, probe, ComfyUI, consumers, request classes, the loop and `/warden/*` |
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
+| `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, and Codex's catalog format (0007) |
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
 | `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005) |
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build |
-| `internal/server/warden.go` | ours: the two accessors the warden needs on llama-swap's server |
+| `internal/server/warden.go` | ours: the accessors the warden needs on llama-swap's server |
 | `llama-swap.go` | upstream's `main`, plus one flag and one call |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/muxui/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/muxui cmd internal/server/warden.go
+nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/catalog internal/muxui cmd internal/server/warden.go
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
 

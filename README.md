@@ -95,6 +95,10 @@ Retry-After: 300
 {"error":{"type":"gpu_yielded","message":"batch requests wait while the GPU is yielded: ComfyUI has 1 job queued"}}
 ```
 
+## What a client learns about a model
+
+Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_modalities`, `reasoning_efforts` and `default_effort`, derived from its command and its GGUF's chat template, never declared. Codex's own request, which carries `client_version`, gets the same models as a Codex catalog when the module's `codexPrompt` is set. [0007](docs/decisions/0007-model-settings-derived.md).
+
 ## The other host
 
 `remotes` in warden.yaml lists the other InferMux hosts, each with the file holding this host's key for it. InferMux reads each one's `/v1/models` every 30 s and lists its models as `<host>/<model>`. A request for one is forwarded with the client's own key, so the other host applies that key's class and allow list. A host that stops answering keeps its models listed and fails a request for them at once with 502. Off the machine, traffic goes over HTTPS with `tailscale serve`.
@@ -117,7 +121,7 @@ Nothing expires. A warden that dies while a consumer is paused leaves it paused,
 ## Develop
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/muxui/
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/
 nix develop -c go test -short ./internal/server/ .
 nix build                              # runs the tests as part of the build
 ```

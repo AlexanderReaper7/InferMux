@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/mostlygeek/llama-swap/internal/catalog"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/remote"
 	"github.com/mostlygeek/llama-swap/internal/server"
@@ -21,6 +23,10 @@ import (
 
 // InferMux's additions to main live here, so llama-swap.go carries only the
 // flag and one call, and a merge from upstream rarely touches them.
+
+// Declared here rather than in llama-swap.go, so upstream's main stays as it
+// is; flag.Parse there reads it all the same.
+var flagCodexPrompt = flag.String("codex-prompt", "", "InferMux: Codex's prompt.md, for the catalog Codex asks /v1/models for (internal/catalog)")
 
 // activeModels reaches the models through whichever server is active. A config
 // reload replaces the server; the warden, like perfMon, outlives it.
@@ -70,8 +76,9 @@ func (a activeModels) Qualify(r *http.Request) (string, bool) {
 // (0005). The warden's file and the keys reload at once: that only moves
 // settings.
 //
-// The request goes warden (key, class, never-kill), then remote (another
-// host's model goes there), then llama-swap (0006).
+// The request goes warden (key, class, never-kill), then Codex's catalog,
+// then remote (another host's model goes there), then the derived settings
+// on the local models, then llama-swap (0006).
 func startWarden(path, configPath, configDir string, httpServer *http.Server, active func() *server.Server, log *logmon.Monitor) {
 	if path == "" {
 		return
@@ -86,14 +93,21 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		_, _, ok := active().QualifyModel(model)
 		return ok
 	}
-	remotes := &remoteHolder{next: httpServer.Handler, local: local, log: log}
+	command := func(id string) ([]string, bool) { return active().ModelCommand(id) }
+	enriched := catalog.Enrich(httpServer.Handler, &catalog.Deriver{}, command)
+	remotes := &remoteHolder{next: enriched, local: local, log: log}
 	if err := remotes.set(ctx, cfg.Remotes); err != nil {
 		slog.Error("failed to set up the remote hosts", "warden-config", path, "error", err)
 		os.Exit(1)
 	}
 	w := warden.New(cfg, activeModels{server: active, host: cfg.Host, remote: remotes}, log)
 	w.ReportRemotes(func() any { return remotes.get().State() })
-	httpServer.Handler = w.Wrap(remotes)
+	codex, err := catalog.Codex(remotes, *flagCodexPrompt)
+	if err != nil {
+		slog.Error("failed to read Codex's prompt", "codex-prompt", *flagCodexPrompt, "error", err)
+		os.Exit(1)
+	}
+	httpServer.Handler = w.Wrap(codex)
 	w.Start()
 
 	reloadWarden := func() {

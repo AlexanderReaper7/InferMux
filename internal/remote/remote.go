@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -68,10 +69,13 @@ type Router struct {
 
 type host struct {
 	Host
-	target  *url.URL
-	proxy   *httputil.ReverseProxy
-	repoll  chan struct{}
-	models  []string
+	target *url.URL
+	proxy  *httputil.ReverseProxy
+	repoll chan struct{}
+	models []string
+	// facts is each model's meta.infermux as that host derived it: its
+	// context window, input and reasoning efforts (internal/catalog).
+	facts   map[string]json.RawMessage
 	online  bool
 	checked time.Time
 	lastErr string
@@ -95,7 +99,7 @@ func New(hosts []Host, next http.Handler, local func(string) bool, stateDir stri
 			return nil, fmt.Errorf("remote %s: %q is not a URL", h.Name, h.URL)
 		}
 		hs := &host{Host: h, target: target, repoll: make(chan struct{}, 1)}
-		hs.models = rt.loadState(h.Name)
+		hs.models, hs.facts = rt.loadState(h.Name)
 		hs.proxy = rt.newProxy(hs)
 		rt.hosts[h.Name] = hs
 		rt.names = append(rt.names, h.Name)
@@ -128,7 +132,7 @@ func (rt *Router) watch(ctx context.Context, h *host) {
 // Poll reads one host's list now.
 func (rt *Router) Poll(name string) {
 	h := rt.hosts[name]
-	models, err := rt.fetch(h)
+	models, facts, err := rt.fetch(h)
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	wasOnline, first := h.online, h.checked.IsZero()
@@ -144,9 +148,9 @@ func (rt *Router) Poll(name string) {
 	if !wasOnline {
 		rt.log.Infof("Remote %s online, %d models", name, len(models))
 	}
-	if !slices.Equal(models, h.models) {
-		h.models = models
-		rt.saveState(name, models)
+	if !slices.Equal(models, h.models) || !maps.EqualFunc(facts, h.facts, func(a, b json.RawMessage) bool { return bytes.Equal(a, b) }) {
+		h.models, h.facts = models, facts
+		rt.saveState(name, models, facts)
 	}
 }
 
@@ -154,19 +158,19 @@ func (rt *Router) Poll(name string) {
 // "model", its peers "peer", and the remote models this package adds
 // "remote". Taking only the first is what keeps two hosts from re-exporting
 // each other's lists.
-func (rt *Router) fetch(h *host) ([]string, error) {
+func (rt *Router) fetch(h *host) ([]string, map[string]json.RawMessage, error) {
 	req, err := http.NewRequest(http.MethodGet, h.target.String()+"/v1/models", nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+h.Key)
 	resp, err := rt.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("/v1/models answered %s", resp.Status)
+		return nil, nil, fmt.Errorf("/v1/models answered %s", resp.Status)
 	}
 	var list struct {
 		Data []struct {
@@ -175,20 +179,25 @@ func (rt *Router) fetch(h *host) ([]string, error) {
 				LlamaSwap struct {
 					Type string `json:"type"`
 				} `json:"llamaswap"`
+				InferMux json.RawMessage `json:"infermux"`
 			} `json:"meta"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		return nil, fmt.Errorf("/v1/models: %w", err)
+		return nil, nil, fmt.Errorf("/v1/models: %w", err)
 	}
 	models := []string{}
+	facts := map[string]json.RawMessage{}
 	for _, m := range list.Data {
 		if m.Meta.LlamaSwap.Type == "model" && m.ID != "" {
 			models = append(models, m.ID)
+			if len(m.Meta.InferMux) > 0 {
+				facts[m.ID] = m.Meta.InferMux
+			}
 		}
 	}
 	slices.Sort(models)
-	return slices.Compact(models), nil
+	return slices.Compact(models), facts, nil
 }
 
 // Target is where a request goes: the host and the model's name there. False
@@ -347,6 +356,9 @@ func (rt *Router) listModels(rw http.ResponseWriter, r *http.Request) {
 	for _, name := range rt.names {
 		h := rt.hosts[name]
 		for _, model := range h.models {
+			infermux := map[string]any{}
+			json.Unmarshal(h.facts[model], &infermux)
+			infermux["host"], infermux["online"] = name, h.online || h.checked.IsZero()
 			data = append(data, map[string]any{
 				"id":       name + "/" + model,
 				"object":   "model",
@@ -354,7 +366,7 @@ func (rt *Router) listModels(rw http.ResponseWriter, r *http.Request) {
 				"name":     model + " on " + name,
 				"meta": map[string]any{
 					"llamaswap": map[string]any{"type": "remote", "host": name},
-					"infermux":  map[string]any{"host": name, "online": h.online || h.checked.IsZero()},
+					"infermux":  infermux,
 				},
 			})
 		}
@@ -401,26 +413,37 @@ func (rt *Router) statePath(name string) string {
 	return filepath.Join(rt.stateDir, "remote-"+name+".json")
 }
 
-func (rt *Router) loadState(name string) []string {
+// state is what is kept of a host between restarts. A file from before the
+// facts were kept is a bare list of names.
+type state struct {
+	Models []string                   `json:"models"`
+	Facts  map[string]json.RawMessage `json:"facts"`
+}
+
+func (rt *Router) loadState(name string) ([]string, map[string]json.RawMessage) {
 	if rt.stateDir == "" {
-		return nil
+		return nil, nil
 	}
 	raw, err := os.ReadFile(rt.statePath(name))
 	if err != nil {
-		return nil
+		return nil, nil
+	}
+	var st state
+	if json.Unmarshal(raw, &st) == nil {
+		return st.Models, st.Facts
 	}
 	var models []string
 	if json.Unmarshal(raw, &models) != nil {
-		return nil
+		return nil, nil
 	}
-	return models
+	return models, nil
 }
 
-func (rt *Router) saveState(name string, models []string) {
+func (rt *Router) saveState(name string, models []string, facts map[string]json.RawMessage) {
 	if rt.stateDir == "" {
 		return
 	}
-	raw, _ := json.Marshal(models)
+	raw, _ := json.Marshal(state{Models: models, Facts: facts})
 	tmp := rt.statePath(name) + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o644); err == nil {
 		err = os.Rename(tmp, rt.statePath(name))

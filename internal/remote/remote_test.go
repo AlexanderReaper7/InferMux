@@ -31,12 +31,14 @@ type fakeHost struct {
 	down   atomic.Bool // drops every connection, as a host that is off
 	mu     sync.Mutex
 	models []string
-	seen   []*http.Request
-	bodies []string
+	// context is every model's derived context window (internal/catalog).
+	context int
+	seen    []*http.Request
+	bodies  []string
 }
 
 func newFakeHost(t *testing.T, models ...string) *fakeHost {
-	f := &fakeHost{models: models}
+	f := &fakeHost{models: models, context: 8192}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if f.down.Load() {
 			conn, _, _ := rw.(http.Hijacker).Hijack()
@@ -47,7 +49,7 @@ func newFakeHost(t *testing.T, models ...string) *fakeHost {
 		f.mu.Lock()
 		f.seen = append(f.seen, r)
 		f.bodies = append(f.bodies, string(body))
-		models := f.models
+		models, context := f.models, f.context
 		f.mu.Unlock()
 		switch {
 		case r.URL.Path == "/v1/models":
@@ -57,7 +59,10 @@ func newFakeHost(t *testing.T, models ...string) *fakeHost {
 			}
 			data := []any{}
 			for _, m := range models {
-				data = append(data, map[string]any{"id": m, "meta": map[string]any{"llamaswap": map[string]any{"type": "model"}}})
+				data = append(data, map[string]any{"id": m, "meta": map[string]any{
+					"llamaswap": map[string]any{"type": "model"},
+					"infermux":  map[string]any{"context_window": context, "reasoning_efforts": []string{"none", "medium"}},
+				}})
 			}
 			data = append(data,
 				map[string]any{"id": "openrouter/cloud", "meta": map[string]any{"llamaswap": map[string]any{"type": "peer"}}},
@@ -335,5 +340,61 @@ func TestAWebSocketIsPassedThrough(t *testing.T) {
 	}
 	if req, _ := zbox.last(); req.URL.Query().Get("model") != "voice" {
 		t.Fatalf("model there: %q", req.URL.RawQuery)
+	}
+}
+
+// infermuxOf is meta.infermux of one model in a /v1/models answer.
+func infermuxOf(t *testing.T, rt http.Handler, id string) map[string]any {
+	t.Helper()
+	var list struct {
+		Data []struct {
+			ID   string
+			Meta struct{ InferMux map[string]any }
+		}
+	}
+	json.Unmarshal(send(rt, "GET", "/v1/models", "", nil).Body.Bytes(), &list)
+	for _, m := range list.Data {
+		if m.ID == id {
+			return m.Meta.InferMux
+		}
+	}
+	t.Fatalf("%s is not listed", id)
+	return nil
+}
+
+func TestTheOtherHostsSettingsComeWithItsModels(t *testing.T) {
+	state := t.TempDir()
+	zbox := newFakeHost(t, "embed")
+	rt, _ := newRouter(t, state, Host{Name: "zbox", URL: zbox.URL, Key: "host-key"})
+	if m := infermuxOf(t, rt, "zbox/embed"); m["context_window"] != 8192.0 || m["host"] != "zbox" || m["online"] != true {
+		t.Fatalf("listed %v", m)
+	}
+
+	// A change in the settings alone is kept, and read back after a restart
+	// while the host is down.
+	zbox.mu.Lock()
+	zbox.context = 4096
+	zbox.mu.Unlock()
+	rt.Poll("zbox")
+	zbox.Close()
+	again, err := New([]Host{{Name: "zbox", URL: zbox.URL, Key: "host-key"}}, &local{}, isLocal, state, nopLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again.Poll("zbox")
+	if m := infermuxOf(t, again, "zbox/embed"); m["context_window"] != 4096.0 || m["online"] != false {
+		t.Fatalf("after a restart: %v", m)
+	}
+}
+
+func TestAListKeptBeforeTheSettingsIsStillRead(t *testing.T) {
+	state := t.TempDir()
+	os.WriteFile(filepath.Join(state, "remote-zbox.json"), []byte(`["embed"]`), 0o644)
+	rt, err := New([]Host{{Name: "zbox", URL: "http://127.0.0.1:1", Key: "host-key"}}, &local{}, isLocal, state, nopLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := infermuxOf(t, rt, "zbox/embed"); m["host"] != "zbox" {
+		t.Fatalf("listed %v", m)
 	}
 }

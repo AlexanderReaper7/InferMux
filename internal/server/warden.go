@@ -51,3 +51,14 @@ func (s *Server) UpstreamModel(path string) (string, bool) {
 	_, real, _, found := swaputil.FindModelInPath(s.cfg, path)
 	return real, found
 }
+
+// ModelCommand is a local model's command, macros expanded, split as
+// llama-swap runs it. internal/catalog derives the model's settings from it.
+func (s *Server) ModelCommand(id string) ([]string, bool) {
+	mc, ok := s.cfg.Models[id]
+	if !ok {
+		return nil, false
+	}
+	args, err := mc.SanitizedCommand()
+	return args, err == nil
+}
