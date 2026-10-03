@@ -54,6 +54,7 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 			"runtimes":   runtimes,
 			"warden":     wcfg,
 			"kv_kernels": store.KVKernels,
+			"hf":         store.HF != nil,
 			// The browser reaches llama-swap's own UI on this port, on whatever
 			// host it reached infermux-ui: loopback, or the tailnet name.
 			"daemon_port": daemon.Port(),
@@ -94,6 +95,13 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 		}
 		build.Outdated()
 		reply(rw, map[string]bool{"deleted": true})
+	})
+	mux.HandleFunc("GET /api/downloads", func(rw http.ResponseWriter, r *http.Request) {
+		if store.HF == nil {
+			reply(rw, []Download{})
+			return
+		}
+		reply(rw, store.HF.State())
 	})
 	mux.HandleFunc("PUT /api/peers/{name}", func(rw http.ResponseWriter, r *http.Request) {
 		var body struct {

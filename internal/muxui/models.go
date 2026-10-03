@@ -41,6 +41,8 @@ type Model struct {
 	Description string   `json:"description"`
 	Unlisted    bool     `json:"unlisted"`
 	Comment     string   `json:"comment"` // the file's leading comment
+	// HF names the GGUF and mmproj on Hugging Face; nil for local files.
+	HF *HFSource `json:"hf"`
 }
 
 // Flag is one argument of the runtime. A nil Value is a switch.
@@ -294,12 +296,15 @@ func decodeModel(f modelFile, name string, n *yaml.Node) Model {
 		Aliases     []string `yaml:"aliases"`
 		Description string   `yaml:"description"`
 		Unlisted    bool     `yaml:"unlisted"`
+		Metadata    struct {
+			HF *HFSource `yaml:"hf"`
+		} `yaml:"metadata"`
 	}
 	n.Decode(&raw)
 	m := Model{
 		Name: name, File: f.name, Cmd: raw.Cmd, TTL: raw.TTL, Aliases: raw.Aliases,
 		Description: raw.Description, Unlisted: raw.Unlisted,
-		Comment: leadingComment(f.doc),
+		Comment: leadingComment(f.doc), HF: raw.Metadata.HF,
 	}
 	if m.Aliases == nil {
 		m.Aliases = []string{}
@@ -385,6 +390,47 @@ func encodeModel(n *yaml.Node, m Model) error {
 	} else {
 		deleteKey(n, "unlisted")
 	}
+	// metadata.hf only; any other metadata is the user's and stays.
+	if m.HF != nil {
+		hf := &yaml.Node{}
+		if err := hf.Encode(m.HF); err != nil {
+			return err
+		}
+		setValue(mappingValue(n, "metadata", true), "hf", hf)
+	} else if meta := mappingValue(n, "metadata", false); meta != nil {
+		deleteKey(meta, "hf")
+		if len(meta.Content) == 0 {
+			deleteKey(n, "metadata")
+		}
+	}
+	return nil
+}
+
+// fromHF points the command at the files m.HF names, under downloads' Dir.
+func fromHF(m *Model, downloads *Downloads) error {
+	if m.HF.Model == "" {
+		return fmt.Errorf("a Hugging Face source needs its model file")
+	}
+	for _, src := range m.HF.sources() {
+		if err := checkHF(src); err != nil {
+			return err
+		}
+	}
+	if m.Raw {
+		return fmt.Errorf("a command edited as text cannot take its files from Hugging Face")
+	}
+	m.GGUF = downloads.Path(m.HF.Model)
+	if m.HF.MMProj == "" {
+		return nil
+	}
+	mmproj := downloads.Path(m.HF.MMProj)
+	for i, f := range m.Flags {
+		if f.Name == "--mmproj" || f.Name == "-mm" {
+			m.Flags[i].Value = &mmproj
+			return nil
+		}
+	}
+	m.Flags = append(m.Flags, Flag{Name: "--mmproj", Value: &mmproj})
 	return nil
 }
 

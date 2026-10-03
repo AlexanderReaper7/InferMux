@@ -157,6 +157,25 @@ in
           pinentry, where a signed commit would otherwise fail. Decision 0008.
         '';
       };
+      hfDir = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/srv/models/hf";
+        description = ''
+          Where a model's files named on Hugging Face (`metadata.hf`) are
+          downloaded to, as org/repo/file.gguf, writable by `ui.user`. The
+          daemon must be able to read it. null: a model cannot name one.
+          Decision 0012.
+        '';
+      };
+      hfTokenFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          A file, readable by `ui.user`, with a Hugging Face token for gated
+          and private repos. Sent to huggingface.co only, not to its CDN.
+        '';
+      };
 
       prebuild = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -320,6 +339,14 @@ in
           ++ lib.optionals (cfg.ui.daemonKeyFile != null) [
             "-daemon-key-file"
             cfg.ui.daemonKeyFile
+          ]
+          ++ lib.optionals (cfg.ui.hfDir != null) [
+            "-hf-dir"
+            cfg.ui.hfDir
+          ]
+          ++ lib.optionals (cfg.ui.hfTokenFile != null) [
+            "-hf-token-file"
+            cfg.ui.hfTokenFile
           ]
           ++ lib.optionals cfg.ui.commitPassphrase [
             "-commit-passphrase"

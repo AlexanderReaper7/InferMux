@@ -11,6 +11,7 @@
     runtimes,
     kvKernels,
     ggufs,
+    hf,
     onclose,
   }: {
     model: Model;
@@ -18,6 +19,7 @@
     runtimes: Record<string, string>;
     kvKernels: Record<string, string[]> | null;
     ggufs: GGUF[];
+    hf: boolean; // whether this UI downloads from Hugging Face
     onclose: (saved: boolean) => void;
   } = $props();
 
@@ -25,6 +27,8 @@
   let m = $state<Model>(untrack(() => structuredClone($state.snapshot(model)) as Model));
   let aliases = $state(m.aliases.join(", "));
   let ttlText = $state(m.ttl === null ? "" : String(m.ttl));
+  let hfModel = $state(m.hf?.model ?? "");
+  let hfMMProj = $state(m.hf?.mmproj ?? "");
   let error = $state<string | null>(null);
   let saving = $state(false);
   const warning = $derived(kvWarning(m, kvKernels));
@@ -43,6 +47,7 @@
         .map((a) => a.trim())
         .filter(Boolean),
       ttl: ttlText.trim() === "" ? null : Number(ttlText),
+      hf: hfModel.trim() || hfMMProj.trim() ? { model: hfModel.trim(), mmproj: hfMMProj.trim() || undefined } : null,
     };
     try {
       if (original) await api.saveModel(original, body);
@@ -124,17 +129,37 @@
           {/each}
         </select>
       </label>
-      <label class="flex flex-col gap-1">
-        <span class="label">GGUF</span>
-        <select bind:value={m.gguf}>
-          {#if m.gguf && !ggufs.some((g) => g.path === m.gguf)}
-            <option value={m.gguf}>{m.gguf} (not found)</option>
-          {/if}
-          {#each ggufs as g}
-            <option value={g.path}>{g.path} ({gib(g.bytes)}){g.used_by.length ? ` used by ${g.used_by.join(", ")}` : ""}</option>
-          {/each}
-        </select>
-      </label>
+      {#if hf}
+        <label class="flex flex-col gap-1">
+          <span class="label">From Hugging Face, org/repo/file.gguf</span>
+          <input class="font-mono" bind:value={hfModel} placeholder="empty for a local GGUF" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="label">Its mmproj, org/repo/file.gguf</span>
+          <input class="font-mono" bind:value={hfMMProj} placeholder="none" />
+        </label>
+      {/if}
+      {#if hfModel.trim()}
+        <div class="flex flex-col gap-1 text-sm text-neutral-400">
+          <span class="label">GGUF</span>
+          <span>
+            Downloaded on save from main, and again on a later save if main has changed. --model{hfMMProj.trim() ? " and --mmproj" : ""}
+            point at the download.
+          </span>
+        </div>
+      {:else}
+        <label class="flex flex-col gap-1">
+          <span class="label">GGUF</span>
+          <select bind:value={m.gguf}>
+            {#if m.gguf && !ggufs.some((g) => g.path === m.gguf)}
+              <option value={m.gguf}>{m.gguf} (not found)</option>
+            {/if}
+            {#each ggufs as g}
+              <option value={g.path}>{g.path} ({gib(g.bytes)}){g.used_by.length ? ` used by ${g.used_by.join(", ")}` : ""}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
     </div>
 
     <table class="mt-4 w-full text-sm">

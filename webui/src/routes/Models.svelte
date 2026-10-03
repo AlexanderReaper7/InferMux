@@ -6,6 +6,7 @@
   import BuildPanel from "./BuildPanel.svelte";
   import ModelEditor from "./ModelEditor.svelte";
   import Peers from "./Peers.svelte";
+  import Downloads from "./Downloads.svelte";
 
   let ui = $state<UIState | null>(null);
   let ggufs = $state<GGUF[]>([]);
@@ -30,7 +31,7 @@
   function blank(path = ""): Model {
     const runtime = Object.keys(ui?.runtimes ?? {})[0] ?? "";
     const name = path ? basename(path).replace(/\.gguf$/, "") : "";
-    return { name, file: "", runtime, gguf: path, flags: [], raw: false, cmd: "", ttl: null, aliases: [], description: "", unlisted: false, comment: "" };
+    return { name, file: "", runtime, gguf: path, flags: [], raw: false, cmd: "", ttl: null, aliases: [], description: "", unlisted: false, comment: "", hf: null };
   }
 
   // A new model starts from the flags of an existing one on the same runtime.
@@ -55,6 +56,7 @@
     runtimes={ui.runtimes}
     kvKernels={ui.kv_kernels}
     {ggufs}
+    hf={ui.hf}
     onclose={(saved) => {
       editing = null;
       if (saved) load();
@@ -104,6 +106,8 @@
       </tbody>
     </table>
   </div>
+
+  <Downloads />
 
   <Peers peers={ui.peers} onsaved={load} />
 

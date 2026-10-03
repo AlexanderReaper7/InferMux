@@ -41,6 +41,9 @@ type Store struct {
 	// empty: for a host with no session to show a pinentry (0008).
 	CommitPassphrase bool
 	GPG              string
+	// HF downloads a model's files from Hugging Face when it is saved (0012).
+	// Nil: a model cannot name a Hugging Face source.
+	HF *Downloads
 
 	mu sync.Mutex
 }
@@ -81,7 +84,17 @@ func (s *Store) SaveModel(original string, m Model) error {
 	if err := checkName(m.Name); err != nil {
 		return err
 	}
-	if !m.Raw && filepath.IsAbs(m.GGUF) {
+	if m.HF != nil && len(m.HF.sources()) == 0 {
+		m.HF = nil
+	}
+	if m.HF != nil {
+		if s.HF == nil {
+			return fmt.Errorf("this UI has no download directory for Hugging Face files")
+		}
+		if err := fromHF(&m, s.HF); err != nil {
+			return err
+		}
+	} else if !m.Raw && filepath.IsAbs(m.GGUF) {
 		if _, err := os.Stat(m.GGUF); err != nil {
 			return fmt.Errorf("the GGUF: %w", err)
 		}
@@ -154,7 +167,13 @@ func (s *Store) SaveModel(original string, m Model) error {
 		return err
 	}
 	changed[target] = out
-	return s.apply(files, changed)
+	if err := s.apply(files, changed); err != nil {
+		return err
+	}
+	if m.HF != nil {
+		s.HF.Fetch(m.HF.sources()...)
+	}
+	return nil
 }
 
 func (s *Store) DeleteModel(name string) error {

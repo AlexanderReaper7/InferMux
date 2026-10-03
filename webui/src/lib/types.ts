@@ -105,6 +105,8 @@ export interface Model {
   description: string;
   unlisted: boolean;
   comment: string;
+  // The GGUF and mmproj on Hugging Face, as org/repo/file.gguf; null for local files.
+  hf: { model: string; mmproj?: string } | null;
 }
 
 export interface Consumer {
@@ -161,7 +163,20 @@ export interface UIState {
   // Per runtime macro, the K-V pairs with a compiled FlashAttention kernel.
   kv_kernels: Record<string, string[]> | null;
   daemon_port: string;
+  // Whether a model may name its files on Hugging Face (-hf-dir is set).
+  hf: boolean;
   paths: { models_dir: string; warden_file: string; base_config: string; gguf_dirs: string[] };
+}
+
+export interface Download {
+  source: string;
+  path: string;
+  total: number;
+  done: number;
+  running: boolean;
+  error?: string;
+  result?: "downloaded" | "up to date";
+  updated: string;
 }
 
 export interface GGUF {

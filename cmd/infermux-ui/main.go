@@ -31,6 +31,8 @@ func main() {
 	prebuild := flag.String("prebuild", "", "a flake installable the UI may build ahead of a switch; empty hides the button")
 	commitPassphrase := flag.Bool("commit-passphrase", false, "Commit asks for the passphrase of the user's GPG key and signs in gpg's loopback mode, for a host with no session to show a pinentry")
 	gpg := flag.String("gpg", "gpg", "the gpg binary, for -commit-passphrase")
+	hfDir := flag.String("hf-dir", "", "where a model's Hugging Face files are downloaded to; empty: models cannot name one")
+	hfTokenFile := flag.String("hf-token-file", "", "a file holding a Hugging Face token, for gated and private repos")
 	flag.Parse()
 
 	if *modelsDir == "" || *wardenFile == "" || *baseConfig == "" {
@@ -67,6 +69,9 @@ func main() {
 			slog.Error("bad -kv-kernels", "error", err)
 			os.Exit(2)
 		}
+	}
+	if *hfDir != "" {
+		store.HF = &muxui.Downloads{Dir: *hfDir, TokenFile: *hfTokenFile}
 	}
 	build := &muxui.Builder{Installable: *prebuild, Prepare: store.IntentToAdd}
 	slog.Info("infermux-ui listening", "address", "http://"+*listen, "daemon", *daemon, "models-dir", *modelsDir)
