@@ -1,45 +1,61 @@
 # CLAUDE.md
 
-llama-warden: who gets the GPU, and who is told to let go of it. One systemd service on the NixOS host that measures what else is using the card, decides whether that other work is at stake, unloads the llama.cpp router, frees an idle ComfyUI, and pushes `pause`/`resume` to its consumers.
+InferMux (llama-warden until 2026-10-03): llama-swap's model router with a GPU warden built in. One systemd service on the NixOS host, on :5001. It starts the model servers on demand, measures what else is using the card, decides whether that other work is at stake, unloads the models, frees an idle ComfyUI, refuses and cancels batch requests, and pushes `pause`/`resume` to its consumers. The user's own requests are never killed.
 
 This file is rules and navigation only.
 
 - [README.md](README.md) is how to run and configure it.
-- [docs/decisions/](docs/decisions/README.md) is why anything is the way it is. **`(0001)` means `docs/decisions/0001-*.md`.** Grep it before changing something that looks arbitrary; add to it when we decide something new.
-- [graphics/README.md](graphics/README.md) is what the mark means.
+- [docs/decisions/](docs/decisions/README.md) is why anything is the way it is. **`(0001)` means `docs/decisions/0001-*.md`.** Grep it before changing something that looks arbitrary; add to it when we decide something new. [0004](docs/decisions/0004-infermux-request-priority.md) is the merge with llama-swap and the request priority.
 - [CLAUDE-TODO.md](CLAUDE-TODO.md) is what is built but not yet watched running. Read it before claiming a path works.
-- [Multiple model routers](docs/decisions/0003-multiple-model-routers.md) records the second runtime, compatibility, and the limit on request coordination.
-- The NixOS configuration that deploys this is `~/Projects/nixcfg` (`modules/nixos/llm.nix` for the router and the warden, `packages/comfyui` for ComfyUI).
+- [AGENTS.md](AGENTS.md) is llama-swap's own guide to its code. Follow it when touching anything outside `internal/warden/` and `infermux.go`.
+- [graphics/README.md](graphics/README.md) is what the mark means.
+- The NixOS configuration that deploys this is `~/Projects/nixcfg` (`modules/nixos/llm.nix` for InferMux and the model presets, `packages/comfyui` for ComfyUI).
 
-## Current state
+## Map
 
-Linux only since 2026-09-28 (0002). The Windows program, its console, tray, launcher and preset, is in git history at `b87f39b`. What was live-verified on Windows (the announcement path into Episteme, 0001) was the push and the decision table, both unchanged by the port. The Linux probe, the router unload and the ComfyUI free are tested but not yet watched deciding anything on the real host. See [CLAUDE-TODO.md](CLAUDE-TODO.md).
+| path | what it is |
+|---|---|
+| `internal/warden/` | ours: config, policy, probe, ComfyUI, consumers, request classes, the loop and `/warden/*` |
+| `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active |
+| `internal/server/warden.go` | ours: the two accessors the warden needs on llama-swap's server |
+| `llama-swap.go` | upstream's `main`, plus one flag and one call |
+| everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
 ## Commands
 
 ```sh
-nix develop -c pytest -q               # 51 tests, no GPU, router or ComfyUI needed
-nix develop -c ruff check src tests
-nix develop -c ruff format --check src tests
-nix build                              # the package; runs the tests too
-nix develop -c python -m warden        # from the checkout, reads ./warden.toml
+nix develop -c go test ./internal/warden/                  # the warden, no GPU or model needed
+nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
+nix develop -c gofmt -l infermux.go internal/warden internal/server/warden.go
+nix build                                                  # the package; runs the three test packages
 
-curl 127.0.0.1:5003/verdict            # what it decided, and who has heard it
-curl 127.0.0.1:5003/resources          # a fresh NVML probe
-journalctl -u llama-warden -f
+curl 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
+curl 127.0.0.1:5001/warden/resources    # a fresh NVML probe
+curl 127.0.0.1:5001/running             # llama-swap: which models are up
+journalctl -u infermux -f
 ```
+
+## Updating llama-swap
+
+```sh
+git fetch upstream --tags            # upstream = https://github.com/mostlygeek/llama-swap
+git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitattributes)
+```
+
+`git config merge.ours.driver true` once per clone, or `.gitattributes` does nothing. Then bump `upstream` and `vendorHash` (and the UI's `npmDepsHash` if `ui/package-lock.json` moved) in `nix/package.nix`, and check `go.mod`'s Go version against nixpkgs.
 
 ## The rules that have to fire without being looked up
 
+- **The user's own request is never killed** (0004). Unmarked is interactive. Do not add a path that cancels, refuses or unloads under an interactive request; the unload waits for `interactive_recent_seconds` of quiet.
+- **Upstream files stay untouched except at the marked hook points** (0004). New behaviour goes in `internal/warden/`, `infermux.go`, or a new file in upstream's package. Editing upstream code is a merge conflict we pay every release.
+- **`internal/warden` imports nothing from llama-swap.** It sees the models through the `Models` interface, which is what keeps it testable without a server and survives a config reload replacing the server.
 - **The machine that measures is the machine that decides** (0001). A threshold that lives in a consumer's config is the thing this project was created to end.
-- **A pause is a message, not a lease.** Nothing expires, so a warden that dies while a consumer is paused leaves it paused. The mitigations are in `consumers.py` and the residual risk is stated in 0001. Do not add a second, quieter mitigation without reading that section; the real fix, if it is ever needed, is the lease.
+- **A pause is a message, not a lease.** Nothing expires, so a warden that dies while a consumer is paused leaves it paused. The residual risk is stated in 0001. Do not add a second, quieter mitigation without reading that section; the real fix, if it is ever needed, is the lease.
 - **An announcement must be idempotent at the other end.** The verdict is re-sent every 300 s, so a consumer that re-stamps `since` on every `pause` erases the one fact its panel shows.
 - **A failed probe leaves the verdict alone, and so does an unreadable ComfyUI queue.** Neither is evidence that the GPU is free.
-- **The router is unloaded on the transition only** (0002). Unloading every tick would fight a client the user chose to let through.
-- **Free VRAM is only read while the router holds no model.** Linux can attribute it now, but the rule was kept, not re-decided (0002). `loading` counts as loaded (0001).
+- **The models are unloaded once per yield** (0002), owed from the transition and paid when interactive traffic is quiet (0004). Unloading every tick would fight a client the user chose to let through.
+- **Free VRAM is only read while no model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001).
 - **ComfyUI is contention, never ours.** It is not in `our_units` and it is not a consumer. It is a tenant the warden watches and frees (0002).
-- **`watch` and `agent` never import each other.** `__main__` wires the probe into the loop, which is what keeps the FastAPI app testable without a GPU and the loop testable without a server.
-- **The HTTP service is read-only.** Starting, stopping and configuring the servers is systemd's and nixcfg's job now.
 
 ## Engineering principles (user feedback, hard)
 

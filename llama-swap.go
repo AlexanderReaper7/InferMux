@@ -124,6 +124,7 @@ func main() {
 	flagVersion := flag.Bool("version", false, "show version and exit")
 	flagWatchConfig := flag.Bool("watch-config", false, "reload config on file change")
 	flagValidate := flag.Bool("validate", false, "validate the config file and exit (without starting the server)")
+	flagWardenConfig := flag.String("warden-config", "", "InferMux: the warden's config, GPU policy and request priority (infermux.go)")
 	flag.Parse()
 
 	if *flagVersion {
@@ -306,6 +307,13 @@ func main() {
 			srv.ServeHTTP(w, r)
 		}),
 	}
+
+	// InferMux: the warden in front of whichever server is active (infermux.go).
+	startWarden(*flagWardenConfig, httpServer, func() *server.Server {
+		activeMu.RLock()
+		defer activeMu.RUnlock()
+		return activeSrv
+	}, proxyLog)
 
 	// reload guards against overlapping reloads triggered by concurrent signals
 	// or file-watcher callbacks.

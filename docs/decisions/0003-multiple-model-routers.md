@@ -1,6 +1,7 @@
 # Multiple model routers
 
 Date: 2026-10-02
+Status: superseded by [0004](0004-infermux-request-priority.md). llama-swap runs both runtimes as one router, one model at a time.
 
 The user chose a separate PrismML server for Bonsai 2 instead of replacing the mainline llama.cpp server, then chose extending the warden instead of making the two chat services mutually exclusive.
 

@@ -1,0 +1,4 @@
+# InferMux's own copies win when llama-swap changes these upstream. Needs
+# `git config merge.ours.driver true` once per clone (CLAUDE.md).
+README.md merge=ours
+CLAUDE.md merge=ours

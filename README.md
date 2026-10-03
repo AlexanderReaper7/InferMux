@@ -1,10 +1,10 @@
-# llama-warden
+# InferMux
 
-Who gets the GPU, and who is told to let go of it.
+One endpoint for the local models, which gives the GPU back when something else needs it, and never kills the prompt the user just sent.
 
-One systemd service on the NixOS host. It watches what else is using the card through NVML, decides whether that other work is at stake, and acts on it. The llama.cpp router is told to unload its models, its consumers are told to pause, and ComfyUI is told to drop its models once it has sat idle. A game or a ComfyUI job is noticed within 5 seconds. The consumers resume five minutes after the GPU goes quiet.
+InferMux is [llama-swap](https://github.com/mostlygeek/llama-swap) with a GPU warden built in. llama-swap starts one model server per request on demand and swaps them one at a time, behind OpenAI and Anthropic compatible APIs. The warden watches the card through NVML. When a game or a ComfyUI job needs it, the warden unloads the model, cancels batch work, tells its consumers to pause, and frees an idle ComfyUI. A request is batch only if it presents a batch API key; everything else is the user's own and is let through, and the model is not unloaded under it.
 
-It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-warden-decides-and-says-so.md)) and a Windows program until 2026-09-28 ([0002](docs/decisions/0002-linux-nvml-router-unload-comfyui.md)).
+It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-warden-decides-and-says-so.md)), a Windows program until 2026-09-28 ([0002](docs/decisions/0002-linux-nvml-router-unload-comfyui.md)), and llama-warden, a Python sidecar to llama.cpp's router, until 2026-10-03 ([0004](docs/decisions/0004-infermux-request-priority.md)).
 
 ## Run it
 
@@ -12,92 +12,80 @@ On NixOS, through the flake's module:
 
 ```nix
 # flake inputs
-llama-warden = {
+infermux = {
   url = "git+https://github.com/AlexanderReaper7/llama-warden";
   inputs.nixpkgs.follows = "nixpkgs";
 };
 
 # a NixOS module
-imports = [ inputs.llama-warden.nixosModules.default ];
-services.llama-warden = {
+imports = [ inputs.infermux.nixosModules.default ];
+services.infermux = {
   enable = true;
-  settings.agent.comfyui_url = "http://127.0.0.1:8188";
+  listen = "127.0.0.1:5001";
+  settings.models.qwen.cmd = "llama-server --port \${PORT} --model /srv/models/qwen.gguf";
+  warden = {
+    comfyui_url = "http://127.0.0.1:8188";
+    batch_api_keys = [ "episteme-batch" ];
+    consumers = [ { name = "episteme"; url = "http://127.0.0.1:8200"; } ];
+  };
 };
 ```
 
 From a checkout:
 
 ```sh
-nix develop -c python -m warden        # reads ./warden.toml
-journalctl -u llama-warden -f          # the service's log
+nix develop -c go run . -config config.yaml -warden-config warden.example.yaml -listen 127.0.0.1:5001
+journalctl -u infermux -f              # the service's log
 ```
 
 ## Configure it
 
-Everything is in [`warden.toml`](warden.toml), or the module's `settings`, which is the same file as an attribute set. Absent or partial is fine, every value has a default, and a fresh clone runs with no consumers and therefore nothing to announce to.
-
-```toml
-[agent]
-router_url = "http://127.0.0.1:5001"   # unloaded on a yield
-additional_router_urls = ["http://127.0.0.1:5004"] # optional second runtime
-comfyui_url = "http://127.0.0.1:8188"  # omit when there is no ComfyUI
-our_units = ["llama-cpp.service", "llama-embed.service"]
-
-[policy]
-gpu_busy_percent = 25.0       # foreign GPU load at or above this is contention
-min_free_vram_mb = 3000       # only read while the router holds no model
-resume_quiet_seconds = 300    # yield at once, come back slowly
-poll_seconds = 5.0
-comfyui_idle_seconds = 600    # empty queue this long, then POST /free
-
-[[consumers]]
-name = "episteme"
-url = "http://127.0.0.1:8200"
-```
+Two files. `-config` is llama-swap's own: models, groups, TTLs. See [config.example.yaml](config.example.yaml). `-warden-config` is the warden's: see [warden.example.yaml](warden.example.yaml), where every key is optional and documented. Without `-warden-config` InferMux is plain llama-swap.
 
 ## Talk to it
 
-Loopback :5003, no auth, read-only.
+Loopback :5001, no auth.
 
 ```sh
-curl http://127.0.0.1:5003/verdict      # what it decided, who has heard it, ComfyUI's idle clock
-curl http://127.0.0.1:5003/status       # which services are listening, the router's models
-curl http://127.0.0.1:5003/resources    # a fresh NVML probe, on purpose
+curl 127.0.0.1:5001/v1/models           # llama-swap: every configured model
+curl 127.0.0.1:5001/running             # llama-swap: which are up
+curl 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
+curl 127.0.0.1:5001/warden/resources    # a fresh NVML probe, on purpose
+```
+
+A batch client marks its requests with its key, as `Authorization: Bearer <key>` or `x-api-key: <key>`. While the verdict is pause such a request gets:
+
+```
+HTTP/1.1 503 Service Unavailable
+Retry-After: 300
+{"error":{"type":"gpu_yielded","message":"batch requests wait while the GPU is yielded: ComfyUI has 1 job queued"}}
 ```
 
 ## What it does on a yield
 
-1. `POST /models/unload` to the router for each model it holds. Once, on the transition. A client that asks for a model during the pause loads it again.
-2. One POST to every configured consumer, repeated every five minutes until it lands:
+1. Cancels every batch request in flight.
+2. Unloads every model, once. If an interactive request is in flight or ended less than `interactive_recent_seconds` ago, the unload waits until it has been quiet that long. A resume forgives an unload still owed.
+3. Sends one POST to every configured consumer, repeated every five minutes until it lands:
 
 ```json
 {"action": "pause", "reason": "ComfyUI has 1 job queued",
- "since": "2026-09-28T18:04:11+00:00", "warden": "llama-warden"}
+ "since": "2026-09-28T18:04:11+00:00", "warden": "infermux"}
 ```
 
 What a consumer does about that is the consumer's business. **The endpoint must be idempotent**: re-announcing `pause` to an already-paused consumer must not re-stamp when the pause began.
 
 Nothing expires. A warden that dies while a consumer is paused leaves it paused, and that trade is argued in [0001](docs/decisions/0001-the-warden-decides-and-says-so.md#push-not-a-lease).
 
-## Layout
-
-| path | what it is |
-|---|---|
-| `src/warden/policy.py` | the decision, and ComfyUI's idle clock. Pure functions. |
-| `src/warden/watch.py` | the loop: measure, decide, unload, free, announce. One thread. |
-| `src/warden/probe.py` | NVML, and which processes are ours by their cgroup. |
-| `src/warden/router.py` | the llama.cpp router: does it hold a model, unload them all. |
-| `src/warden/comfyui.py` | ComfyUI: queue depth, `/free`. |
-| `src/warden/consumers.py` | the push, and what each consumer was last known to accept. |
-| `src/warden/agent.py` | the read-only HTTP service. |
-| `nix/` | the package and the NixOS module. |
-| `graphics/` | the mark, and the generator that emits it. |
-
 ## Develop
 
 ```sh
-nix develop -c pytest -q
-nix develop -c ruff check src tests
-nix develop -c ruff format --check src tests
+nix develop -c go test ./internal/warden/
+nix develop -c go test -short ./internal/server/ .
 nix build                              # runs the tests as part of the build
 ```
+
+The warden is `internal/warden/` and `infermux.go`; the rest is upstream llama-swap, merged rather than vendored. [CLAUDE.md](CLAUDE.md) has the map and how to merge a new llama-swap release.
+
+## License
+
+MIT, as llama-swap ([LICENSE.md](LICENSE.md)).

@@ -1,0 +1,419 @@
+package warden
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Models is the warden's handle on llama-swap's local models. main supplies it
+// over whichever server is active, since a config reload replaces the server
+// but not the warden.
+type Models interface {
+	// Running is every model process that is not stopped, by ID, with its
+	// state. "starting" counts as loaded: a model halfway into VRAM occupies
+	// it as much as a resident one (0001).
+	Running() map[string]string
+	// UnloadAll stops every model and returns the ones that were running.
+	UnloadAll() []string
+}
+
+// Logger is the part of llama-swap's proxy log the warden writes to, so its
+// lines land in the same stream, the UI's proxy log and journald.
+type Logger interface {
+	Infof(format string, args ...any)
+	Warnf(format string, args ...any)
+}
+
+// Warden owns the verdict. Everything else reads it.
+type Warden struct {
+	cfg        Config
+	models     Models
+	log        Logger
+	probe      func() (Resources, error)
+	freshProbe func() (Resources, error)
+	comfyQueue func() *int
+	comfyFree  func() error
+	now        func() time.Time
+
+	traffic   *traffic
+	announcer *announcer
+
+	mu            sync.Mutex
+	verdict       Verdict
+	comfy         ComfyIdle
+	lastResources *Resources
+	probeError    *string
+	lastUnload    []string
+	pendingUnload bool
+	deferLogged   bool
+
+	stop chan struct{}
+	done chan struct{}
+}
+
+// New builds a warden over the given models. It does nothing until Start.
+func New(cfg Config, models Models, log Logger) *Warden {
+	w := &Warden{
+		cfg:        cfg,
+		models:     models,
+		log:        log,
+		probe:      newProbe(cfg),
+		freshProbe: newProbe(cfg),
+		now:        time.Now,
+		announcer:  newAnnouncer(cfg.Consumers, log),
+		verdict:    initialVerdict(),
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
+	}
+	w.traffic = newTraffic(cfg.BatchAPIKeys, func() time.Time { return w.now() })
+	if url := cfg.ComfyUIURL; url != "" {
+		w.comfyQueue = func() *int { return comfyUIQueueDepth(url) }
+		w.comfyFree = func() error { return comfyUIFree(url) }
+	}
+	w.comfy = ComfyIdle{BusyAt: w.now()}
+	return w
+}
+
+// Start runs the loop. A disabled policy measures on request only, announces
+// nothing, and still classifies requests.
+func (w *Warden) Start() {
+	p := w.cfg.Policy
+	if !p.Enabled {
+		w.log.Infof("Warden policy disabled: measuring on request only, announcing nothing")
+		close(w.done)
+		return
+	}
+	names := make([]string, 0, len(w.cfg.Consumers))
+	for _, c := range w.cfg.Consumers {
+		names = append(names, c.Name)
+	}
+	w.log.Infof("Warden watching every %.0fs: busy >= %.0f%%, resume after %ds quiet, no unload within %ds of an interactive request, consumers: %s, ComfyUI: %s",
+		p.PollSeconds, p.GPUBusyPercent, p.ResumeQuietSeconds, p.InteractiveRecentSeconds,
+		orNone(strings.Join(names, ", ")), orNone(w.cfg.ComfyUIURL))
+	go w.run()
+}
+
+func (w *Warden) Stop() {
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+	}
+	<-w.done
+}
+
+func (w *Warden) run() {
+	defer close(w.done)
+	interval := time.Duration(w.cfg.Policy.PollSeconds * float64(time.Second))
+	for {
+		started := time.Now()
+		w.safeTick()
+		wait := max(time.Second, interval-time.Since(started))
+		select {
+		case <-w.stop:
+			return
+		case <-time.After(wait):
+		}
+	}
+}
+
+// safeTick keeps a panicking tick from being the last one.
+func (w *Warden) safeTick() {
+	defer func() {
+		if r := recover(); r != nil {
+			w.log.Warnf("Warden tick failed: %v", r)
+		}
+	}()
+	w.Tick()
+}
+
+// Tick measures once, decides, acts on the models and ComfyUI, and tells
+// whoever needs telling.
+//
+// A failed measurement leaves the verdict alone rather than reading as quiet:
+// a probe that cannot run is not evidence that the GPU is free.
+func (w *Warden) Tick() Verdict {
+	res, err := w.probe()
+	if err != nil {
+		detail := err.Error()
+		w.mu.Lock()
+		w.probeError = &detail
+		v := w.verdict
+		w.mu.Unlock()
+		w.log.Warnf("Warden probe failed, verdict unchanged: %s", detail)
+		return v
+	}
+
+	now := w.now()
+	if w.comfyQueue != nil {
+		res.ComfyUIJobs = w.comfyQueue()
+		w.comfyTick(res.ComfyUIJobs, now)
+	}
+	loaded := len(w.models.Running()) > 0
+
+	w.mu.Lock()
+	w.probeError = nil
+	w.lastResources = &res
+	before := w.verdict
+	after := Decide(before, res, now, loaded, w.cfg.Policy)
+	w.verdict = after
+	w.mu.Unlock()
+
+	if before.Yielded != after.Yielded {
+		w.log.Infof("Verdict: %s - %s", strings.ToUpper(after.Action()), after.Reason)
+	}
+	switch {
+	case after.Yielded && !before.Yielded:
+		if n := w.traffic.pause(); n > 0 {
+			w.log.Infof("Cancelled %d batch request(s)", n)
+		}
+		// The unload is owed once per yield, on the transition (0002). It may
+		// wait for an interactive session to go quiet (0004), but a model a
+		// client loads again during the pause stays loaded.
+		w.mu.Lock()
+		w.pendingUnload, w.deferLogged = true, false
+		w.mu.Unlock()
+	case !after.Yielded && before.Yielded:
+		w.traffic.resume()
+		w.mu.Lock()
+		w.pendingUnload = false
+		w.mu.Unlock()
+	}
+	w.settleUnload()
+
+	w.announcer.sync(after)
+	return after
+}
+
+// settleUnload pays an owed unload unless the user is in the middle of an
+// interactive session.
+func (w *Warden) settleUnload() {
+	w.mu.Lock()
+	pending := w.pendingUnload
+	w.mu.Unlock()
+	if !pending {
+		return
+	}
+	window := time.Duration(w.cfg.Policy.InteractiveRecentSeconds) * time.Second
+	if recent, last := w.traffic.interactiveRecent(window); recent {
+		w.mu.Lock()
+		logged := w.deferLogged
+		w.deferLogged = true
+		w.mu.Unlock()
+		if !logged {
+			w.log.Infof("Unload deferred: interactive request %s", describeLast(last, w.now()))
+		}
+		return
+	}
+	unloaded := w.models.UnloadAll()
+	w.mu.Lock()
+	w.pendingUnload = false
+	w.lastUnload = unloaded
+	w.mu.Unlock()
+	w.log.Infof("Models unloaded: %s", orNone(strings.Join(unloaded, ", ")))
+}
+
+func describeLast(last, now time.Time) string {
+	if last.IsZero() {
+		return "in flight"
+	}
+	return fmt.Sprintf("in flight or %.0fs ago", now.Sub(last).Seconds())
+}
+
+func (w *Warden) comfyTick(jobs *int, now time.Time) {
+	w.mu.Lock()
+	previous := w.comfy
+	w.mu.Unlock()
+	after, due := ComfyUIFreeDue(previous, jobs, now, w.cfg.Policy)
+	if due {
+		if err := w.comfyFree(); err != nil {
+			// Not marked freed, so the next tick tries again.
+			w.log.Warnf("ComfyUI did not take /free: %v", err)
+			return
+		}
+		w.log.Infof("ComfyUI idle for %ds: models freed", w.cfg.Policy.ComfyUIIdleSeconds)
+	}
+	w.mu.Lock()
+	w.comfy = after
+	w.mu.Unlock()
+}
+
+// Wrap puts the warden in front of llama-swap: it answers /warden/*, refuses
+// batch inference during a pause, and tracks every inference request until its
+// response has been written.
+func (w *Warden) Wrap(next http.Handler) http.Handler {
+	api := w.api()
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/warden/") {
+			api.ServeHTTP(rw, r)
+			return
+		}
+		if !isInference(r) {
+			next.ServeHTTP(rw, r)
+			return
+		}
+		class := w.traffic.classify(r)
+		ctx, cancel := context.WithCancelCause(r.Context())
+		defer cancel(nil)
+		id, ok := w.traffic.begin(class, r.URL.Path, func() { cancel(errYielded) })
+		if !ok {
+			w.refuse(rw, "batch requests wait while the GPU is yielded: ")
+			return
+		}
+		defer w.traffic.end(id)
+		tracked := &trackedWriter{ResponseWriter: rw}
+		next.ServeHTTP(tracked, r.WithContext(ctx))
+		if context.Cause(ctx) != errYielded {
+			return
+		}
+		// llama-swap returns without a word when the request's context ends,
+		// and Go would send that as an empty 200. A cancelled batch request
+		// has to read as a failure to the client that sent it.
+		if !tracked.started {
+			w.refuse(rw, "batch request cancelled, the GPU was yielded: ")
+			return
+		}
+		// Mid-stream: the status is gone, so break the connection rather than
+		// end the stream cleanly.
+		panic(http.ErrAbortHandler)
+	})
+}
+
+var errYielded = errors.New("the GPU was yielded")
+
+func (w *Warden) refuse(rw http.ResponseWriter, why string) {
+	w.mu.Lock()
+	reason := w.verdict.Reason
+	w.mu.Unlock()
+	rw.Header().Set("Content-Type", "application/json")
+	rw.Header().Set("Retry-After", strconv.Itoa(w.cfg.Policy.ResumeQuietSeconds))
+	rw.WriteHeader(http.StatusServiceUnavailable)
+	json.NewEncoder(rw).Encode(map[string]any{
+		"error": map[string]string{
+			"type":    "gpu_yielded",
+			"message": why + reason,
+		},
+	})
+}
+
+// trackedWriter remembers whether the response has started. It passes Flush
+// and Hijack through, since llama-swap's streaming asserts both.
+type trackedWriter struct {
+	http.ResponseWriter
+	started bool
+}
+
+func (t *trackedWriter) WriteHeader(code int) {
+	t.started = true
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *trackedWriter) Write(b []byte) (int, error) {
+	t.started = true
+	return t.ResponseWriter.Write(b)
+}
+
+func (t *trackedWriter) Flush() {
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		t.started = true
+		f.Flush()
+	}
+}
+
+func (t *trackedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := t.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("%T cannot be hijacked", t.ResponseWriter)
+	}
+	t.started = true
+	return hj.Hijack()
+}
+
+func (t *trackedWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
+
+// VerdictState is /warden/verdict: what the warden believes, who has heard
+// it, and what it saw. Cheap: it reports the last tick rather than measuring.
+type VerdictState struct {
+	Enabled       bool                     `json:"enabled"`
+	Verdict       Verdict                  `json:"verdict"`
+	Action        string                   `json:"action"`
+	Policy        Policy                   `json:"policy"`
+	Consumers     map[string]ConsumerState `json:"consumers"`
+	Traffic       TrafficState             `json:"traffic"`
+	Models        map[string]string        `json:"models"`
+	PendingUnload bool                     `json:"pending_unload"`
+	LastUnload    []string                 `json:"last_unload"`
+	ComfyUI       *comfyState              `json:"comfyui"`
+	ProbeError    *string                  `json:"probe_error"`
+	Resources     *Resources               `json:"resources"`
+}
+
+type comfyState struct {
+	URL string `json:"url"`
+	ComfyIdle
+}
+
+func (w *Warden) State() VerdictState {
+	models := w.models.Running()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	s := VerdictState{
+		Enabled:       w.cfg.Policy.Enabled,
+		Verdict:       w.verdict,
+		Action:        w.verdict.Action(),
+		Policy:        w.cfg.Policy,
+		Consumers:     w.announcer.state(),
+		Traffic:       w.traffic.state(),
+		Models:        models,
+		PendingUnload: w.pendingUnload,
+		LastUnload:    w.lastUnload,
+		ProbeError:    w.probeError,
+		Resources:     w.lastResources,
+	}
+	if w.cfg.ComfyUIURL != "" {
+		s.ComfyUI = &comfyState{URL: w.cfg.ComfyUIURL, ComfyIdle: w.comfy}
+	}
+	return s
+}
+
+func (w *Warden) api() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /warden/verdict", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, http.StatusOK, w.State())
+	})
+	// A fresh measurement, on purpose, from a probe of its own so it does not
+	// move the loop's utilization window.
+	mux.HandleFunc("GET /warden/resources", func(rw http.ResponseWriter, r *http.Request) {
+		res, err := w.freshProbe()
+		if err != nil {
+			writeJSON(rw, http.StatusServiceUnavailable, map[string]string{"detail": "probe failed: " + err.Error()})
+			return
+		}
+		writeJSON(rw, http.StatusOK, res)
+	})
+	return mux
+}
+
+func writeJSON(rw http.ResponseWriter, status int, body any) {
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(status)
+	enc := json.NewEncoder(rw)
+	enc.SetIndent("", "  ")
+	enc.Encode(body)
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
+}

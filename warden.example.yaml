@@ -1,0 +1,44 @@
+# The warden's file, passed as -warden-config. Every key is optional; the
+# values below are the defaults unless marked otherwise. The NixOS module
+# writes this from services.infermux.warden.
+
+# Omit when there is no ComfyUI. Its queue is contention, and it is told to
+# /free after comfyui_idle_seconds of empty queue. (No default.)
+comfyui_url: http://127.0.0.1:8188
+
+# systemd units whose GPU work is ours, not contention. InferMux's own unit is
+# always ours: the models it starts are its children. (Default: none.)
+our_units: [llama-embed.service]
+
+# Process names whose GPU work is neither ours nor contention: the compositor,
+# and the Electron GPU process that draws T3 Code's streamed reply. Every
+# Electron app shares that name. (Default: none.)
+desktop_processes: [cosmic-comp, electron]
+
+# A request presenting one of these keys (Bearer, x-api-key or Basic) is
+# batch: refused with 503 while paused, cancelled on a yield. Anything else is
+# interactive and never killed. Labels, not secrets. (Default: none.)
+batch_api_keys: [episteme-batch]
+
+policy:
+  # Foreign GPU utilization at or above this is contention.
+  gpu_busy_percent: 25
+  # Read only while no model is loaded. The desktop alone holds 4.2-4.7 GB.
+  min_free_vram_mb: 3000
+  # Yield at once, come back only after this much quiet.
+  resume_quiet_seconds: 300
+  # NVML answers in ~6 ms, so a short tick costs nothing.
+  poll_seconds: 5
+  # How long ComfyUI's queue stays empty before it is told to drop its models.
+  comfyui_idle_seconds: 600
+  # No unload on a yield while an interactive request is in flight or ended
+  # less than this long ago. The unload is paid once it has been quiet.
+  interactive_recent_seconds: 600
+  # false: measure on request only, announce nothing, unload nothing.
+  enabled: true
+
+# Told {"action": "pause"|"resume", "reason", "since", "warden"} on every
+# change and every 300 s. announce_path defaults to /api/pipeline/announce.
+consumers:
+  - name: episteme
+    url: http://127.0.0.1:8200
