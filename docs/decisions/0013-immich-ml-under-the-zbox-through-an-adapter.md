@@ -22,5 +22,5 @@ Until now Immich ML ran as the `-cuda` container in the zbox's immich stack, alw
 
 - The first request after five idle minutes waits for Python, CUDA and the model to load before Immich gets an answer. Immich retries a failed job later rather than losing it.
 - A swap between `immich-ml` and a second local model on the zbox would wait for in-flight `/predict` requests, by point 4. There is no second local model yet.
-- The immich key has a copy in `secrets/infermux.yaml` only, not in the Keys tab's file, like the codex key: the agent cannot write the user's passphrase-protected file. Show in the Keys tab does not find it.
+- The immich key is in `secrets/infermux.yaml`, which the Keys tab reads since 2026-10-03 (0006, 4), so Show finds it.
 - The old container's `immich_model-cache` volume, 766 MB, was removed on 2026-10-03.

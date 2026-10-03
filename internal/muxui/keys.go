@@ -21,8 +21,9 @@ import (
 
 // The keys (0006, 4). keys.yaml, the warden's keys_file, holds each key's
 // SHA-256 and is what the daemons read. The plaintext goes to KeySecrets, a
-// sops file only the user can open, so a key can be read again. A key is
-// shown when it is made and on request, never listed.
+// sops file the user can open, so a key can be read again; it is the hosts'
+// file, beside the secrets their services read. A key is shown when it is
+// made and on request, never listed.
 //
 // The user's age identity is protected by a passphrase, so the UI can open
 // the sops file only while a request carries it (0006, 4). The passphrase
@@ -91,6 +92,12 @@ func (s *Store) CreateKey(name string, k warden.Key, passphrase string) (string,
 	}
 	if _, taken := kf.Keys[name]; taken {
 		return "", fmt.Errorf("a key named %s already exists", name)
+	}
+	if taken, err := s.secretNamed(name); err != nil || taken {
+		if err == nil {
+			err = fmt.Errorf("%s already holds a secret named %s, which a key would overwrite", s.KeySecrets, name)
+		}
+		return "", err
 	}
 	random := make([]byte, 32)
 	rand.Read(random)
@@ -174,6 +181,26 @@ func (s *Store) RevealKey(name, passphrase string) (string, error) {
 func (s *Store) secretsExist() bool {
 	_, err := os.Stat(s.KeySecrets)
 	return s.KeySecrets != "" && err == nil
+}
+
+// secretNamed is whether the sops file has a top-level entry by that name.
+// The file is shared with the hosts' other secrets, such as OpenRouter's
+// key, and sops set replaces an entry without a word. sops leaves the names
+// in the clear, so this needs no passphrase.
+func (s *Store) secretNamed(name string) (bool, error) {
+	raw, err := os.ReadFile(s.KeySecrets)
+	if s.KeySecrets == "" || errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var entries map[string]any
+	if err := yaml.Unmarshal(raw, &entries); err != nil {
+		return false, fmt.Errorf("%s: %w", s.KeySecrets, err)
+	}
+	_, ok := entries[name]
+	return ok, nil
 }
 
 func (s *Store) storeSecret(name, key, passphrase string) error {

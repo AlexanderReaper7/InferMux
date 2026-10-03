@@ -42,7 +42,7 @@ func withSops(t *testing.T, f fixture) string {
 
 	os.WriteFile(filepath.Join(dir, ".sops.yaml"), []byte("creation_rules:\n  - path_regex: secrets/.*\\.yaml$\n    age: "+id.Recipient().String()+"\n"), 0o644)
 	os.MkdirAll(filepath.Join(dir, "secrets"), 0o755)
-	f.store.KeySecrets = filepath.Join(dir, "secrets", "infermux-keys.yaml")
+	f.store.KeySecrets = filepath.Join(dir, "secrets", "infermux.yaml")
 	// Every command line sops is given, which any user can read in /proc,
 	// and the environment it ran in.
 	real, err := exec.LookPath("sops")
@@ -132,6 +132,32 @@ func TestARefusedKeyWritesNothing(t *testing.T) {
 	f.store.KeySecrets = ""
 	if _, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive}, pass); err == nil || len(keysOnDisk(t, f).Keys) != 1 {
 		t.Error("a key nobody could read again was made")
+	}
+}
+
+// The sops file is the hosts' own, with secrets that are not keys. A key
+// by one of their names would overwrite it.
+func TestAKeyNeverOverwritesAnotherSecret(t *testing.T) {
+	f := newFixture(t)
+	withSops(t, f)
+	cloud, err := f.store.CreateKey("openrouter", warden.Key{Class: warden.Interactive}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Out of keys.yaml, it is a secret like OpenRouter's own key.
+	kf := keysOnDisk(t, f)
+	delete(kf.Keys, "openrouter")
+	if err := writeKeys(filepath.Join(filepath.Dir(f.store.WardenFile), "keys.yaml"), kf); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.CreateKey("openrouter", warden.Key{Class: warden.Interactive}, pass); err == nil || !strings.Contains(err.Error(), "overwrite") {
+		t.Fatalf("made over another secret: %v", err)
+	}
+	if got, err := f.store.RevealKey("openrouter", pass); err != nil || got != cloud {
+		t.Fatalf("the secret changed: %v", err)
+	}
+	if _, ok := keysOnDisk(t, f).Keys["openrouter"]; ok {
+		t.Error("its hash reached keys.yaml")
 	}
 }
 
@@ -311,7 +337,7 @@ func TestTheKeysFilesAreCommittedWithTheRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	changes := strings.Join(st.Changes, "\n")
-	if !strings.Contains(changes, "keys.yaml") || !strings.Contains(changes, "secrets/infermux-keys.yaml") || strings.Contains(changes, "age.txt") {
+	if !strings.Contains(changes, "keys.yaml") || !strings.Contains(changes, "secrets/infermux.yaml") || strings.Contains(changes, "age.txt") {
 		t.Fatalf("changes: %s", changes)
 	}
 }

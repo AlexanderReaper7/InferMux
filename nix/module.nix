@@ -123,11 +123,12 @@ in
       keySecrets = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "/home/alice/nixcfg/secrets/infermux-keys.yaml";
+        example = "/home/alice/nixcfg/secrets/infermux.yaml";
         description = ''
           The sops file the Keys tab puts a new key's plaintext in, so it can
-          be shown again. sops finds its recipients in the .sops.yaml above it.
-          null: no new keys.
+          be shown again: the hosts' file, beside the secrets their services
+          read (InferMux 0006, 4). sops finds its recipients in the .sops.yaml
+          above it. null: no new keys.
         '';
       };
       ageIdentity = lib.mkOption {

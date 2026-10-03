@@ -54,7 +54,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 
 ## The rules that have to fire without being looked up
 
-- **Every client has a key once `keys_file` is set, and keys.yaml holds only hashes** (0006). The plaintext lives in the user's sops file and nowhere else, and never on a command line.
+- **Every client has a key once `keys_file` is set, and keys.yaml holds only hashes** (0006). The plaintext lives in the hosts' sops file and nowhere else, and never on a command line.
 - **Between hosts the client's own key travels; a host's own key is for discovery and never replaces it** (0006). A llama-swap peer `apiKey` would replace the client's key and with it its class, so the hosts are `remotes`, not `peers`.
 - **The user's own request is never killed** (0004). Unmarked is interactive. Do not add a path that cancels, refuses or unloads under an interactive request; the unload waits for `interactive_recent_seconds` of quiet.
 - **The gate is for this host's card** (0009). Only a request for a local model is refused, cancelled or counted as interactive; another host's and a peer's pass after the key and allow check.

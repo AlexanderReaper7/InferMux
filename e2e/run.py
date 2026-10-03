@@ -220,7 +220,7 @@ def main():
     ui = subprocess.Popen(
         [BIN / "infermux-ui", "-listen", "127.0.0.1:5110", "-daemon", DAEMON, "-models-dir", models,
          "-warden-config", cfg / "warden.yaml", "-base-config", base, "-gguf-dirs", gguf, "-kv-kernels", kv,
-         "-daemon-key-file", root / "ui-key", "-key-secrets", cfg / "secrets" / "infermux-keys.yaml",
+         "-daemon-key-file", root / "ui-key", "-key-secrets", cfg / "secrets" / "infermux.yaml",
          "-age-identity", identity],
         stdout=open(OUT / "ui.log", "w"), stderr=subprocess.STDOUT, env=env,
     )
@@ -486,7 +486,7 @@ def run(cfg, models, gguf):
         check("a new key is shown once made", visible(made))
         key = made.inner_text().strip() if made.count() else ""
         ktext = (cfg / "keys.yaml").read_text()
-        secrets = (cfg / "secrets" / "infermux-keys.yaml").read_text()
+        secrets = (cfg / "secrets" / "infermux.yaml").read_text()
         check("keys.yaml has its hash, not the key, comment kept",
               hashlib.sha256(key.encode()).hexdigest() in ktext and key not in ktext and ktext.startswith("# The e2e clients."), ktext)
         check("the sops file has it encrypted", key and key not in secrets and "sops:" in secrets, secrets[:200])

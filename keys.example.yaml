@@ -1,6 +1,6 @@
 # The clients' keys (0006). Each key is stored as its SHA-256, never as the
 # key: `printf %s "$KEY" | sha256sum`. infermux-ui makes keys and keeps the
-# plaintext in a sops file only the user can open.
+# plaintext in a sops file the user and the hosts can open.
 #
 # class: interactive is never killed; batch is refused while the GPU is
 # yielded and cancelled on a yield. allow: model patterns, matched against
