@@ -30,7 +30,7 @@ Claude's working list for InferMux: what is built and shipping but has not been 
 - **Two hosts (0006): the rest.** The 502 for a request to an offline host's model, and the last list surviving a restart. The zbox has no models, so nothing on reaperboi can be sent there yet.
 - **A WebSocket through both hosts (0006, 8).** Covered by a raw-socket test of the router and the warden's in-flight test only; no real realtime client has connected.
 - **Episteme sending its keys** (Episteme 0058): the web's and the worker's keys are in /run/secrets, but Episteme does not run on the NixOS host yet. The Keys tab's Show against the user's real passphrase-protected identity.
-- **Hugging Face (0012): a gated repo with `ui.hfTokenFile`, an interrupted download resuming, the Downloads panel and the editor's fields in a browser.** No token exists yet; resume is covered by `hf_test.go` only.
+- **Hugging Face (0012): a gated repo with `ui.hfTokenFile`, an interrupted download resuming, the Downloads panel and the editor's fields in a browser.** The token is in place on both hosts since nixcfg `d402d80` (whoami answered), but no gated download has run; resume is covered by `hf_test.go` only.
 - **An Immich job through InferMux (0013)**: a smart search or a face detection started from Immich itself. Only predictions sent by curl to the adapter were made.
 - **The routing panel (0006, 9) in a browser**, and a group changing which models swap. Only the API was used.
 - **The UI's peer editor in a browser.** Covered by `peers_test.go`, which saves a symlinked file and checks the placeholder for `${env.*}`, only.
