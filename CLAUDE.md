@@ -31,6 +31,7 @@ nix develop -c go test ./internal/warden/ ./internal/muxui/  # the warden and th
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
 nix develop -c gofmt -l infermux.go internal/warden internal/server/warden.go
 nix build                                                  # the package; runs the three test packages
+e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
 
 curl 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
 curl 127.0.0.1:5001/warden/resources    # a fresh NVML probe

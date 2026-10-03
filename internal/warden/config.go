@@ -142,8 +142,31 @@ func LoadConfig(path string) (Config, error) {
 			c.TimeoutSeconds = 10
 		}
 	}
-	if cfg.Policy.PollSeconds < 1 {
-		cfg.Policy.PollSeconds = 1
+	if err := cfg.Policy.check(); err != nil {
+		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// check refuses a number no one could mean, rather than quietly running on
+// another: a negative threshold would read every desktop as contention and
+// never resume. A reload that fails keeps the settings before it.
+func (p Policy) check() error {
+	if p.GPUBusyPercent < 0 || p.GPUBusyPercent > 100 {
+		return fmt.Errorf("gpu_busy_percent is %v, not 0 to 100", p.GPUBusyPercent)
+	}
+	if p.PollSeconds < 1 {
+		return fmt.Errorf("poll_seconds is %v, less than 1", p.PollSeconds)
+	}
+	for name, v := range map[string]int{
+		"min_free_vram_mb":           p.MinFreeVRAMMB,
+		"resume_quiet_seconds":       p.ResumeQuietSeconds,
+		"comfyui_idle_seconds":       p.ComfyUIIdleSeconds,
+		"interactive_recent_seconds": p.InteractiveRecentSeconds,
+	} {
+		if v < 0 {
+			return fmt.Errorf("%s is %d, below 0", name, v)
+		}
+	}
+	return nil
 }

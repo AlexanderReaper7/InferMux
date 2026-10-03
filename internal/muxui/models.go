@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/billziss-gh/golib/shlex"
+	"github.com/mostlygeek/llama-swap/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,17 +52,16 @@ type Flag struct {
 var macroToken = regexp.MustCompile(`^\$\{([A-Za-z0-9_.-]+)\}$`)
 
 // parseCmd splits a cmd in infermux-ui's form. ok is false for anything else.
+// The arguments are llama-swap's own split, so the table shows what the
+// runtime is started with.
 func parseCmd(cmd string) (runtime, gguf string, flags []Flag, ok bool) {
-	var lines []string
 	for _, line := range strings.Split(cmd, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
 			return "", "", nil, false // a comment would be lost
 		}
-		lines = append(lines, strings.TrimSuffix(trimmed, "\\"))
 	}
-	args := shlex.Posix.Split(strings.Join(lines, " "))
-	if len(args) == 0 {
+	args, err := config.SanitizeCommand(cmd)
+	if err != nil {
 		return "", "", nil, false
 	}
 	m := macroToken.FindStringSubmatch(args[0])
@@ -103,6 +102,19 @@ func parseCmd(cmd string) (runtime, gguf string, flags []Flag, ok bool) {
 	return runtime, gguf, flags, true
 }
 
+func sameFlags(a, b []Flag) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name || (a[i].Value == nil) != (b[i].Value == nil) ||
+			(a[i].Value != nil && *a[i].Value != *b[i].Value) {
+			return false
+		}
+	}
+	return true
+}
+
 func isNumber(s string) bool {
 	_, err := strconv.ParseFloat(s, 64)
 	return err == nil
@@ -134,7 +146,8 @@ func quote(s string) string {
 // checkFlags refuses what renderCmd could not write back as the same flags.
 func checkFlags(flags []Flag) error {
 	for _, f := range flags {
-		if !strings.HasPrefix(f.Name, "-") || strings.ContainsAny(f.Name, " \t\n'\"") || isNumber(f.Name) {
+		// A name is written unquoted, so it has to be one quote leaves bare.
+		if !strings.HasPrefix(f.Name, "-") || !plainArg.MatchString(f.Name) || isNumber(f.Name) {
 			return fmt.Errorf("%q is not a flag name", f.Name)
 		}
 		switch f.Name {
@@ -315,15 +328,25 @@ func encodeModel(n *yaml.Node, m Model) error {
 		if m.Runtime == "" || m.GGUF == "" {
 			return fmt.Errorf("a model needs a runtime and a GGUF")
 		}
+		if !filepath.IsAbs(m.GGUF) {
+			return fmt.Errorf("the GGUF must be an absolute path")
+		}
 		if err := checkFlags(m.Flags); err != nil {
 			return err
 		}
 		cmd = renderCmd(m.Runtime, m.GGUF, m.Flags)
+		// The last word is llama-swap's: a value it would split differently,
+		// such as one with a line starting with '#', is refused rather than
+		// written as something else.
+		runtime, gguf, flags, ok := parseCmd(cmd)
+		if !ok || runtime != m.Runtime || gguf != m.GGUF || !sameFlags(flags, m.Flags) {
+			return fmt.Errorf("llama-swap would read this command differently than the table shows; edit it as text")
+		}
 	}
 	if strings.TrimSpace(cmd) == "" {
 		return fmt.Errorf("a model needs a cmd")
 	}
-	setValue(n, "cmd", &yaml.Node{Kind: yaml.ScalarNode, Value: cmd, Style: yaml.LiteralStyle})
+	setValue(n, "cmd", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: cmd, Style: yaml.LiteralStyle})
 	if mappingValue(n, "proxy", false) == nil {
 		setValue(n, "proxy", &yaml.Node{Kind: yaml.ScalarNode, Value: "http://127.0.0.1:${PORT}"})
 	}
@@ -332,17 +355,28 @@ func encodeModel(n *yaml.Node, m Model) error {
 	} else {
 		deleteKey(n, "ttl")
 	}
+	for _, a := range m.Aliases {
+		if err := checkName(a); err != nil {
+			return fmt.Errorf("alias %w", err)
+		}
+	}
 	if len(m.Aliases) > 0 {
 		seq := &yaml.Node{Kind: yaml.SequenceNode}
 		for _, a := range m.Aliases {
-			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: a})
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: a})
 		}
 		setValue(n, "aliases", seq)
 	} else {
 		deleteKey(n, "aliases")
 	}
 	if m.Description != "" {
-		setValue(n, "description", &yaml.Node{Kind: yaml.ScalarNode, Value: m.Description})
+		desc := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: m.Description}
+		if strings.Contains(m.Description, "\n") {
+			// yaml.v3 writes a multi-line string as a literal block, which
+			// drops a leading newline. Quoted, every character survives.
+			desc.Style = yaml.DoubleQuotedStyle
+		}
+		setValue(n, "description", desc)
 	} else {
 		deleteKey(n, "description")
 	}

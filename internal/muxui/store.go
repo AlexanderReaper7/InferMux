@@ -68,10 +68,7 @@ func (s *Store) SaveModel(original string, m Model) error {
 	if err := checkName(m.Name); err != nil {
 		return err
 	}
-	if !m.Raw && !filepath.IsAbs(m.GGUF) {
-		return fmt.Errorf("the GGUF must be an absolute path")
-	}
-	if !m.Raw {
+	if !m.Raw && filepath.IsAbs(m.GGUF) {
 		if _, err := os.Stat(m.GGUF); err != nil {
 			return fmt.Errorf("the GGUF: %w", err)
 		}

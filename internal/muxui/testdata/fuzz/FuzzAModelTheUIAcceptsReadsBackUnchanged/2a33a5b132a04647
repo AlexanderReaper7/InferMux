@@ -1,0 +1,8 @@
+go test fuzz v1
+string("0")
+string("/")
+string("-")
+string("\n#")
+bool(true)
+string("0")
+string("0")

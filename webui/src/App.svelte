@@ -63,9 +63,6 @@
           {live.state.action}{live.state.manual ? " (by hand)" : ""}
         </span>
       {/if}
-      <a class="text-neutral-400 hover:text-neutral-200" href={swapUI} target="_blank" rel="noreferrer"
-        >llama-swap ↗</a
-      >
     </div>
   </header>
 

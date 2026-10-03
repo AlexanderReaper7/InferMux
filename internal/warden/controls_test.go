@@ -3,6 +3,8 @@ package warden
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -247,4 +249,30 @@ func postHost(handler http.Handler, path string, header map[string]string) *http
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func TestAPolicyNumberNoOneCouldMeanIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	load := func(body string) error {
+		path := filepath.Join(dir, "w.yaml")
+		os.WriteFile(path, []byte(body), 0o644)
+		_, err := LoadConfig(path)
+		return err
+	}
+	for _, bad := range []string{
+		"gpu_busy_percent: -1", "gpu_busy_percent: 100.5", "poll_seconds: 0", "poll_seconds: 0.5",
+		"min_free_vram_mb: -1", "resume_quiet_seconds: -1", "comfyui_idle_seconds: -1", "interactive_recent_seconds: -1",
+	} {
+		if err := load("policy:\n  " + bad + "\n"); err == nil {
+			t.Errorf("%s was taken", bad)
+		}
+	}
+	for _, edge := range []string{
+		"gpu_busy_percent: 0", "gpu_busy_percent: 100", "poll_seconds: 1", "min_free_vram_mb: 0",
+		"resume_quiet_seconds: 0", "interactive_recent_seconds: 0",
+	} {
+		if err := load("policy:\n  " + edge + "\n"); err != nil {
+			t.Errorf("%s was refused: %v", edge, err)
+		}
+	}
 }
