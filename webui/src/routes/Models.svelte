@@ -6,6 +6,7 @@
   import BuildPanel from "./BuildPanel.svelte";
   import ModelEditor from "./ModelEditor.svelte";
   import Peers from "./Peers.svelte";
+  import Routing from "./Routing.svelte";
   import Downloads from "./Downloads.svelte";
 
   let ui = $state<UIState | null>(null);
@@ -110,6 +111,8 @@
   <Downloads />
 
   <Peers peers={ui.peers} onsaved={load} />
+
+  <Routing />
 
   {#if unused.length}
     <div class="card mt-4">

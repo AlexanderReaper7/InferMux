@@ -244,8 +244,18 @@ func (s *Store) apply(files []modelFile, changed map[string][]byte) error {
 	if err := os.WriteFile(baseCopy, withoutDaemonEnv(base), 0o644); err != nil {
 		return err
 	}
-	if _, err := config.LoadConfigSources(baseCopy, models); err != nil {
+	cfg, err := config.LoadConfigSources(baseCopy, models)
+	if err != nil {
 		return fmt.Errorf("llama-swap would refuse this: %w", err)
+	}
+	// llama-swap takes a group member no model has, and the model it meant
+	// then swaps with everything.
+	for id, g := range cfg.Groups {
+		for _, member := range g.Members {
+			if _, ok := cfg.RealModelName(member); !ok {
+				return fmt.Errorf("group %s names %s, which is not a model", id, member)
+			}
+		}
 	}
 	names := make([]string, 0, len(changed))
 	for name := range changed {

@@ -116,6 +116,27 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 		}
 		reply(rw, body)
 	})
+	mux.HandleFunc("GET /api/routing", func(rw http.ResponseWriter, r *http.Request) {
+		text, err := store.Routing()
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		reply(rw, map[string]string{"file": RoutingFile, "text": text})
+	})
+	mux.HandleFunc("PUT /api/routing", func(rw http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Text string `json:"text"`
+		}
+		if !decode(rw, r, &body) {
+			return
+		}
+		if err := store.SaveRouting(body.Text); err != nil {
+			fail(rw, err)
+			return
+		}
+		reply(rw, body)
+	})
 	mux.HandleFunc("GET /api/gguf", func(rw http.ResponseWriter, r *http.Request) {
 		files, err := store.GGUFs()
 		if err != nil {

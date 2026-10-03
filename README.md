@@ -66,6 +66,8 @@ The Keys tab makes, edits and revokes keys. With `ui.keySecrets`, a new key's pl
 
 A models file may hold llama-swap `peers:` instead, such as OpenRouter with `apiKey: ${env.OPENROUTER_API_KEY}`. The Models tab edits each peer's model list, and the proxy and key stay as written. The check fills every `${env.NAME}` with a placeholder, because the daemon's environment is not the UI's. A models file that is a symlink is written through, so two hosts' directories can share one peers file, and Changes shows and commits the file it points to.
 
+The Models tab also edits `routing.yaml` in the models directory as text: llama-swap's `routing.router`, groups or a matrix, saying which models may run at once. A save is checked like a model's, and a group member that names no model is refused (0006, 9).
+
 With `ui.hfDir`, a model can take its files from Hugging Face: `org/repo/file.gguf` for the GGUF and for its mmproj, kept in the model file as `metadata.hf`. Saving writes the paths under `ui.hfDir` into `--model` and `--mmproj` and downloads from the repository's `main`, again on a later save only if main has changed; the Models tab shows the progress, and an interrupted download resumes. `ui.hfTokenFile` is a token for gated and private repos ([0012](docs/decisions/0012-a-model-names-its-gguf-on-hugging-face.md)).
 
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
