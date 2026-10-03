@@ -56,7 +56,7 @@ services.infermux = {
 };
 ```
 
-Then open http://127.0.0.1:5010. A model's command is edited as runtime, GGUF and flags when it has the form `${runtime} --port ${PORT} --model <file> <flags>`, and as text otherwise. Every save is validated with llama-swap's loader first. The Changes tab commits the files to the repository they live in, when asked; it never pushes.
+Then open http://127.0.0.1:5010. Its llama-swap tab frames llama-swap's own UI from the daemon's port. A model's command is edited as runtime, GGUF and flags when it has the form `${runtime} --port ${PORT} --model <file> <flags>`, and as text otherwise. Every save is validated with llama-swap's loader first. The Changes tab commits the files to the repository they live in, when asked; it never pushes.
 
 Both answer on loopback names only, plus the warden file's `trusted_hosts`. To reach them from another device, publish them with `tailscale serve --bg --https=5010 http://127.0.0.1:5010` (and 5001) and add the node's tailnet name to `trusted_hosts`.
 

@@ -48,6 +48,9 @@ func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
 			"runtimes":   runtimes,
 			"warden":     wcfg,
 			"kv_kernels": store.KVKernels,
+			// The browser reaches llama-swap's own UI on this port, on whatever
+			// host it reached infermux-ui: loopback, or the tailnet name.
+			"daemon_port": daemon.Port(),
 			"paths": map[string]any{
 				"models_dir": store.ModelsDir, "warden_file": store.WardenFile,
 				"base_config": store.BaseConfig, "gguf_dirs": store.GGUFDirs,
