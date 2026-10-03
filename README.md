@@ -99,7 +99,7 @@ Retry-After: 300
 
 ## What a client learns about a model
 
-Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_modalities`, `reasoning_efforts` and `default_effort`, derived from its command and its GGUF's chat template, never declared. Codex's own request, which carries `client_version`, gets the same models as a Codex catalog when the module's `codexPrompt` is set. [0007](docs/decisions/0007-model-settings-derived.md).
+Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_modalities`, `reasoning_efforts` and `default_effort`, derived from its command and its GGUF's chat template, never declared. Codex's own request, which carries `client_version`, gets the same models as a Codex catalog when the module's `codexPrompt` is set. [0007](docs/decisions/0007-model-settings-derived.md). A cloud peer's models get the same fields from the peer's own `/v1/models` in OpenRouter's format, read at most once an hour ([0010](docs/decisions/0010-a-peers-facts-from-its-own-list.md)).
 
 ## The other host
 

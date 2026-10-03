@@ -10,9 +10,9 @@ import (
 )
 
 // Enrich adds meta.infermux, the model's Facts, to every local model in
-// next's /v1/models. command is a model's llama-server command, false for a
-// model that has none to read.
-func Enrich(next http.Handler, d *Deriver, command func(id string) ([]string, bool)) http.Handler {
+// next's /v1/models, and to every peer's model its peer describes. command is
+// a model's llama-server command, false for a model that has none to read.
+func Enrich(next http.Handler, d *Deriver, command func(id string) ([]string, bool), peers *Peers) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
 			next.ServeHTTP(rw, r)
@@ -24,10 +24,16 @@ func Enrich(next http.Handler, d *Deriver, command func(id string) ([]string, bo
 			return
 		}
 		for _, item := range entries(list) {
+			id, _ := item["id"].(string)
+			if typeOf(item) == "peer" {
+				if f, ok := peers.facts(id); ok {
+					mergeMeta(item, "infermux", f)
+				}
+				continue
+			}
 			if typeOf(item) != "model" {
 				continue
 			}
-			id, _ := item["id"].(string)
 			args, ok := command(id)
 			if !ok {
 				continue

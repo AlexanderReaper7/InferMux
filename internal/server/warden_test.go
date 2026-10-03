@@ -54,4 +54,11 @@ peers:
 	if _, _, ok := s.UpstreamModel("/nobody/props"); ok {
 		t.Error("an unknown model was found")
 	}
+	proxy, model, ok := s.PeerModel("openrouter/openrouter/free")
+	if !ok || proxy != "https://openrouter.ai/api" || model != "openrouter/free" {
+		t.Errorf("PeerModel = %q %q %v", proxy, model, ok)
+	}
+	if _, _, ok := s.PeerModel("local"); ok {
+		t.Error("a local model was taken for a peer's")
+	}
 }

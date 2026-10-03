@@ -97,7 +97,8 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		return ok
 	}
 	command := func(id string) ([]string, bool) { return active().ModelCommand(id) }
-	enriched := catalog.Enrich(httpServer.Handler, &catalog.Deriver{}, command)
+	peerModel := func(id string) (string, string, bool) { return active().PeerModel(id) }
+	enriched := catalog.Enrich(httpServer.Handler, &catalog.Deriver{}, command, &catalog.Peers{Lookup: peerModel})
 	remotes := &remoteHolder{next: enriched, local: local, log: log}
 	if err := remotes.set(ctx, cfg.Remotes); err != nil {
 		slog.Error("failed to set up the remote hosts", "warden-config", path, "error", err)

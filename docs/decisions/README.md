@@ -17,5 +17,6 @@ Nothing here is edited to reflect later changes. A decision that was replaced ge
 | [0007](0007-model-settings-derived.md) | Each model's settings derived from its command and GGUF; Codex gets them as its catalog | 2026-10-03 |
 | [0008](0008-the-zbox-has-its-own-ui.md) | The zbox has its own UI and nixcfg checkout; Commit can take the GPG passphrase | 2026-10-03 |
 | [0009](0009-the-gate-is-for-this-hosts-card.md) | The gate is for this host's card: another host's and the cloud's requests are not paused, cancelled or counted here | 2026-10-03 |
+| [0010](0010-a-peers-facts-from-its-own-list.md) | A cloud peer's facts come from the peer's own model list; T3's OpenRouter instance folds into Local Codex | 2026-10-03 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.

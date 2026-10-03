@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -201,7 +202,7 @@ func TestTheListCarriesTheLocalModelsSettings(t *testing.T) {
 	h := Enrich(http.HandlerFunc(fakeList), &Deriver{}, func(id string) ([]string, bool) {
 		asked = append(asked, id)
 		return []string{"llama-server", "-m", gguf, "--mmproj", "p.gguf"}, true
-	})
+	}, &Peers{Lookup: func(string) (string, string, bool) { return "", "", false }})
 	data := get(t, h, "/v1/models")["data"].([]any)
 	local := data[0].(map[string]any)["meta"].(map[string]any)["infermux"].(map[string]any)
 	if local["context_window"] != 32768.0 || len(local["reasoning_efforts"].([]any)) != 4 || len(local["input_modalities"].([]any)) != 2 {
@@ -284,5 +285,82 @@ func TestWithoutAPromptCodexGetsTheListAsItIs(t *testing.T) {
 	}
 	if _, err := Codex(http.HandlerFunc(fakeList), "/nonexistent/prompt.md"); err == nil {
 		t.Fatal("a prompt that cannot be read was taken")
+	}
+}
+
+// openRouter is OpenRouter's /api/v1/models, cut down: a model that takes
+// images and an effort, one that takes neither, and one with no context.
+func openRouter(reads *int, fail *bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		*reads++
+		if r.URL.Path != "/api/v1/models" || *fail {
+			// A list in the body, so only the status says it failed.
+			rw.WriteHeader(http.StatusBadGateway)
+			rw.Write([]byte(`{"data":[]}`))
+			return
+		}
+		rw.Write([]byte(`{"data":[
+			{"id":"z-ai/glm","context_length":200000,"architecture":{"input_modalities":["text","image","video"]},"supported_parameters":["tools","reasoning","reasoning_effort"]},
+			{"id":"plain","context_length":8192,"architecture":{"input_modalities":["text"]},"supported_parameters":["reasoning"]},
+			{"id":"nocontext","architecture":{"input_modalities":["text"]}}]}`))
+	}))
+}
+
+func TestAPeersModelsGetTheFactsThePeerLists(t *testing.T) {
+	reads, fail := 0, false
+	srv := openRouter(&reads, &fail)
+	defer srv.Close()
+	peers := &Peers{Lookup: func(id string) (string, string, bool) {
+		model, ok := strings.CutPrefix(id, "openrouter/")
+		return srv.URL + "/api", model, ok
+	}}
+	f, ok := peers.facts("openrouter/z-ai/glm")
+	if !ok || f.ContextWindow != 200000 || !slices.Equal(f.InputModalities, []string{"text", "image"}) ||
+		!slices.Equal(f.ReasoningEfforts, []string{"low", "medium", "high"}) || f.DefaultEffort != "medium" {
+		t.Fatalf("glm: %+v %v", f, ok)
+	}
+	f, ok = peers.facts("openrouter/plain")
+	if !ok || f.ContextWindow != 8192 || len(f.ReasoningEfforts) != 0 || f.DefaultEffort != "" || !slices.Equal(f.InputModalities, []string{"text"}) {
+		t.Fatalf("plain: %+v %v", f, ok)
+	}
+	for _, id := range []string{"openrouter/nocontext", "openrouter/missing", "local"} {
+		if f, ok := peers.facts(id); ok {
+			t.Fatalf("%s got facts: %+v", id, f)
+		}
+	}
+	if reads != 1 {
+		t.Fatalf("the peer's list was read %d times, not once", reads)
+	}
+
+	h := Enrich(http.HandlerFunc(fakeList), &Deriver{}, func(string) ([]string, bool) { return nil, false }, &Peers{Lookup: func(id string) (string, string, bool) {
+		return srv.URL + "/api/", "z-ai/glm", id == "openrouter/glm"
+	}})
+	peer := get(t, h, "/v1/models")["data"].([]any)[1].(map[string]any)["meta"].(map[string]any)
+	if facts, _ := peer["infermux"].(map[string]any); facts["context_window"] != 200000.0 {
+		t.Fatalf("the peer's entry in the list: %v", peer)
+	}
+}
+
+func TestAFailedReadOfAPeersListKeepsTheLastAndTriesAgainSooner(t *testing.T) {
+	reads, fail := 0, false
+	srv := openRouter(&reads, &fail)
+	defer srv.Close()
+	proxy := srv.URL + "/api"
+	peers := &Peers{Lookup: func(id string) (string, string, bool) { return proxy, id, true }}
+	peers.facts("plain")
+	fail = true
+	expire := func() { l := peers.lists[proxy]; l.next = time.Now().Add(-time.Second); peers.lists[proxy] = l }
+	expire()
+	if f, ok := peers.facts("plain"); !ok || f.ContextWindow != 8192 || reads != 2 {
+		t.Fatalf("after a failed read: %+v %v, %d reads", f, ok, reads)
+	}
+	if wait := time.Until(peers.lists[proxy].next); wait > peerListRetry || wait < peerListRetry-time.Second {
+		t.Fatalf("the next read is in %v, not %v", wait, peerListRetry)
+	}
+	fail = false
+	expire()
+	peers.facts("plain")
+	if wait := time.Until(peers.lists[proxy].next); wait < peerListTTL-time.Second || reads != 3 {
+		t.Fatalf("after a good read the next is in %v, %d reads", wait, reads)
 	}
 }

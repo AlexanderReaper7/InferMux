@@ -66,3 +66,13 @@ func (s *Server) ModelCommand(id string) ([]string, bool) {
 	args, err := mc.SanitizedCommand()
 	return args, err == nil
 }
+
+// PeerModel is a peer's model as /v1/models lists it: the peer's proxy URL and
+// the peer's own name for the model. internal/catalog reads its facts there.
+func (s *Server) PeerModel(name string) (proxy, model string, ok bool) {
+	peerID, model, found := s.cfg.ResolvePeerModel(name)
+	if !found {
+		return "", "", false
+	}
+	return s.cfg.Peers[peerID].Proxy, model, true
+}

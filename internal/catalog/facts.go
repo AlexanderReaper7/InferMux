@@ -7,6 +7,9 @@
 // llama-swap's /v1/models gets these as meta.infermux on each local model, so
 // the other hosts read them with the list. A client that asks in Codex's own
 // format gets the whole list as Codex's model catalog (codex.go).
+//
+// A cloud peer's models get the same facts from the peer's own model list
+// (peers.go, 0010).
 package catalog
 
 import (
