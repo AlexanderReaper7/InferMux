@@ -32,6 +32,9 @@ type Store struct {
 	// binary, "sops" from PATH when empty.
 	KeySecrets string
 	Sops       string
+	// AgeIdentity is the user's age identity, encrypted with a passphrase by
+	// `age -p`: what opens KeySecrets.
+	AgeIdentity string
 
 	mu sync.Mutex
 }

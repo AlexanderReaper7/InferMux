@@ -1,7 +1,9 @@
 package muxui
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,31 +12,48 @@ import (
 	"strings"
 	"testing"
 
+	"filippo.io/age"
 	"github.com/mostlygeek/llama-swap/internal/warden"
 )
 
-// withSops gives the fixture a real sops file: an age key of its own, and a
-// .sops.yaml one directory up from the secrets file, as in the user's repo.
-func withSops(t *testing.T, f fixture) {
+// pass is the test identity's passphrase.
+const pass = "correct horse"
+
+// withSops gives the fixture a real sops file: an age identity of its own,
+// protected by a passphrase as `age -p` does it, and a .sops.yaml one
+// directory up from the secrets file, as in the user's repo. It returns the
+// identity in the clear, which the test may plant where sops would look.
+func withSops(t *testing.T, f fixture) string {
 	t.Helper()
 	dir := filepath.Dir(f.store.WardenFile)
-	identity := filepath.Join(dir, "age.txt")
-	out, err := exec.Command("age-keygen", "-o", identity).CombinedOutput()
+	id, err := age.GenerateX25519Identity()
 	if err != nil {
-		t.Fatalf("age-keygen (from nix develop): %v %s", err, out)
+		t.Fatal(err)
 	}
-	public := strings.TrimSpace(string(out[strings.LastIndex(string(out), " ")+1:]))
-	os.WriteFile(filepath.Join(dir, ".sops.yaml"), []byte("creation_rules:\n  - path_regex: secrets/.*\\.yaml$\n    age: "+public+"\n"), 0o644)
+	plain := "# created: test\n# public key: " + id.Recipient().String() + "\n" + id.String() + "\n"
+	r, _ := age.NewScryptRecipient(pass)
+	r.SetWorkFactor(10) // age -p uses 18; this keeps the suite fast
+	var sealed bytes.Buffer
+	w, _ := age.Encrypt(&sealed, r)
+	w.Write([]byte(plain))
+	w.Close()
+	f.store.AgeIdentity = filepath.Join(dir, "age.txt")
+	os.WriteFile(f.store.AgeIdentity, sealed.Bytes(), 0o600)
+
+	os.WriteFile(filepath.Join(dir, ".sops.yaml"), []byte("creation_rules:\n  - path_regex: secrets/.*\\.yaml$\n    age: "+id.Recipient().String()+"\n"), 0o644)
 	os.MkdirAll(filepath.Join(dir, "secrets"), 0o755)
-	t.Setenv("SOPS_AGE_KEY_FILE", identity)
 	f.store.KeySecrets = filepath.Join(dir, "secrets", "infermux-keys.yaml")
-	// Every command line sops is given, which any user can read in /proc.
+	// Every command line sops is given, which any user can read in /proc,
+	// and the environment it ran in.
 	real, err := exec.LookPath("sops")
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.store.Sops = filepath.Join(dir, "sops")
-	os.WriteFile(f.store.Sops, []byte("#!/bin/sh\necho \"$@\" >> "+filepath.Join(dir, "sops-argv")+"\nexec "+real+" \"$@\"\n"), 0o755)
+	os.WriteFile(f.store.Sops, []byte("#!/bin/sh\necho \"$@\" >> "+filepath.Join(dir, "sops-argv")+
+		"\nset | grep -E '^(DISPLAY|WAYLAND_DISPLAY|DBUS_SESSION_BUS_ADDRESS|HOME|SOPS_AGE_KEY_FILE)=' >> "+filepath.Join(dir, "sops-env")+
+		"\nexec "+real+" \"$@\"\n"), 0o755)
+	return plain
 }
 
 func sopsArgv(t *testing.T, f fixture) string {
@@ -54,12 +73,13 @@ func keysOnDisk(t *testing.T, f fixture) warden.KeyFile {
 func TestANewKeyIsHashedForTheDaemonsAndReadableAgainFromSops(t *testing.T) {
 	f := newFixture(t)
 	withSops(t, f)
-	first, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive, Allow: []string{"zbox/*"}, SHA256: "ignored"})
+	// The first creates the file, which needs only the recipients.
+	first, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive, Allow: []string{"zbox/*"}, SHA256: "ignored"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The second goes into the file the first created.
-	second, err := f.store.CreateKey("laptop", warden.Key{Class: warden.Batch})
+	second, err := f.store.CreateKey("laptop", warden.Key{Class: warden.Batch}, pass)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +102,7 @@ func TestANewKeyIsHashedForTheDaemonsAndReadableAgainFromSops(t *testing.T) {
 		t.Fatalf("a key on sops' command line:\n%s", argv)
 	}
 	for name, want := range map[string]string{"phone": first, "laptop": second} {
-		if got, err := f.store.RevealKey(name); err != nil || got != want {
+		if got, err := f.store.RevealKey(name, pass); err != nil || got != want {
 			t.Fatalf("%s read back as %q, %v", name, got, err)
 		}
 	}
@@ -98,7 +118,7 @@ func TestARefusedKeyWritesNothing(t *testing.T) {
 		"x":              {Class: "urgent"},
 		"y":              {Class: warden.Batch, Allow: []string{"["}},
 	} {
-		if _, err := f.store.CreateKey(name, k); err == nil {
+		if _, err := f.store.CreateKey(name, k, pass); err == nil {
 			t.Errorf("%q %+v was made", name, k)
 		}
 	}
@@ -110,7 +130,7 @@ func TestARefusedKeyWritesNothing(t *testing.T) {
 	}
 
 	f.store.KeySecrets = ""
-	if _, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive}); err == nil || len(keysOnDisk(t, f).Keys) != 1 {
+	if _, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive}, pass); err == nil || len(keysOnDisk(t, f).Keys) != 1 {
 		t.Error("a key nobody could read again was made")
 	}
 }
@@ -120,7 +140,7 @@ func TestEditingAKeyKeepsItAndDeletingOneRevokesIt(t *testing.T) {
 	withSops(t, f)
 	keysFile := filepath.Join(filepath.Dir(f.store.WardenFile), "keys.yaml")
 	os.WriteFile(keysFile, append([]byte("# shared by both hosts\n"), mustRead(t, keysFile)...), 0o644)
-	key, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive})
+	key, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,17 +154,17 @@ func TestEditingAKeyKeepsItAndDeletingOneRevokesIt(t *testing.T) {
 		t.Fatal("edited a key that does not exist")
 	}
 
-	if err := f.store.DeleteKey("phone"); err != nil {
+	if err := f.store.DeleteKey("phone", pass); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := keysOnDisk(t, f).Keys["phone"]; ok {
 		t.Fatal("still in keys.yaml")
 	}
-	if _, err := f.store.RevealKey("phone"); err == nil {
+	if _, err := f.store.RevealKey("phone", pass); err == nil {
 		t.Fatal("its plaintext is still in the sops file")
 	}
 	// A key made before the sops file existed has no plaintext to remove.
-	if err := f.store.DeleteKey("episteme-batch"); err != nil {
+	if err := f.store.DeleteKey("episteme-batch", pass); err != nil {
 		t.Fatal(err)
 	}
 	if raw := mustRead(t, keysFile); !strings.HasPrefix(string(raw), "# shared by both hosts") {
@@ -152,10 +172,55 @@ func TestEditingAKeyKeepsItAndDeletingOneRevokesIt(t *testing.T) {
 	}
 }
 
+// The passphrase is what opens the file. Without it, or with the wrong one,
+// nothing is written, and the identity sops could find on its own (the
+// user's keys.txt, here in the clear) is out of its reach.
+func TestTheSopsFileOpensOnlyWithThePassphrase(t *testing.T) {
+	f := newFixture(t)
+	plain := withSops(t, f)
+	home := t.TempDir()
+	os.MkdirAll(filepath.Join(home, ".config", "sops", "age"), 0o700)
+	os.WriteFile(filepath.Join(home, ".config", "sops", "age", "keys.txt"), []byte(plain), 0o600)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("SOPS_AGE_KEY_FILE", filepath.Join(home, ".config", "sops", "age", "keys.txt"))
+	t.Setenv("WAYLAND_DISPLAY", "wayland-1")
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+
+	if _, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive}, ""); err != nil {
+		t.Fatal(err)
+	}
+	before := string(mustRead(t, f.store.KeySecrets))
+	if _, err := f.store.RevealKey("phone", ""); !errors.Is(err, ErrPassphrase) {
+		t.Errorf("no passphrase: %v, not one that says so", err)
+	}
+	for _, p := range []string{"", "wrong"} {
+		if _, err := f.store.CreateKey("laptop", warden.Key{Class: warden.Batch}, p); err == nil {
+			t.Errorf("a second key with passphrase %q was made", p)
+		}
+		if _, err := f.store.RevealKey("phone", p); err == nil {
+			t.Errorf("revealed with passphrase %q", p)
+		}
+		if err := f.store.DeleteKey("phone", p); err == nil {
+			t.Errorf("revoked with passphrase %q", p)
+		}
+	}
+	if _, ok := keysOnDisk(t, f).Keys["laptop"]; ok || string(mustRead(t, f.store.KeySecrets)) != before {
+		t.Fatal("a refused operation wrote")
+	}
+	if _, ok := keysOnDisk(t, f).Keys["phone"]; !ok {
+		t.Fatal("a refused revoke removed the hash")
+	}
+	if env := string(mustRead(t, filepath.Join(filepath.Dir(f.store.WardenFile), "sops-env"))); strings.Contains(env, home) ||
+		strings.Contains(env, "WAYLAND") || strings.Contains(env, "DBUS") || strings.Contains(env, "SOPS_AGE_KEY_FILE") {
+		t.Fatalf("sops ran with the user's environment:\n%s", env)
+	}
+}
+
 func TestAKeyMadeBeforeTheSopsFileIsDeletedAll(t *testing.T) {
 	f := newFixture(t)
 	withSops(t, f)
-	if err := f.store.DeleteKey("episteme-batch"); err != nil {
+	if err := f.store.DeleteKey("episteme-batch", pass); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -171,7 +236,7 @@ func TestWithoutAKeysFileThereAreNoKeys(t *testing.T) {
 func TestTheKeysPageOverHTTP(t *testing.T) {
 	u := newUI(t)
 	withSops(t, u.f)
-	code, out := u.call("POST", "/api/keys/phone", map[string]any{"class": "interactive"})
+	code, out := u.call("POST", "/api/keys/phone", map[string]any{"class": "interactive", "passphrase": pass})
 	u.want(code, 200, out, "create")
 	key := out["key"].(string)
 
@@ -180,7 +245,9 @@ func TestTheKeysPageOverHTTP(t *testing.T) {
 	if listed := out["keys"].(map[string]any); len(listed) != 2 || strings.Contains(stringify(out), key) {
 		t.Fatalf("the list: %v", out)
 	}
-	code, out = u.call("POST", "/api/keys/phone/reveal", nil)
+	code, out = u.call("POST", "/api/keys/phone/reveal", map[string]any{"passphrase": "wrong"})
+	u.want(code, http.StatusUnprocessableEntity, out, "reveal with the wrong passphrase")
+	code, out = u.call("POST", "/api/keys/phone/reveal", map[string]any{"passphrase": pass})
 	if code != 200 || out["key"] != key {
 		t.Fatalf("reveal: %d %v", code, out)
 	}
@@ -200,7 +267,7 @@ func TestTheKeysPageOverHTTP(t *testing.T) {
 		t.Fatalf("a cross-origin reveal: %d %s", rec.Code, rec.Body)
 	}
 
-	code, out = u.call("DELETE", "/api/keys/phone", nil)
+	code, out = u.call("DELETE", "/api/keys/phone", map[string]any{"passphrase": pass})
 	u.want(code, 200, out, "delete")
 }
 
@@ -213,7 +280,7 @@ func TestTheKeysFilesAreCommittedWithTheRest(t *testing.T) {
 			t.Fatalf("git %v: %s", args, out)
 		}
 	}
-	if _, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive}); err != nil {
+	if _, err := f.store.CreateKey("phone", warden.Key{Class: warden.Interactive}, ""); err != nil {
 		t.Fatal(err)
 	}
 	st, err := f.store.Git()

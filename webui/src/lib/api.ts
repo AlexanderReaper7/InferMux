@@ -30,10 +30,12 @@ export const api = {
   ggufs: () => call<GGUF[]>("GET", "/api/gguf"),
   saveWarden: (cfg: WardenConfig) => call<WardenConfig>("PUT", "/api/warden", cfg),
   keys: () => call<KeysState>("GET", "/api/keys"),
-  createKey: (name: string, k: Key) => call<{ key: string }>("POST", `/api/keys/${encodeURIComponent(name)}`, k),
+  createKey: (name: string, k: Key, passphrase: string) =>
+    call<{ key: string }>("POST", `/api/keys/${encodeURIComponent(name)}`, { ...k, passphrase }),
   saveKey: (name: string, k: Key) => call("PUT", `/api/keys/${encodeURIComponent(name)}`, k),
-  deleteKey: (name: string) => call("DELETE", `/api/keys/${encodeURIComponent(name)}`),
-  revealKey: (name: string) => call<{ key: string }>("POST", `/api/keys/${encodeURIComponent(name)}/reveal`),
+  deleteKey: (name: string, passphrase: string) => call("DELETE", `/api/keys/${encodeURIComponent(name)}`, { passphrase }),
+  revealKey: (name: string, passphrase: string) =>
+    call<{ key: string }>("POST", `/api/keys/${encodeURIComponent(name)}/reveal`, { passphrase }),
   git: () => call<GitState>("GET", "/api/git"),
   build: () => call<BuildState>("GET", "/api/build"),
   startBuild: () => call<BuildState>("POST", "/api/build"),

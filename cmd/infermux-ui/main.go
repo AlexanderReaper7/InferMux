@@ -20,6 +20,7 @@ func main() {
 	daemon := flag.String("daemon", "http://127.0.0.1:5001", "the InferMux daemon")
 	keySecrets := flag.String("key-secrets", "", "the sops file a new key's plaintext goes to, so it can be read again")
 	sops := flag.String("sops", "sops", "the sops binary")
+	ageIdentity := flag.String("age-identity", "", "the user's age identity, encrypted with a passphrase (age -p): what opens -key-secrets")
 	daemonKeyFile := flag.String("daemon-key-file", "", "a file holding the UI's key for the daemon, when the daemon has a keys_file")
 	modelsDir := flag.String("models-dir", "", "the daemon's -config-dir: one YAML file per model")
 	wardenFile := flag.String("warden-config", "", "the daemon's -warden-config")
@@ -47,7 +48,7 @@ func main() {
 		}
 		daemonKey = strings.TrimSpace(string(raw))
 	}
-	store := &muxui.Store{ModelsDir: *modelsDir, WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops}
+	store := &muxui.Store{ModelsDir: *modelsDir, WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity}
 	for _, d := range strings.Split(*ggufDirs, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			store.GGUFDirs = append(store.GGUFDirs, d)

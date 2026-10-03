@@ -10,6 +10,9 @@
   let rows = $state<Row[]>([]);
   let error = $state<string | null>(null);
   let made = $state<{ name: string; key: string } | null>(null);
+  // The age identity's passphrase. Sent with Make key, Show and Revoke, and
+  // held only in this page: leaving the tab forgets it.
+  let passphrase = $state("");
   let draft = $state<Row>({ name: "", class: "interactive", limited: false, allow: "", shown: null });
 
   const lines = (s: string) =>
@@ -48,7 +51,7 @@
 
   const create = () =>
     act(async () => {
-      const { key } = await api.createKey(draft.name, toKey(draft));
+      const { key } = await api.createKey(draft.name, toKey(draft), passphrase);
       made = { name: draft.name, key };
       draft = { name: "", class: "interactive", limited: false, allow: "", shown: null };
       await load();
@@ -57,12 +60,12 @@
   const remove = (r: Row) =>
     act(async () => {
       if (!confirm(`Revoke ${r.name}? Its client is refused once the daemons reload keys.yaml.`)) return;
-      await api.deleteKey(r.name);
+      await api.deleteKey(r.name, passphrase);
       await load();
     });
   const reveal = (r: Row) =>
     act(async () => {
-      r.shown = r.shown ? null : (await api.revealKey(r.name)).key;
+      r.shown = r.shown ? null : (await api.revealKey(r.name, passphrase)).key;
     });
 </script>
 
@@ -87,6 +90,14 @@
   <div class="mb-4 text-sm text-neutral-500">
     Hashes in {keys.file}, read by both hosts. Plaintext in {keys.secrets || "nowhere: infermux-ui has no -key-secrets"}. Commit both from Changes.
   </div>
+
+  <label class="card mb-4 flex items-center gap-3">
+    <span class="label whitespace-nowrap">Passphrase</span>
+    <input type="password" autocomplete="off" class="w-80" bind:value={passphrase} />
+    <span class="text-xs text-neutral-500"
+      >Opens the age identity for Make key, Show and Revoke. Kept in this page only; the UI forgets it after each one.</span
+    >
+  </label>
 
   <section class="card mb-4">
     <h2 class="mb-3 font-medium">Keys</h2>

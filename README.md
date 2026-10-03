@@ -62,7 +62,7 @@ Both answer on loopback names only, plus the warden file's `trusted_hosts`. To r
 
 With `ui.kvKernels` set, the UI marks a model whose K-V cache pair has no compiled FlashAttention kernel, which llama.cpp runs by converting the cache to f16 on every decode step. `ui.prebuild` adds a "Build now" button that runs `nix build` on that installable as the user, ahead of the switch that puts the new kernels in use.
 
-The Keys tab makes, edits and revokes keys. With `ui.keySecrets`, a new key's plaintext goes to that sops file, so the tab can show it again; keys.yaml gets only its SHA-256. `ui.daemonKeyFile` is the UI's own key for the daemon. The browser needs none for the UI; it does for the llama-swap tab, which asks with a Basic prompt (any user name, the key as password).
+The Keys tab makes, edits and revokes keys. With `ui.keySecrets`, a new key's plaintext goes to that sops file, so the tab can show it again; keys.yaml gets only its SHA-256. The sops file opens with the user's age identity at `ui.ageIdentity`, encrypted with `age -p`; the tab asks for its passphrase for Make key (after the first), Show and Revoke, and forgets it when the tab closes. `ui.daemonKeyFile` is the UI's own key for the daemon. The browser needs none for the UI; it does for the llama-swap tab, which asks with a Basic prompt (any user name, the key as password).
 
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
 

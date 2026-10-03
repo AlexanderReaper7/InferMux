@@ -3,6 +3,8 @@ module github.com/mostlygeek/llama-swap
 go 1.27.1
 
 require (
+	filippo.io/age v1.3.2
+	github.com/NVIDIA/go-nvml v0.13.4-0
 	github.com/billziss-gh/golib v0.2.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -32,7 +34,7 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/NVIDIA/go-nvml v0.13.4-0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be // indirect
 	github.com/axiomhq/hyperloglog v0.0.0-20240319100328-84253e514e02 // indirect

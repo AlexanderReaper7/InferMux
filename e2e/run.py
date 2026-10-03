@@ -29,6 +29,7 @@ REPO = Path(__file__).resolve().parent.parent
 BIN = Path(os.environ.get("INFERMUX_BIN", REPO / "result" / "bin"))
 DAEMON, UI = "http://127.0.0.1:5101", "http://127.0.0.1:5110"
 # The clients' keys (0006): my-key is the user's, ui-key the UI's own.
+PASSPHRASE = "e2e passphrase"
 KEYS = {"batch-key": ("batch", None), "my-key": ("interactive", None), "ui-key": ("interactive", None), "narrow-key": ("interactive", ["e2e/beta"])}
 OUT = Path(os.environ.get("E2E_OUT", "/tmp/infermux-e2e"))
 
@@ -165,9 +166,13 @@ logToStdout: proxy
         if allow is not None:
             lines.append(f"    allow: {json.dumps(allow)}")
     (cfg / "keys.yaml").write_text("\n".join(lines) + "\n")
-    # The Keys tab's sops file, encrypted to an age key outside the repo.
+    # The Keys tab's sops file, encrypted to an age key outside the repo, and
+    # that key encrypted with a passphrase, as the user's is.
+    plain = root / "age-plain.txt"
+    public = subprocess.run(["age-keygen", "-o", plain], capture_output=True, text=True, check=True).stderr.split()[-1]
     identity = root / "age.txt"
-    public = subprocess.run(["age-keygen", "-o", identity], capture_output=True, text=True, check=True).stderr.split()[-1]
+    age_passphrase(plain, identity)
+    plain.unlink()
     (cfg / ".sops.yaml").write_text(f"creation_rules:\n  - path_regex: secrets/.*\\.yaml$\n    age: {public}\n")
     (cfg / "secrets").mkdir()
     kv = root / "kv.json"
@@ -179,13 +184,34 @@ logToStdout: proxy
     return cfg, base, kv, gguf, identity
 
 
+def age_passphrase(src, dst):
+    """`age -p` reads the passphrase only from a terminal, so it gets a pty."""
+    import pty
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvp("age", ["age", "-p", "-o", str(dst), str(src)])
+    out = b""
+    while True:
+        try:
+            chunk = os.read(fd, 1024)
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+        if chunk.rstrip().endswith(b":"):
+            os.write(fd, PASSPHRASE.encode() + b"\n")
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0, out
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="infermux-e2e-"))
     cfg, base, kv, gguf, identity = setup(root)
     models = cfg / "models"
     (root / "ui-key").write_text("ui-key\n")
-    env = dict(os.environ, SOPS_AGE_KEY_FILE=str(identity), GIT_AUTHOR_NAME="e2e", GIT_AUTHOR_EMAIL="e2e@example", GIT_COMMITTER_NAME="e2e", GIT_COMMITTER_EMAIL="e2e@example")
+    env = dict(os.environ, GIT_AUTHOR_NAME="e2e", GIT_AUTHOR_EMAIL="e2e@example", GIT_COMMITTER_NAME="e2e", GIT_COMMITTER_EMAIL="e2e@example")
     daemon_log = open(OUT / "daemon.log", "w")
     daemon = subprocess.Popen(
         [BIN / "infermux", "-listen", "127.0.0.1:5101", "-config", base, "-config-dir", models, "-warden-config", cfg / "warden.yaml"],
@@ -194,7 +220,8 @@ def main():
     ui = subprocess.Popen(
         [BIN / "infermux-ui", "-listen", "127.0.0.1:5110", "-daemon", DAEMON, "-models-dir", models,
          "-warden-config", cfg / "warden.yaml", "-base-config", base, "-gguf-dirs", gguf, "-kv-kernels", kv,
-         "-daemon-key-file", root / "ui-key", "-key-secrets", cfg / "secrets" / "infermux-keys.yaml"],
+         "-daemon-key-file", root / "ui-key", "-key-secrets", cfg / "secrets" / "infermux-keys.yaml",
+         "-age-identity", identity],
         stdout=open(OUT / "ui.log", "w"), stderr=subprocess.STDOUT, env=env,
     )
     try:
@@ -468,6 +495,12 @@ def run(cfg, models, gguf):
         shot("keys-made")
         page.get_by_role("button", name="Done").click()
         phone = page.locator("tr", has_text="phone")
+        phone.get_by_role("button", name="Show").click()
+        check("show without the passphrase asks for it", visible(page.get_by_text("passphrase of the age identity")))
+        page.locator("label", has_text="Passphrase").locator("input").fill("wrong")
+        phone.get_by_role("button", name="Show").click()
+        check("a wrong passphrase does not open it", visible(page.get_by_text("passphrase does not open")))
+        page.locator("label", has_text="Passphrase").locator("input").fill(PASSPHRASE)
         phone.get_by_role("button", name="Show").click()
         check("show reads it back from sops", visible(phone.get_by_text(key)) if key else False)
         phone.get_by_role("button", name="Revoke").click()

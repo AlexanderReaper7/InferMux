@@ -117,11 +117,11 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 		reply(rw, st)
 	})
 	mux.HandleFunc("POST /api/keys/{name}", func(rw http.ResponseWriter, r *http.Request) {
-		var k warden.Key
-		if !decode(rw, r, &k) {
+		var body keyRequest
+		if !decode(rw, r, &body) {
 			return
 		}
-		key, err := store.CreateKey(r.PathValue("name"), k)
+		key, err := store.CreateKey(r.PathValue("name"), body.Key, body.Passphrase)
 		if err != nil {
 			fail(rw, err)
 			return
@@ -140,7 +140,11 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 		reply(rw, map[string]bool{"saved": true})
 	})
 	mux.HandleFunc("DELETE /api/keys/{name}", func(rw http.ResponseWriter, r *http.Request) {
-		if err := store.DeleteKey(r.PathValue("name")); err != nil {
+		var body passphrase
+		if !decode(rw, r, &body) {
+			return
+		}
+		if err := store.DeleteKey(r.PathValue("name"), body.Passphrase); err != nil {
 			fail(rw, err)
 			return
 		}
@@ -149,7 +153,11 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 	// A POST, though it changes nothing: a write needs X-InferMux from the
 	// UI's own origin, and a key should need no less.
 	mux.HandleFunc("POST /api/keys/{name}/reveal", func(rw http.ResponseWriter, r *http.Request) {
-		key, err := store.RevealKey(r.PathValue("name"))
+		var body passphrase
+		if !decode(rw, r, &body) {
+			return
+		}
+		key, err := store.RevealKey(r.PathValue("name"), body.Passphrase)
 		if err != nil {
 			fail(rw, err)
 			return
@@ -258,6 +266,17 @@ func guardUI(store *Store, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(rw, r)
 	})
+}
+
+// passphrase is the age identity's passphrase, sent with an operation that
+// opens the sops file and dropped when it returns.
+type passphrase struct {
+	Passphrase string `json:"passphrase"`
+}
+
+type keyRequest struct {
+	warden.Key
+	passphrase
 }
 
 func decode(rw http.ResponseWriter, r *http.Request, v any) bool {

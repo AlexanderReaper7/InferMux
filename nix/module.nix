@@ -114,8 +114,18 @@ in
         example = "/home/alice/nixcfg/secrets/infermux-keys.yaml";
         description = ''
           The sops file the Keys tab puts a new key's plaintext in, so it can
-          be shown again. sops finds its recipients in the .sops.yaml above it
-          and decrypts with the user's own identity. null: no new keys.
+          be shown again. sops finds its recipients in the .sops.yaml above it.
+          null: no new keys.
+        '';
+      };
+      ageIdentity = lib.mkOption {
+        type = lib.types.str;
+        default = "/home/${cfg.ui.user}/.config/sops/age/keys.txt";
+        defaultText = lib.literalExpression ''"/home/''${cfg.ui.user}/.config/sops/age/keys.txt"'';
+        description = ''
+          The user's age identity, encrypted with a passphrase (`age -p`). The
+          Keys tab asks for the passphrase and unlocks it in memory for each
+          call to sops that has to decrypt.
         '';
       };
       daemonKeyFile = lib.mkOption {
@@ -278,6 +288,8 @@ in
             cfg.ui.keySecrets
             "-sops"
             (lib.getExe pkgs.sops)
+            "-age-identity"
+            cfg.ui.ageIdentity
           ]
           ++ lib.optionals (cfg.ui.daemonKeyFile != null) [
             "-daemon-key-file"

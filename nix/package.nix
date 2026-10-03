@@ -71,7 +71,7 @@ in
   pname = "infermux";
   inherit version src;
 
-  vendorHash = "sha256-TRu7S79Bxn8bPRvB459U8UNsUbWkdScVxIGcB5Oo6AY=";
+  vendorHash = "sha256-DLvALZ22lKj4uaqiMc58RR8ENe0zctAnDUB9UKBq0Hg=";
 
   subPackages = [
     "."
