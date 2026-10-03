@@ -42,3 +42,5 @@ Later milestones, decided now:
 - **Immich cannot send a key.** Its ML URL takes no headers, and 4 refuses keyless requests. To be decided before 11.
 - **The never-kill rule covers `/upstream/` only for inference paths** (`internal/server/inflight.go`). Immich's `/predict` is not one. To be extended in 11.
 - **`/v1/models` lists every model to every key,** including ones its `allow` refuses.
+- **The zbox reads keys.yaml from its last deploy** (the user's call, 2026-10-03), so a key revoked in the Keys tab still works there until the next `nixos-rebuild --target-host`. Ends with 7.
+- **A service's key is in two sops files**: the hosts' file, which sops-nix reads, and the Keys tab's, which Show reads. A revoke from the tab removes only the second copy. The fix is the tab reading and writing the hosts' file too, for keys a host holds.
