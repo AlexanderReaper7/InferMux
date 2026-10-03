@@ -8,13 +8,14 @@
   go_1_27,
   addDriverRunpath,
   makeWrapper,
+  git,
   # llama-swap's web dashboard. Its npm dependencies come from
   # registry.npmjs.org; without it InferMux serves the API only.
   withUI ? true,
 }:
 
 let
-  version = "0.3.0";
+  version = "0.4.0";
   # The llama-swap release last merged in. Bump it with the merge.
   upstream = "262";
 
@@ -33,11 +34,25 @@ let
       ../internal
       ../cmd
       ../ui
+      ../webui
     ];
   };
 
+  # InferMux's own web UI, embedded in infermux-ui (0005).
+  webui = buildNpmPackage {
+    pname = "infermux-webui";
+    inherit version src;
+    sourceRoot = "${src.name}/webui";
+    npmDepsHash = "sha256-6oDnOHJhVUXcnEpm0kyGr+LkRvByEVPXMoNgAJ2KP5I=";
+    installPhase = ''
+      runHook preInstall
+      cp -r dist $out
+      runHook postInstall
+    '';
+  };
+
   ui = buildNpmPackage {
-    pname = "infermux-ui";
+    pname = "llama-swap-ui";
     inherit version src;
     sourceRoot = "${src.name}/ui";
     npmDepsHash = "sha256-lmhRJ8275PIQ+7vHdr9aZ31lYeXUkXrWnlvuwOadjRQ=";
@@ -55,7 +70,10 @@ in
 
   vendorHash = "sha256-TRu7S79Bxn8bPRvB459U8UNsUbWkdScVxIGcB5Oo6AY=";
 
-  subPackages = [ "." ];
+  subPackages = [
+    "."
+    "cmd/infermux-ui"
+  ];
   tags = lib.optionals withUI [ "embed_ui" ];
   # go-nvml's header declares deprecated vGPU calls, one warning each.
   env.CGO_CFLAGS = "-Wno-deprecated-declarations";
@@ -71,16 +89,22 @@ in
   ];
 
   nativeBuildInputs = [ makeWrapper ];
+  # The UI's tests commit to a scratch repository.
+  nativeCheckInputs = [ git ];
 
-  preBuild = lib.optionalString withUI ''
+  preBuild = ''
+    cp -r ${webui}/. internal/muxui/dist/
+  ''
+  + lib.optionalString withUI ''
     cp -r ${ui}/ui_dist internal/server/
   '';
 
-  # The warden's tests, and llama-swap's for the two places InferMux touches.
-  # The rest of upstream's suite starts processes and is upstream's to run.
+  # The warden's and the UI's tests, and llama-swap's for the two places
+  # InferMux touches. The rest of upstream's suite starts processes and is
+  # upstream's to run.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/muxui/ ./internal/server/ .
     runHook postCheck
   '';
 
@@ -91,7 +115,7 @@ in
     wrapProgram $out/bin/infermux --prefix LD_LIBRARY_PATH : ${addDriverRunpath.driverLink}/lib
   '';
 
-  passthru = { inherit ui upstream; };
+  passthru = { inherit ui webui upstream; };
 
   meta = {
     description = "llama-swap with a GPU warden: model routing that yields the card to other work and never kills the user's own prompt";

@@ -1,0 +1,315 @@
+package muxui
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const base = `macros:
+  llama-server: /bin/llama-server --host 127.0.0.1
+healthCheckTimeout: 600
+`
+
+const qwen = `# Qwen, the everyday model.
+models:
+  qwen:
+    cmd: |
+      ${llama-server}
+        --port ${PORT}
+        --model GGUF
+        --ctx-size 65536
+        -fa on
+        --jinja
+        --temp -0.5
+    proxy: http://127.0.0.1:${PORT}
+    env:
+      - CUDA_VISIBLE_DEVICES=0 # keep
+`
+
+type fixture struct {
+	store *Store
+	gguf  string
+}
+
+func newFixture(t *testing.T) fixture {
+	t.Helper()
+	dir := t.TempDir()
+	gguf := filepath.Join(dir, "gguf", "qwen.gguf")
+	os.MkdirAll(filepath.Dir(gguf), 0o755)
+	os.WriteFile(gguf, []byte("GGUF"), 0o644)
+	other := filepath.Join(dir, "gguf", "other.gguf")
+	os.WriteFile(other, []byte("GGUF"), 0o644)
+	models := filepath.Join(dir, "models")
+	os.MkdirAll(models, 0o755)
+	os.WriteFile(filepath.Join(models, "qwen.yaml"), []byte(strings.ReplaceAll(qwen, "GGUF", gguf)), 0o644)
+	os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(base), 0o644)
+	os.WriteFile(filepath.Join(dir, "warden.yaml"), []byte("# the warden\nbatch_api_keys: [episteme-batch]\n"), 0o644)
+	return fixture{
+		store: &Store{ModelsDir: models, WardenFile: filepath.Join(dir, "warden.yaml"),
+			BaseConfig: filepath.Join(dir, "base.yaml"), GGUFDirs: []string{filepath.Join(dir, "gguf")}},
+		gguf: gguf,
+	}
+}
+
+func (f fixture) model(t *testing.T, name string) Model {
+	t.Helper()
+	models, err := f.store.Models()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range models {
+		if m.Name == name {
+			return m
+		}
+	}
+	t.Fatalf("no model %s in %+v", name, models)
+	return Model{}
+}
+
+func (f fixture) file(t *testing.T, name string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(f.store.ModelsDir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func str(s string) *string { return &s }
+
+func TestACmdInTheUIsFormSplitsIntoFlags(t *testing.T) {
+	f := newFixture(t)
+	m := f.model(t, "qwen")
+	if m.Raw || m.Runtime != "llama-server" || m.GGUF != f.gguf || len(m.Flags) != 4 {
+		t.Fatalf("%+v", m)
+	}
+	if m.Flags[2].Name != "--jinja" || m.Flags[2].Value != nil || *m.Flags[3].Value != "-0.5" {
+		t.Fatalf("flags %+v", m.Flags)
+	}
+}
+
+func TestEveryOtherCmdIsRawText(t *testing.T) {
+	for _, cmd := range []string{
+		"/bin/llama-server --port ${PORT} --model x.gguf",   // no runtime macro
+		"${llama-server} --model x.gguf",                    // no port
+		"${llama-server} --port ${PORT} --model x.gguf pos", // a positional
+		"${llama-server} --port ${PORT}\n# note\n--model x.gguf",
+	} {
+		if _, _, _, ok := parseCmd(cmd); ok {
+			t.Errorf("parsed %q", cmd)
+		}
+	}
+}
+
+func TestRenderingParsesBackToTheSameFlags(t *testing.T) {
+	flags := []Flag{{"--ctx-size", str("262144")}, {"--jinja", nil}, {"--chat-template-kwargs", str(`{"enable_thinking": false}`)}, {"--temp", str("-1")}}
+	runtime, gguf, got, ok := parseCmd(renderCmd("bonsai-server", "/srv/a b.gguf", flags))
+	if !ok || runtime != "bonsai-server" || gguf != "/srv/a b.gguf" || len(got) != len(flags) {
+		t.Fatalf("%v %s %s %+v", ok, runtime, gguf, got)
+	}
+	for i := range flags {
+		if got[i].Name != flags[i].Name || (got[i].Value == nil) != (flags[i].Value == nil) ||
+			(got[i].Value != nil && *got[i].Value != *flags[i].Value) {
+			t.Errorf("flag %d: %+v != %+v", i, got[i], flags[i])
+		}
+	}
+}
+
+func TestAnEditKeepsCommentsAndKeysTheUIDoesNotEdit(t *testing.T) {
+	f := newFixture(t)
+	m := f.model(t, "qwen")
+	m.Flags[0].Value = str("131072")
+	ttl := 900
+	m.TTL = &ttl
+	if err := f.store.SaveModel("qwen", m); err != nil {
+		t.Fatal(err)
+	}
+	out := f.file(t, "qwen.yaml")
+	for _, want := range []string{"# Qwen, the everyday model.", "CUDA_VISIBLE_DEVICES=0", "# keep", "--ctx-size 131072", "ttl: 900"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lost %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAnEditLlamaSwapWouldRefuseIsNotWritten(t *testing.T) {
+	f := newFixture(t)
+	before := f.file(t, "qwen.yaml")
+	m := f.model(t, "qwen")
+	m.Raw, m.Cmd = true, "${llama-server} --port ${PORT} --model x.gguf ${no-such-macro}"
+	if err := f.store.SaveModel("qwen", m); err == nil {
+		t.Fatal("an unknown macro was written")
+	}
+	if f.file(t, "qwen.yaml") != before {
+		t.Fatal("the file changed")
+	}
+	m = f.model(t, "qwen")
+	m.Flags = append(m.Flags, Flag{"--port", str("8080")})
+	if err := f.store.SaveModel("qwen", m); err == nil {
+		t.Fatal("--port as a flag was taken")
+	}
+}
+
+func TestCreateRenameAndDelete(t *testing.T) {
+	f := newFixture(t)
+	other := filepath.Join(filepath.Dir(f.gguf), "other.gguf")
+	m := Model{Name: "other", Runtime: "llama-server", GGUF: other, Flags: []Flag{{"--jinja", nil}}}
+	if err := f.store.SaveModel("", m); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SaveModel("", m); err == nil {
+		t.Fatal("created twice")
+	}
+	m = f.model(t, "other")
+	m.Name = "renamed"
+	if err := f.store.SaveModel("other", m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(f.store.ModelsDir, "other.yaml")); !os.IsNotExist(err) {
+		t.Fatal("the old file is still there")
+	}
+	if !strings.Contains(f.file(t, "renamed.yaml"), "renamed:") {
+		t.Fatal("not renamed")
+	}
+	if err := f.store.SaveModel("renamed", Model{Name: "qwen", Runtime: "llama-server", GGUF: other}); err == nil {
+		t.Fatal("renamed onto an existing model")
+	}
+	if err := f.store.DeleteModel("renamed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(f.store.ModelsDir, "renamed.yaml")); !os.IsNotExist(err) {
+		t.Fatal("an empty file was left")
+	}
+	ggufs, _ := f.store.GGUFs()
+	if len(ggufs) != 2 || len(ggufs[1].UsedBy) != 1 || ggufs[1].UsedBy[0] != "qwen" {
+		t.Fatalf("%+v", ggufs)
+	}
+}
+
+func TestTheWardenFileKeepsItsCommentAndRefusesWhatTheWardenWould(t *testing.T) {
+	f := newFixture(t)
+	cfg, err := f.store.Warden()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Policy.GPUBusyPercent = 40
+	if err := f.store.SaveWarden(cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(f.store.WardenFile)
+	if !strings.Contains(string(raw), "# the warden") || !strings.Contains(string(raw), "gpu_busy_percent: 40") {
+		t.Fatalf("%s", raw)
+	}
+	cfg.Consumers = append(cfg.Consumers, cfg.Consumers...)
+	cfg.Consumers = append(cfg.Consumers, struct {
+		Name           string  `yaml:"name" json:"name"`
+		URL            string  `yaml:"url" json:"url"`
+		AnnouncePath   string  `yaml:"announce_path" json:"announce_path"`
+		TimeoutSeconds float64 `yaml:"timeout_seconds" json:"timeout_seconds"`
+	}{Name: "no-url"})
+	if err := f.store.SaveWarden(cfg); err == nil {
+		t.Fatal("a consumer without a url was written")
+	}
+}
+
+func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	f := newFixture(t)
+	repo := filepath.Dir(f.store.ModelsDir)
+	git := func(args ...string) string {
+		out, err := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %s", args, out)
+		}
+		return string(out)
+	}
+	git("init", "-q")
+	git("add", "-A")
+	git("commit", "-qm", "start")
+	os.WriteFile(filepath.Join(repo, "base.yaml"), []byte(base+"# the user's own edit\n"), 0o644)
+	git("add", "base.yaml") // staged by the user, not for the UI to commit
+
+	m := f.model(t, "qwen")
+	m.Description = "everyday"
+	if err := f.store.SaveModel("qwen", m); err != nil {
+		t.Fatal(err)
+	}
+	st, err := f.store.Git()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Changes) != 1 || !strings.Contains(st.Diff, "+    description: everyday") {
+		t.Fatalf("%+v", st)
+	}
+	os.Setenv("GIT_AUTHOR_NAME", "t")
+	os.Setenv("GIT_AUTHOR_EMAIL", "t@t")
+	os.Setenv("GIT_COMMITTER_NAME", "t")
+	os.Setenv("GIT_COMMITTER_EMAIL", "t@t")
+	if _, err := f.store.Commit("qwen: describe it"); err != nil {
+		t.Fatal(err)
+	}
+	if staged := git("diff", "--cached", "--name-only"); strings.TrimSpace(staged) != "base.yaml" {
+		t.Fatalf("the user's staged file was touched: %q", staged)
+	}
+	if files := git("show", "--name-only", "--format="); strings.TrimSpace(files) != "models/qwen.yaml" {
+		t.Fatalf("committed %q", files)
+	}
+}
+
+// --- HTTP -------------------------------------------------------------------
+
+func TestTheUIAnswersOnLoopbackAndTakesOnlyMarkedSameOriginWrites(t *testing.T) {
+	f := newFixture(t)
+	h := Handler(f.store, &url.URL{Scheme: "http", Host: "127.0.0.1:1"})
+	do := func(method, host string, header map[string]string) int {
+		req := httptest.NewRequest(method, "/api/models/qwen", strings.NewReader("{}"))
+		req.Host = host
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if c := do("GET", "evil.example:5010", nil); c != http.StatusMisdirectedRequest {
+		t.Errorf("rebound name got %d", c)
+	}
+	if c := do("DELETE", "127.0.0.1:5010", map[string]string{"Origin": "https://evil.example", "X-InferMux": "1"}); c != http.StatusForbidden {
+		t.Errorf("foreign origin got %d", c)
+	}
+	if c := do("DELETE", "127.0.0.1:5010", map[string]string{"Origin": "http://127.0.0.1:5010"}); c != http.StatusForbidden {
+		t.Errorf("unmarked write got %d", c)
+	}
+	if c := do("DELETE", "127.0.0.1:5010", map[string]string{"Origin": "http://127.0.0.1:5010", "X-InferMux": "1"}); c != http.StatusOK {
+		t.Errorf("own write got %d", c)
+	}
+}
+
+func TestTheDaemonSeesInferMuxUIAndNotTheBrowser(t *testing.T) {
+	var got *http.Request
+	daemon := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		got = r
+		json.NewEncoder(rw).Encode(map[string]bool{"ok": true})
+	}))
+	defer daemon.Close()
+	u, _ := url.Parse(daemon.URL)
+	h := Handler(newFixture(t).store, u)
+	req := httptest.NewRequest("POST", "/daemon/warden/forgive", nil)
+	req.Host = "127.0.0.1:5010"
+	req.Header.Set("Origin", "http://127.0.0.1:5010")
+	req.Header.Set("X-InferMux", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || got.URL.Path != "/warden/forgive" || got.Header.Get("Origin") != "" || got.Header.Get("X-InferMux") == "" {
+		t.Fatalf("%d %s %v", rec.Code, got.URL.Path, got.Header)
+	}
+}

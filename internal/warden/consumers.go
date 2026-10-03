@@ -64,6 +64,30 @@ func newAnnouncer(consumers []Consumer, log Logger) *announcer {
 	}
 }
 
+// setConsumers replaces the list. A consumer kept under the same name and
+// endpoint keeps what it has heard, so a reload does not re-announce to it.
+func (a *announcer) setConsumers(consumers []Consumer) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	kept := map[string]string{}
+	for _, c := range a.consumers {
+		kept[c.Name] = c.Endpoint()
+	}
+	for _, c := range consumers {
+		if kept[c.Name] != c.Endpoint() {
+			delete(a.delivered, c.Name)
+			delete(a.lastError, c.Name)
+		}
+	}
+	a.consumers = consumers
+}
+
+func (a *announcer) list() []Consumer {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.consumers
+}
+
 func (a *announcer) state() map[string]ConsumerState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -88,7 +112,7 @@ func (a *announcer) state() map[string]ConsumerState {
 // were contacted.
 func (a *announcer) sync(v Verdict) int {
 	contacted := 0
-	for _, c := range a.consumers {
+	for _, c := range a.list() {
 		if !a.due(c, v) {
 			continue
 		}

@@ -42,10 +42,10 @@ type Config struct {
 	// pause and cancelled on a yield. Any other key, or none, is interactive.
 	// These are labels, not secrets: InferMux listens on loopback and does no
 	// authentication of its own.
-	BatchAPIKeys []string `yaml:"batch_api_keys" json:"-"`
+	BatchAPIKeys []string `yaml:"batch_api_keys" json:"batch_api_keys"`
 
 	Policy    Policy     `yaml:"policy" json:"policy"`
-	Consumers []Consumer `yaml:"consumers" json:"-"`
+	Consumers []Consumer `yaml:"consumers" json:"consumers"`
 }
 
 // Policy is the decision table's numbers. See Decide for what each one does.
@@ -84,10 +84,10 @@ type Policy struct {
 // {"action": "pause"|"resume", "reason": "..."}. What a consumer does about it
 // is the consumer's business.
 type Consumer struct {
-	Name           string  `yaml:"name"`
-	URL            string  `yaml:"url"`
-	AnnouncePath   string  `yaml:"announce_path"`
-	TimeoutSeconds float64 `yaml:"timeout_seconds"`
+	Name           string  `yaml:"name" json:"name"`
+	URL            string  `yaml:"url" json:"url"`
+	AnnouncePath   string  `yaml:"announce_path" json:"announce_path"`
+	TimeoutSeconds float64 `yaml:"timeout_seconds" json:"timeout_seconds"`
 }
 
 func (c Consumer) Endpoint() string {

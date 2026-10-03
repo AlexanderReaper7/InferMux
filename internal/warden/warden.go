@@ -34,27 +34,39 @@ type Logger interface {
 }
 
 // Warden owns the verdict. Everything else reads it.
+//
+// Two verdicts are kept. own is what the measurements say. verdict is the one
+// acted on and announced: own, unless the user set one by hand, which holds
+// until own changes (0005).
 type Warden struct {
-	cfg        Config
-	models     Models
-	log        Logger
-	probe      func() (Resources, error)
-	freshProbe func() (Resources, error)
-	comfyQueue func() *int
-	comfyFree  func() error
-	now        func() time.Time
+	models Models
+	log    Logger
+	now    func() time.Time
 
 	traffic   *traffic
 	announcer *announcer
 
+	// tickMu serialises everything that moves the verdict: a tick, a manual
+	// verdict, a reload. The probe is only called under it.
+	tickMu sync.Mutex
+	probe  func() (Resources, error)
+
 	mu            sync.Mutex
+	cfg           Config
+	freshProbe    func() (Resources, error)
+	comfyQueue    func() *int
+	comfyFree     func() error
+	own           Verdict
 	verdict       Verdict
+	manual        *Manual
 	comfy         ComfyIdle
 	lastResources *Resources
 	probeError    *string
 	lastUnload    []string
 	pendingUnload bool
 	deferLogged   bool
+	whenQuiet     map[string]func()
+	quietLogged   map[string]bool
 
 	stop chan struct{}
 	done chan struct{}
@@ -63,43 +75,62 @@ type Warden struct {
 // New builds a warden over the given models. It does nothing until Start.
 func New(cfg Config, models Models, log Logger) *Warden {
 	w := &Warden{
-		cfg:        cfg,
-		models:     models,
-		log:        log,
-		probe:      newProbe(cfg),
-		freshProbe: newProbe(cfg),
-		now:        time.Now,
-		announcer:  newAnnouncer(cfg.Consumers, log),
-		verdict:    initialVerdict(),
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
+		cfg:         cfg,
+		models:      models,
+		log:         log,
+		probe:       newProbe(cfg),
+		freshProbe:  newProbe(cfg),
+		now:         time.Now,
+		announcer:   newAnnouncer(cfg.Consumers, log),
+		own:         initialVerdict(),
+		verdict:     initialVerdict(),
+		whenQuiet:   map[string]func(){},
+		quietLogged: map[string]bool{},
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 	w.traffic = newTraffic(cfg.BatchAPIKeys, func() time.Time { return w.now() })
-	if url := cfg.ComfyUIURL; url != "" {
-		w.comfyQueue = func() *int { return comfyUIQueueDepth(url) }
-		w.comfyFree = func() error { return comfyUIFree(url) }
-	}
+	w.setComfyUI(cfg.ComfyUIURL)
 	w.comfy = ComfyIdle{BusyAt: w.now()}
 	return w
 }
 
-// Start runs the loop. A disabled policy measures on request only, announces
-// nothing, and still classifies requests.
+func (w *Warden) setComfyUI(url string) {
+	w.comfyQueue, w.comfyFree = nil, nil
+	if url != "" {
+		w.comfyQueue = func() *int { return comfyUIQueueDepth(url) }
+		w.comfyFree = func() error { return comfyUIFree(url) }
+	}
+}
+
+func (w *Warden) config() Config {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.cfg
+}
+
+// Start runs the loop. The loop runs even with the policy disabled, since a
+// reload may enable it and a deferred reload still has to happen; a disabled
+// tick measures nothing and announces nothing.
 func (w *Warden) Start() {
-	p := w.cfg.Policy
+	w.logPolicy("Warden")
+	go w.run()
+}
+
+func (w *Warden) logPolicy(prefix string) {
+	cfg := w.config()
+	p := cfg.Policy
 	if !p.Enabled {
-		w.log.Infof("Warden policy disabled: measuring on request only, announcing nothing")
-		close(w.done)
+		w.log.Infof("%s policy disabled: measuring on request only, announcing nothing", prefix)
 		return
 	}
-	names := make([]string, 0, len(w.cfg.Consumers))
-	for _, c := range w.cfg.Consumers {
+	names := make([]string, 0, len(cfg.Consumers))
+	for _, c := range cfg.Consumers {
 		names = append(names, c.Name)
 	}
-	w.log.Infof("Warden watching every %.0fs: busy >= %.0f%%, resume after %ds quiet, no unload within %ds of an interactive request, consumers: %s, ComfyUI: %s",
-		p.PollSeconds, p.GPUBusyPercent, p.ResumeQuietSeconds, p.InteractiveRecentSeconds,
-		orNone(strings.Join(names, ", ")), orNone(w.cfg.ComfyUIURL))
-	go w.run()
+	w.log.Infof("%s watching every %.0fs: busy >= %.0f%%, resume after %ds quiet, no unload within %ds of an interactive request, consumers: %s, ComfyUI: %s",
+		prefix, p.PollSeconds, p.GPUBusyPercent, p.ResumeQuietSeconds, p.InteractiveRecentSeconds,
+		orNone(strings.Join(names, ", ")), orNone(cfg.ComfyUIURL))
 }
 
 func (w *Warden) Stop() {
@@ -113,10 +144,10 @@ func (w *Warden) Stop() {
 
 func (w *Warden) run() {
 	defer close(w.done)
-	interval := time.Duration(w.cfg.Policy.PollSeconds * float64(time.Second))
 	for {
 		started := time.Now()
 		w.safeTick()
+		interval := time.Duration(w.config().Policy.PollSeconds * float64(time.Second))
 		wait := max(time.Second, interval-time.Since(started))
 		select {
 		case <-w.stop:
@@ -142,6 +173,15 @@ func (w *Warden) safeTick() {
 // A failed measurement leaves the verdict alone rather than reading as quiet:
 // a probe that cannot run is not evidence that the GPU is free.
 func (w *Warden) Tick() Verdict {
+	w.tickMu.Lock()
+	defer w.tickMu.Unlock()
+	defer w.runWhenQuiet()
+
+	cfg := w.config()
+	if !cfg.Policy.Enabled {
+		return w.disabledTick()
+	}
+
 	res, err := w.probe()
 	if err != nil {
 		detail := err.Error()
@@ -154,8 +194,11 @@ func (w *Warden) Tick() Verdict {
 	}
 
 	now := w.now()
-	if w.comfyQueue != nil {
-		res.ComfyUIJobs = w.comfyQueue()
+	w.mu.Lock()
+	queue := w.comfyQueue
+	w.mu.Unlock()
+	if queue != nil {
+		res.ComfyUIJobs = queue()
 		w.comfyTick(res.ComfyUIJobs, now)
 	}
 	loaded := len(w.models.Running()) > 0
@@ -163,11 +206,32 @@ func (w *Warden) Tick() Verdict {
 	w.mu.Lock()
 	w.probeError = nil
 	w.lastResources = &res
+	w.own = Decide(w.own, res, now, loaded, cfg.Policy)
 	before := w.verdict
-	after := Decide(before, res, now, loaded, w.cfg.Policy)
+	after := w.effectiveLocked()
 	w.verdict = after
 	w.mu.Unlock()
 
+	w.act(before, after)
+	return after
+}
+
+// effectiveLocked is the verdict to act on: the user's, until the warden's own
+// decision moves away from what it was when the user set it.
+func (w *Warden) effectiveLocked() Verdict {
+	if w.manual == nil {
+		return w.own
+	}
+	if w.own.Action() != w.manual.OwnAction {
+		w.log.Infof("Manual %s ended: the warden decided %s - %s", w.manual.Action, w.own.Action(), w.own.Reason)
+		w.manual = nil
+		return w.own
+	}
+	return w.manual.verdict()
+}
+
+// act carries out a change of verdict and keeps the consumers told.
+func (w *Warden) act(before, after Verdict) {
 	if before.Yielded != after.Yielded {
 		w.log.Infof("Verdict: %s - %s", strings.ToUpper(after.Action()), after.Reason)
 	}
@@ -191,6 +255,20 @@ func (w *Warden) Tick() Verdict {
 	w.settleUnload()
 
 	w.announcer.sync(after)
+}
+
+// disabledTick measures nothing. Consumers a pause was announced to are told
+// to resume once, since nothing will ever lift it otherwise.
+func (w *Warden) disabledTick() Verdict {
+	w.mu.Lock()
+	before := w.verdict
+	w.own, w.manual = initialVerdict(), nil
+	after := Verdict{Reason: "the warden is disabled"}
+	w.verdict = after
+	w.mu.Unlock()
+	if before.Yielded {
+		w.act(before, after)
+	}
 	return after
 }
 
@@ -203,7 +281,7 @@ func (w *Warden) settleUnload() {
 	if !pending {
 		return
 	}
-	window := time.Duration(w.cfg.Policy.InteractiveRecentSeconds) * time.Second
+	window := time.Duration(w.config().Policy.InteractiveRecentSeconds) * time.Second
 	if recent, last := w.traffic.interactiveRecent(window); recent {
 		w.mu.Lock()
 		logged := w.deferLogged
@@ -231,16 +309,16 @@ func describeLast(last, now time.Time) string {
 
 func (w *Warden) comfyTick(jobs *int, now time.Time) {
 	w.mu.Lock()
-	previous := w.comfy
+	previous, free, policy := w.comfy, w.comfyFree, w.cfg.Policy
 	w.mu.Unlock()
-	after, due := ComfyUIFreeDue(previous, jobs, now, w.cfg.Policy)
+	after, due := ComfyUIFreeDue(previous, jobs, now, policy)
 	if due {
-		if err := w.comfyFree(); err != nil {
+		if err := free(); err != nil {
 			// Not marked freed, so the next tick tries again.
 			w.log.Warnf("ComfyUI did not take /free: %v", err)
 			return
 		}
-		w.log.Infof("ComfyUI idle for %ds: models freed", w.cfg.Policy.ComfyUIIdleSeconds)
+		w.log.Infof("ComfyUI idle for %ds: models freed", policy.ComfyUIIdleSeconds)
 	}
 	w.mu.Lock()
 	w.comfy = after
@@ -253,6 +331,10 @@ func (w *Warden) comfyTick(jobs *int, now time.Time) {
 func (w *Warden) Wrap(next http.Handler) http.Handler {
 	api := w.api()
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if refused := guard(r); refused != "" {
+			writeJSON(rw, http.StatusForbidden, map[string]string{"detail": refused})
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/warden/") {
 			api.ServeHTTP(rw, r)
 			return
@@ -269,6 +351,7 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			w.refuse(rw, "batch requests wait while the GPU is yielded: ")
 			return
 		}
+		defer w.runWhenQuiet()
 		defer w.traffic.end(id)
 		tracked := &trackedWriter{ResponseWriter: rw}
 		next.ServeHTTP(tracked, r.WithContext(ctx))
@@ -293,9 +376,10 @@ var errYielded = errors.New("the GPU was yielded")
 func (w *Warden) refuse(rw http.ResponseWriter, why string) {
 	w.mu.Lock()
 	reason := w.verdict.Reason
+	retry := w.cfg.Policy.ResumeQuietSeconds
 	w.mu.Unlock()
 	rw.Header().Set("Content-Type", "application/json")
-	rw.Header().Set("Retry-After", strconv.Itoa(w.cfg.Policy.ResumeQuietSeconds))
+	rw.Header().Set("Retry-After", strconv.Itoa(retry))
 	rw.WriteHeader(http.StatusServiceUnavailable)
 	json.NewEncoder(rw).Encode(map[string]any{
 		"error": map[string]string{
@@ -343,9 +427,14 @@ func (t *trackedWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
 // VerdictState is /warden/verdict: what the warden believes, who has heard
 // it, and what it saw. Cheap: it reports the last tick rather than measuring.
 type VerdictState struct {
-	Enabled       bool                     `json:"enabled"`
-	Verdict       Verdict                  `json:"verdict"`
-	Action        string                   `json:"action"`
+	Enabled bool    `json:"enabled"`
+	Verdict Verdict `json:"verdict"`
+	Action  string  `json:"action"`
+	// Own is what the measurements say. It differs from Verdict while a
+	// manual verdict holds.
+	Own           Verdict                  `json:"own"`
+	Manual        *Manual                  `json:"manual"`
+	WaitingQuiet  []string                 `json:"waiting_for_quiet"`
 	Policy        Policy                   `json:"policy"`
 	Consumers     map[string]ConsumerState `json:"consumers"`
 	Traffic       TrafficState             `json:"traffic"`
@@ -370,6 +459,9 @@ func (w *Warden) State() VerdictState {
 		Enabled:       w.cfg.Policy.Enabled,
 		Verdict:       w.verdict,
 		Action:        w.verdict.Action(),
+		Own:           w.own,
+		Manual:        w.manual,
+		WaitingQuiet:  w.waitingLocked(),
 		Policy:        w.cfg.Policy,
 		Consumers:     w.announcer.state(),
 		Traffic:       w.traffic.state(),
@@ -393,13 +485,17 @@ func (w *Warden) api() http.Handler {
 	// A fresh measurement, on purpose, from a probe of its own so it does not
 	// move the loop's utilization window.
 	mux.HandleFunc("GET /warden/resources", func(rw http.ResponseWriter, r *http.Request) {
-		res, err := w.freshProbe()
+		w.mu.Lock()
+		probe := w.freshProbe
+		w.mu.Unlock()
+		res, err := probe()
 		if err != nil {
 			writeJSON(rw, http.StatusServiceUnavailable, map[string]string{"detail": "probe failed: " + err.Error()})
 			return
 		}
 		writeJSON(rw, http.StatusOK, res)
 	})
+	w.controls(mux)
 	return mux
 }
 

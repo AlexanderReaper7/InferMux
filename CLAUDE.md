@@ -16,7 +16,9 @@ This file is rules and navigation only.
 | path | what it is |
 |---|---|
 | `internal/warden/` | ours: config, policy, probe, ComfyUI, consumers, request classes, the loop and `/warden/*` |
-| `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active |
+| `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
+| `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005) |
+| `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build |
 | `internal/server/warden.go` | ours: the two accessors the warden needs on llama-swap's server |
 | `llama-swap.go` | upstream's `main`, plus one flag and one call |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
@@ -24,7 +26,8 @@ This file is rules and navigation only.
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/                  # the warden, no GPU or model needed
+nix develop -c go test ./internal/warden/ ./internal/muxui/  # the warden and the UI, no GPU or model needed
+(cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
 nix develop -c gofmt -l infermux.go internal/warden internal/server/warden.go
 nix build                                                  # the package; runs the three test packages
@@ -55,6 +58,8 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **A failed probe leaves the verdict alone, and so does an unreadable ComfyUI queue.** Neither is evidence that the GPU is free.
 - **The models are unloaded once per yield** (0002), owed from the transition and paid when interactive traffic is quiet (0004). Unloading every tick would fight a client the user chose to let through.
 - **Free VRAM is only read while no model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001).
+- **A llama-swap config reload waits for quiet** (0005). It stops every model, so it goes through `WhenNoInteractive`, never `-watch-config`.
+- **The UI never pushes, and commits only when the user presses Commit** (0005).
 - **ComfyUI is contention, never ours.** It is not in `our_units` and it is not a consumer. It is a tenant the warden watches and frees (0002).
 
 ## Engineering principles (user feedback, hard)

@@ -63,18 +63,28 @@ type traffic struct {
 }
 
 func newTraffic(batchKeys []string, now func() time.Time) *traffic {
+	t := &traffic{now: now, flights: map[uint64]*flight{}}
+	t.setBatchKeys(batchKeys)
+	return t
+}
+
+func (t *traffic) setBatchKeys(batchKeys []string) {
 	keys := map[string]bool{}
 	for _, k := range batchKeys {
 		if k != "" {
 			keys[k] = true
 		}
 	}
-	return &traffic{batchKeys: keys, now: now, flights: map[uint64]*flight{}}
+	t.mu.Lock()
+	t.batchKeys = keys
+	t.mu.Unlock()
 }
 
 // classify reads the key the way llama-swap accepts one: a bearer token,
 // x-api-key, or the password of HTTP Basic.
 func (t *traffic) classify(r *http.Request) Class {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	for _, key := range presentedKeys(r) {
 		if t.batchKeys[key] {
 			return Batch
@@ -150,8 +160,15 @@ func (t *traffic) end(id uint64) {
 // Returns how many were cancelled.
 func (t *traffic) pause() int {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.paused = true
+	t.mu.Unlock()
+	return t.cancelBatch()
+}
+
+// cancelBatch cancels the batch requests in flight. Returns how many.
+func (t *traffic) cancelBatch() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	n := 0
 	for _, f := range t.flights {
 		if f.class == Batch {
@@ -167,6 +184,18 @@ func (t *traffic) resume() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.paused = false
+}
+
+func (t *traffic) interactiveInFlight() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for _, f := range t.flights {
+		if f.class == Interactive {
+			n++
+		}
+	}
+	return n
 }
 
 // interactiveRecent is true while an interactive request is in flight, and for

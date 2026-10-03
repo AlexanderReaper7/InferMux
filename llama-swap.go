@@ -309,7 +309,7 @@ func main() {
 	}
 
 	// InferMux: the warden in front of whichever server is active (infermux.go).
-	startWarden(*flagWardenConfig, httpServer, func() *server.Server {
+	startWarden(*flagWardenConfig, *flagConfig, *flagConfigDir, httpServer, func() *server.Server {
 		activeMu.RLock()
 		defer activeMu.RUnlock()
 		return activeSrv

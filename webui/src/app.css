@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  input,
+  select,
+  textarea {
+    @apply rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-neutral-100 outline-none focus:border-sky-600;
+  }
+  button {
+    @apply cursor-pointer;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply rounded border border-neutral-700 bg-neutral-900 px-3 py-1 text-sm hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply rounded border border-sky-700 bg-sky-900 px-3 py-1 text-sm text-sky-50 hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-danger {
+    @apply rounded border border-red-800 bg-red-950 px-3 py-1 text-sm text-red-100 hover:bg-red-900 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .card {
+    @apply rounded-lg border border-neutral-800 bg-neutral-950 p-4;
+  }
+  .label {
+    @apply text-xs tracking-wide text-neutral-500 uppercase;
+  }
+}

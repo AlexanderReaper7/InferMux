@@ -42,6 +42,24 @@ journalctl -u infermux -f              # the service's log
 
 Two files. `-config` is llama-swap's own: models, groups, TTLs. See [config.example.yaml](config.example.yaml). `-warden-config` is the warden's: see [warden.example.yaml](warden.example.yaml), where every key is optional and documented. Without `-warden-config` InferMux is plain llama-swap.
 
+`-config-dir` adds every `*.yaml` in a directory to `-config`, one model per file. InferMux watches all three. A change to the warden's file applies at once; a change to llama-swap's config reloads it once no interactive request is in flight, because a reload stops every model ([0005](docs/decisions/0005-web-ui-and-config-outside-nix.md)).
+
+## The web UI
+
+`infermux-ui` is a separate binary that edits those files, shows the verdict, and has the controls. With the module:
+
+```nix
+services.infermux = {
+  configDir = "/home/alice/nixcfg/infermux";   # models/*.yaml and warden.yaml, outside the store
+  settings.macros.llama-server = "${pkgs.llama-cpp}/bin/llama-server --host 127.0.0.1";
+  ui = { enable = true; user = "alice"; ggufDirs = [ "/srv/models" ]; };
+};
+```
+
+Then open http://127.0.0.1:5010. A model's command is edited as runtime, GGUF and flags when it has the form `${runtime} --port ${PORT} --model <file> <flags>`, and as text otherwise. Every save is validated with llama-swap's loader first. The Changes tab commits the files to the repository they live in, when asked; it never pushes.
+
+From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
+
 ## Talk to it
 
 Loopback :5001, no auth.
@@ -51,7 +69,16 @@ curl 127.0.0.1:5001/v1/models           # llama-swap: every configured model
 curl 127.0.0.1:5001/running             # llama-swap: which are up
 curl 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
 curl 127.0.0.1:5001/warden/resources    # a fresh NVML probe, on purpose
+
+# controls; a write needs the X-InferMux header
+curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/manual -d '{"action":"pause"}'   # or resume, auto
+curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/unload         # 409 while a request of yours runs
+curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/forgive        # drop an owed unload
+curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/cancel-batch
+curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/comfyui/free
 ```
+
+A manual pause or resume holds until the warden's own verdict changes, then the warden takes over again. A browser POST from another origin, or to a name that is not loopback, gets 403.
 
 A batch client marks its requests with its key, as `Authorization: Bearer <key>` or `x-api-key: <key>`. While the verdict is pause such a request gets:
 
@@ -79,12 +106,12 @@ Nothing expires. A warden that dies while a consumer is paused leaves it paused,
 ## Develop
 
 ```sh
-nix develop -c go test ./internal/warden/
+nix develop -c go test ./internal/warden/ ./internal/muxui/
 nix develop -c go test -short ./internal/server/ .
 nix build                              # runs the tests as part of the build
 ```
 
-The warden is `internal/warden/` and `infermux.go`; the rest is upstream llama-swap, merged rather than vendored. [CLAUDE.md](CLAUDE.md) has the map and how to merge a new llama-swap release.
+The warden is `internal/warden/` and `infermux.go`, the UI is `internal/muxui/`, `cmd/infermux-ui/` and `webui/`; the rest is upstream llama-swap, merged rather than vendored. [CLAUDE.md](CLAUDE.md) has the map and how to merge a new llama-swap release.
 
 ## License
 
