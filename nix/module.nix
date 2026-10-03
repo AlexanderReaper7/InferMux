@@ -291,8 +291,17 @@ in
 
           DynamicUser = true;
           StateDirectory = "infermux";
-          CacheDirectory = "infermux";
+          CacheDirectory = [
+            "infermux"
+            "infermux/home"
+          ];
           WorkingDirectory = "/var/lib/infermux";
+          # A DynamicUser has no HOME, and the model processes inherit the
+          # daemon's environment, so anything that writes ~/.cache or a dotfile
+          # (huggingface_hub, gunicorn, Triton) would write under /, read-only
+          # here. One shared home in the cache directory, which survives
+          # restarts.
+          Environment = [ "HOME=/var/cache/infermux/home" ];
 
           # CUDA and NVML need /dev/nvidia*, which are 0666 on NixOS. A private
           # /dev would hide them.
