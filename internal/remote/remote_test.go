@@ -200,6 +200,12 @@ func TestLocalNamesWinAndAnAmbiguousOneIsNotGuessed(t *testing.T) {
 	if _, body := other.last(); !strings.Contains(body, `"model":"both"`) {
 		t.Error("a qualified name did not settle it")
 	}
+	// The names the list carries qualify the same way.
+	for listed, want := range map[string]string{"zbox/qwen": "zbox/qwen", "other/both": "other/both", "qwen": "", "both": "", "openrouter/cloud": ""} {
+		if got, _ := rt.QualifyName(listed); got != want {
+			t.Errorf("%s qualified as %q, not %q", listed, got, want)
+		}
+	}
 }
 
 func TestAForwardedRequestIsNeverForwardedAgain(t *testing.T) {

@@ -255,6 +255,15 @@ func (rt *Router) Qualify(r *http.Request) (string, bool) {
 	return name + "/" + model, true
 }
 
+// QualifyName is Qualify for a model as /v1/models lists it.
+func (rt *Router) QualifyName(requested string) (string, bool) {
+	name, model, ok := rt.resolve(requested)
+	if !ok {
+		return "", false
+	}
+	return name + "/" + model, true
+}
+
 func (rt *Router) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/v1/models" {
 		rt.listModels(rw, r)

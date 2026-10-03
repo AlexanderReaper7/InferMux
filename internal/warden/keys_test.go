@@ -1,8 +1,10 @@
 package warden
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -124,5 +126,44 @@ func TestAWebSocketIsInferenceAndCrossOriginOnesAreRefused(t *testing.T) {
 	}
 	if rec, served := gated(h, "GET", "/v1/realtime?model=qwen", "", crossOrigin); *served != 0 || rec.Code != http.StatusForbidden {
 		t.Errorf("a WebSocket from another origin: %d", rec.Code)
+	}
+}
+
+func TestAKeySeesOnlyTheModelsItMayUse(t *testing.T) {
+	h := newHarness(t, func(c *Config) {
+		c.Keys.Keys["narrow"] = Key{SHA256: HashKey("narrow-key"), Class: Interactive, Allow: []string{"this/*", "openrouter/cheap-*"}}
+		c.Keys.Keys["none"] = Key{SHA256: HashKey("none-key"), Class: Interactive, Allow: []string{}}
+	})
+	list := `{"object":"list","data":[{"id":"qwen"},{"id":"openrouter/cheap-model"},{"id":"openrouter/dear-model"},{"id":"zbox/embed"},{"id":"nobody-knows"}]}`
+	handler := h.w.Wrap(h.w.FilterModels(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Length", "999")
+		rw.Write([]byte(list))
+	})))
+	listed := func(key string) []string {
+		req := httptest.NewRequest("GET", "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var got struct {
+			Object string
+			Data   []struct{ ID string }
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Object != "list" {
+			t.Fatalf("%s: %d %q", key, rec.Code, rec.Body)
+		}
+		ids := []string{}
+		for _, m := range got.Data {
+			ids = append(ids, m.ID)
+		}
+		return ids
+	}
+	if got := listed("narrow-key"); !slices.Equal(got, []string{"qwen", "openrouter/cheap-model"}) {
+		t.Errorf("narrow sees %v", got)
+	}
+	if got := listed("none-key"); len(got) != 0 {
+		t.Errorf("allow: [] sees %v", got)
+	}
+	if got := listed("my-key"); len(got) != 5 {
+		t.Errorf("a key without allow sees %v, not the whole list", got)
 	}
 }

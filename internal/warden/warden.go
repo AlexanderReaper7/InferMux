@@ -29,6 +29,9 @@ type Models interface {
 	// of this host's own, which is all the gate looks at (0009). ok is false
 	// when the request names no model this host knows.
 	Qualify(r *http.Request) (model string, local, ok bool)
+	// QualifyName is Qualify for a name as /v1/models lists it, so the list a
+	// key sees and the models it may use follow one allow list.
+	QualifyName(name string) (model string, ok bool)
 }
 
 // Logger is the part of llama-swap's proxy log the warden writes to, so its
@@ -352,7 +355,7 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		if !isInference(r) {
-			next.ServeHTTP(rw, r)
+			next.ServeHTTP(rw, r.WithContext(context.WithValue(r.Context(), keyContext{}, key)))
 			return
 		}
 		model, local, known := w.models.Qualify(r)

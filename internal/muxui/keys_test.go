@@ -271,7 +271,7 @@ func TestTheKeysPageOverHTTP(t *testing.T) {
 	u.want(code, 200, out, "delete")
 }
 
-// allow: [] is a key that may use no model, a host's key for discovery. An
+// allow: [] is a key that may use no model. An
 // absent list is every model, so the two must not collapse into each other
 // on their way through the page and back into the file.
 func TestAKeyAllowedNoModelStaysThatWay(t *testing.T) {

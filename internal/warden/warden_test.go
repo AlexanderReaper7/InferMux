@@ -55,6 +55,17 @@ func (m *fakeModels) Qualify(r *http.Request) (string, bool, bool) {
 	return "this/" + body.Model, true, true
 }
 
+// QualifyName follows Qualify's rule for a listed name.
+func (m *fakeModels) QualifyName(name string) (string, bool) {
+	if name == "" || name == "nobody-knows" {
+		return "", false
+	}
+	if strings.Contains(name, "/") {
+		return name, true
+	}
+	return "this/" + name, true
+}
+
 func (m *fakeModels) UnloadAll() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()

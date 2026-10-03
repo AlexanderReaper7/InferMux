@@ -74,7 +74,7 @@ From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173
 
 ## Talk to it
 
-Loopback :5001. With a `keys_file`, every request but `/health` needs a key, as `Authorization: Bearer <key>`, `x-api-key: <key>`, Basic's password, or, for a browser's WebSocket, the subprotocol `openai-insecure-api-key.<key>`. No key or an unknown one gets 401; a model outside the key's `allow` list gets 403. See [keys.example.yaml](keys.example.yaml).
+Loopback :5001. With a `keys_file`, every request but `/health` needs a key, as `Authorization: Bearer <key>`, `x-api-key: <key>`, Basic's password, or, for a browser's WebSocket, the subprotocol `openai-insecure-api-key.<key>`. No key or an unknown one gets 401; a model outside the key's `allow` list gets 403, and `/v1/models` leaves it out. See [keys.example.yaml](keys.example.yaml).
 
 ```sh
 alias imx='curl -H "Authorization: Bearer $INFERMUX_KEY"'
@@ -111,7 +111,7 @@ Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_m
 
 ## The other host
 
-`remotes` in warden.yaml lists the other InferMux hosts, each with the file holding this host's key for it. InferMux reads each one's `/v1/models` every 30 s and lists its models as `<host>/<model>`. A request for one is forwarded with the client's own key, so the other host applies that key's class and allow list. A host that stops answering keeps its models listed and fails a request for them at once with 502. Off the machine, traffic goes over HTTPS with `tailscale serve`.
+`remotes` in warden.yaml lists the other InferMux hosts, each with the file holding this host's key for it. That key's `allow` decides which of the other host's models this one learns. InferMux reads each one's `/v1/models` every 30 s and lists its models as `<host>/<model>`. A request for one is forwarded with the client's own key, so the other host applies that key's class and allow list. A host that stops answering keeps its models listed and fails a request for them at once with 502. Off the machine, traffic goes over HTTPS with `tailscale serve`.
 
 ## What it does on a yield
 

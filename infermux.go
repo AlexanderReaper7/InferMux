@@ -58,7 +58,23 @@ func (a activeModels) Qualify(r *http.Request) (string, bool, bool) {
 	if err != nil || requested == "" {
 		return "", false, false
 	}
-	peer, model, ok := srv.QualifyModel(requested)
+	return a.qualifyHere(requested)
+}
+
+// QualifyName names a model /v1/models lists the way Qualify names a request
+// for it.
+func (a activeModels) QualifyName(requested string) (string, bool) {
+	if name, ok := a.remote.get().QualifyName(requested); ok {
+		return name, true
+	}
+	name, _, ok := a.qualifyHere(requested)
+	return name, ok
+}
+
+// qualifyHere is a name this host's llama-swap serves: a local model or a
+// peer's.
+func (a activeModels) qualifyHere(requested string) (string, bool, bool) {
+	peer, model, ok := a.server().QualifyModel(requested)
 	if !ok {
 		return "", false, false
 	}
@@ -80,8 +96,9 @@ func (a activeModels) Qualify(r *http.Request) (string, bool, bool) {
 // settings.
 //
 // The request goes warden (key, class, never-kill), then Codex's catalog,
-// then remote (another host's model goes there), then the derived settings
-// on the local models, then llama-swap (0006).
+// then the list cut to the key's allow list, then remote (another host's
+// model goes there), then the derived settings on the local models, then
+// llama-swap (0006).
 func startWarden(path, configPath, configDir string, httpServer *http.Server, active func() *server.Server, log *logmon.Monitor) {
 	if path == "" {
 		return
@@ -106,7 +123,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	}
 	w := warden.New(cfg, activeModels{server: active, host: cfg.Host, remote: remotes}, log)
 	w.ReportRemotes(func() any { return remotes.get().State() })
-	codex, err := catalog.Codex(remotes, *flagCodexPrompt)
+	codex, err := catalog.Codex(w.FilterModels(remotes), *flagCodexPrompt)
 	if err != nil {
 		slog.Error("failed to read Codex's prompt", "codex-prompt", *flagCodexPrompt, "error", err)
 		os.Exit(1)
