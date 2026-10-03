@@ -165,15 +165,24 @@ func (d *Downloads) client() *http.Client {
 
 // etag is main's version of the file: Hugging Face's X-Linked-Etag, the
 // LFS object's SHA-256, or the plain ETag of a file kept in git. Read from
-// the first response, before the redirect to the CDN.
+// the last response on Hugging Face's own host, before the redirect to the
+// CDN; a renamed repository first redirects to its new name on the same host.
 func (d *Downloads) etag(source string) (string, int64, error) {
 	req, err := d.request(http.MethodHead, d.resolve(source))
 	if err != nil {
 		return "", 0, err
 	}
-	noRedirect := *d.client()
-	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	resp, err := noRedirect.Do(req)
+	sameHost := *d.client()
+	sameHost.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if next.URL.Host != via[0].URL.Host {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("%s: too many redirects", source)
+		}
+		return nil
+	}
+	resp, err := sameHost.Do(req)
 	if err != nil {
 		return "", 0, err
 	}

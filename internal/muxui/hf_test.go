@@ -25,8 +25,9 @@ type fakeHF struct {
 	ignoreRange bool
 	cut         int
 	hold        chan struct{}
-	gets        []string // the CDN's requests, with their Range
-	auth        []string // Authorization as each server saw it, "hf:" or "cdn:"
+	moved       map[string]string // an old /org/repo/ -> its new name, as Hugging Face redirects a renamed repo
+	gets        []string          // the CDN's requests, with their Range
+	auth        []string          // Authorization as each server saw it, "hf:" or "cdn:"
 	hf, cdn     *httptest.Server
 }
 
@@ -52,7 +53,16 @@ func newFakeHF(t *testing.T) *fakeHF {
 		f.mu.Lock()
 		body, ok := f.content[r.URL.Path]
 		f.auth = append(f.auth, "hf:"+r.Header.Get("Authorization"))
+		moved := f.moved
 		f.mu.Unlock()
+		for from, to := range moved {
+			if rest, found := strings.CutPrefix(r.URL.Path, from); found {
+				// Relative, with no ETag, as huggingface.co sends it.
+				rw.Header().Set("Location", to+rest)
+				rw.WriteHeader(http.StatusTemporaryRedirect)
+				return
+			}
+		}
 		if !ok {
 			http.NotFound(rw, r)
 			return
@@ -327,5 +337,20 @@ func TestAServerThatIgnoresTheRangeOrStopsShortIsHandled(t *testing.T) {
 	}
 	if _, err := os.Stat(d.Path(other)); err == nil {
 		t.Fatal("a short body became the model file")
+	}
+}
+
+func TestARenamedRepositoryIsFollowedToItsNewName(t *testing.T) {
+	hf := newFakeHF(t)
+	hf.set("/org/new/resolve/main/m.gguf", "weights")
+	hf.moved = map[string]string{"/org/old/": "/org/new/"}
+	d := &Downloads{Dir: t.TempDir(), BaseURL: hf.hf.URL}
+
+	d.Fetch("org/old/m.gguf")
+	if got := wait(t, d, "org/old/m.gguf"); got.Error != "" || got.Result != "downloaded" {
+		t.Fatalf("a renamed repo: %+v", got)
+	}
+	if raw, _ := os.ReadFile(d.Path("org/old/m.gguf")); string(raw) != "weights" {
+		t.Errorf("file = %q", raw)
 	}
 }
