@@ -14,11 +14,13 @@ Claude's working list for InferMux: what is built and shipping but has not been 
 - 2026-10-03, `e2e/run.sh` (64 checks, Chromium through Playwright, against the nix-built binaries, a fake model server and a throwaway git repo): an edit from the table reached the file and the daemon's argv; a reload waited behind an interactive stream that finished whole; a batch stream was cancelled while an interactive one beside it got all 30 chunks; pause by hand gave batch 503 and interactive 200; a commit from the Changes tab made one commit with the message and left nothing uncommitted. A daemon mutated to reload at once failed the three reload checks.
 - 2026-10-03, `e2e/run.sh` with keys (0006), 77 checks: no key and an unknown key got 401, `/health` 200 without one, a model outside `allow` 403, one inside it 200 by `x-api-key`. A key made in the Keys tab went to keys.yaml as a hash and to the sops file encrypted, the daemon took it without a restart, Show read it back, and after Revoke the daemon answered 401. The llama-swap tab loaded with a key given at the Basic prompt.
 
+- 2026-10-03, two hosts with keys (0006), after nixcfg `dc54318` on reaperboi and the zbox: sops-nix put `host-reaperboi` (root, 0400) and `infermux-ui` (the user's) in /run/secrets. Both daemons answered 401 without a key and `/health` 200. Through `https://zbox.tail.ts.net:5001` the zbox listed reaperboi's six models as `reaperboi/<model>`; a streamed chat to `reaperboi/Qwythos-9B…` with the opencode key arrived at reaperboi from the zbox's address, 200, 23 SSE lines in 2.6 s. The zbox's host key got 403 for the same request (`allow: []`). reaperboi logged the zbox offline at its own start, before the zbox was deployed, and online at the next poll. The UI's daemon proxy answered 200 with its key.
+
 ## Not yet verified live
 
-- **Two hosts (0006).** Discovery, forwarding with the client's key, `<host>/<model>` in `/v1/models`, the 502 for an offline host and its return, all over `tailscale serve` HTTPS. Covered by `internal/remote` tests against httptest servers only.
+- **Two hosts (0006): the rest.** The 502 for a request to an offline host's model, and the last list surviving a restart. The zbox has no models, so nothing on reaperboi can be sent there yet.
 - **A WebSocket through both hosts (0006, 8).** Covered by a raw-socket test of the router and the warden's in-flight test only; no real realtime client has connected.
-- **The keys on the real hosts**: sops-nix credentials reaching the daemon and the UI, and every existing client (Episteme, the phone) sending its key.
+- **The clients sending their keys**: Episteme and opencode get 401 until each reads its key from /run/secrets; nixcfg declares neither secret for them yet. The Keys tab's Show against the user's real passphrase-protected identity.
 - **The tailnet from another device (0005, 8).** Only requests from this machine to its own tailnet name were made.
 - **"Build now" compiling llama.cpp (0005, 9).** Only a build with every input already in the store was run.
 
