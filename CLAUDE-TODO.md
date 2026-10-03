@@ -18,12 +18,16 @@ Claude's working list for InferMux: what is built and shipping but has not been 
 
 - 2026-10-03, the catalog (0007), after nixcfg `e0a959a`: `/v1/models` carried each local model's context, input and efforts, matching the model files' `--ctx-size` and the templates' levels; `?client_version=0.159.2` answered in Codex's format on reaperboi and, as `reaperboi/<model>`, through the zbox. `codex exec -m Qwen3.8… -c model_reasoning_effort=low` answered "OK" with no decode error, and T3's own fetch filled `models_cache.json` with the six models and their levels.
 - 2026-10-03, the zbox's own UI (0008), after nixcfg `1487a07`: the daemon read `hosts/zbox/infermux/warden.yaml` and the shared keys.yaml from the clone through the read-only bind (401 without a key, 200 with the codex key, whose hash is only there), and found reaperboi with 6 models. infermux-ui ran as a lingering user service, answered at `https://zbox.tail.ts.net:5010` with the zbox's paths and `sign_passphrase: true`, and its daemon proxy gave 200. `nixcfg-pull` ran once, successfully.
+- 2026-10-03, OpenRouter as a peer and the gate for this host's card (0006, 6; 0009), after nixcfg `ab291da` on reaperboi and the zbox: both listed the five `openrouter/...` models, the zbox through its symlinked file. Under a manual pause a batch key to `openrouter/openrouter/free` got "OK" while the same key to the local Qwen3.8 got 503 `gpu_yielded`; an interactive key to the cloud left `last_interactive` null. A chat through the zbox to OpenRouter answered. opencode, with its key from /run/secrets, listed the six local models with their facts and answered through `/upstream/.../props`.
+- 2026-10-03, a peer's facts (0010), after nixcfg `c7a512b`: Codex's catalog on both hosts gave the five OpenRouter models OpenRouter's context, image input and efforts. `codex exec` with the Local Codex launch arguments on `openrouter/openrouter/free` answered "OK", as did `opencode run` with `--variant low`.
+
 
 ## Not yet verified live
 
 - **Two hosts (0006): the rest.** The 502 for a request to an offline host's model, and the last list surviving a restart. The zbox has no models, so nothing on reaperboi can be sent there yet.
 - **A WebSocket through both hosts (0006, 8).** Covered by a raw-socket test of the router and the warden's in-flight test only; no real realtime client has connected.
-- **The clients sending their keys**: Episteme and opencode get 401 until each reads its key from /run/secrets; nixcfg declares neither secret for them yet. The Keys tab's Show against the user's real passphrase-protected identity.
+- **Episteme sending its keys** (Episteme 0058): the web's and the worker's keys are in /run/secrets, but Episteme does not run on the NixOS host yet. The Keys tab's Show against the user's real passphrase-protected identity.
+- **The UI's peer editor in a browser.** Covered by `peers_test.go`, which saves a symlinked file and checks the placeholder for `${env.*}`, only.
 - **A signed Commit on the zbox (0008).** Needs the user's GPG key there first. Covered by `TestACommitIsSignedWithThePassphraseFromTheBrowser`, against a scratch key, only. Also unwatched: `nixcfg-pull` taking a commit from reaperboi, and the daemon picking up a keys.yaml it changed.
 - **The tailnet from another device (0005, 8).** Only requests from this machine to its own tailnet name were made.
 - **"Build now" compiling llama.cpp (0005, 9).** Only a build with every input already in the store was run.
