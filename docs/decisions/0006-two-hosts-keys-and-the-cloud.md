@@ -1,7 +1,7 @@
 # 0006. Two hosts, each a front door; every client has a key; OpenRouter as a peer
 
 - Date: 2026-10-03
-- Status: accepted; milestone 1 (1 to 6 below) being built, 8 to 11 later; 7 replaced by [0008](0008-the-zbox-has-its-own-ui.md)
+- Status: accepted; every milestone built by 2026-10-03: 1 to 6 here, 7 replaced by [0008](0008-the-zbox-has-its-own-ui.md), 8 as [0012](0012-a-model-names-its-gguf-on-hugging-face.md), 9 here, 10 replaced by [0011](0011-the-cpu-embedder-is-a-peer.md), 11 as [0013](0013-immich-ml-under-the-zbox-through-an-adapter.md)
 - Rule: InferMux runs on every host with a card (reaperboi, zbox). Each is a front door, each warden judges only its own card, and InferMux itself routes a request for the other host's models there, over the tailnet's HTTPS, with the client's key untouched. Every client has a key; `keys.yaml` holds its SHA-256, its class and the models it may use, and both hosts read the same file. llama-swap's own `peers:` carries only OpenRouter.
 - Keeps 0001 (the machine that measures decides: each warden decides for its own card only) and 0004 (the user's own request is never killed: a forwarded request counts on both hosts it passes through).
 
