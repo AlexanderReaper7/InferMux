@@ -63,6 +63,7 @@ func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
 			fail(rw, err)
 			return
 		}
+		build.Outdated()
 		reply(rw, m)
 	})
 	mux.HandleFunc("PUT /api/models/{name}", func(rw http.ResponseWriter, r *http.Request) {
@@ -74,6 +75,7 @@ func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
 			fail(rw, err)
 			return
 		}
+		build.Outdated()
 		reply(rw, m)
 	})
 	mux.HandleFunc("DELETE /api/models/{name}", func(rw http.ResponseWriter, r *http.Request) {
@@ -81,6 +83,7 @@ func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
 			fail(rw, err)
 			return
 		}
+		build.Outdated()
 		reply(rw, map[string]bool{"deleted": true})
 	})
 	mux.HandleFunc("GET /api/gguf", func(rw http.ResponseWriter, r *http.Request) {

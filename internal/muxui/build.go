@@ -33,9 +33,12 @@ type BuildState struct {
 	Started     *time.Time `json:"started"`
 	Ended       *time.Time `json:"ended"`
 	OK          *bool      `json:"ok"`
-	Error       string     `json:"error"`
-	Output      string     `json:"output"` // the store paths built
-	Log         []string   `json:"log"`    // the last lines
+	// Stale is set by a model change after the build started: its result
+	// says nothing about the files as they are now.
+	Stale  bool     `json:"stale"`
+	Error  string   `json:"error"`
+	Output string   `json:"output"` // the store paths built
+	Log    []string `json:"log"`    // the last lines
 }
 
 const buildLogLines = 200
@@ -95,6 +98,16 @@ func (b *Builder) Start() error {
 		b.mu.Unlock()
 	}()
 	return nil
+}
+
+// Outdated marks the last build, finished or running, as older than the
+// model files.
+func (b *Builder) Outdated() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state.Started != nil {
+		b.state.Stale = true
+	}
 }
 
 func (b *Builder) prepare() error {

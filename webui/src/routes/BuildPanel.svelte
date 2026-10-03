@@ -37,6 +37,8 @@
     <span class="text-xs text-neutral-500">
       {#if st.running}
         started {ago(st.started)}
+      {:else if st.stale}
+        The last build, {ago(st.started)}, predates a model change. Build again for the files as they are.
       {:else if st.ok === true}
         <span class="text-emerald-300">built {ago(st.ended)}.</span> Switch to put it in use: commit, push, then nixos-rebuild switch.
       {:else if st.ok === false}
@@ -46,7 +48,7 @@
       {/if}
     </span>
   </div>
-  {#if st.log?.length && (st.running || st.ok === false)}
+  {#if st.log?.length && (st.running || (st.ok === false && !st.stale))}
     <pre class="mt-2 max-h-64 overflow-auto rounded bg-neutral-950 p-2 font-mono text-xs text-neutral-400">{st.log.join("\n")}</pre>
   {/if}
 {/if}

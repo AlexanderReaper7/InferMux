@@ -427,3 +427,34 @@ func TestIntentToAddMakesANewModelVisibleToGit(t *testing.T) {
 		t.Fatalf("content staged: %q", staged)
 	}
 }
+
+func TestAModelSaveMakesTheLastBuildStale(t *testing.T) {
+	f := newFixture(t)
+	b := &Builder{Installable: "flake#unit", run: func([]string, io.Writer, io.Writer) error { return nil }}
+	h := Handler(f.store, b, &url.URL{Scheme: "http", Host: "127.0.0.1:1"})
+	b.Start()
+	for b.State().Running {
+		time.Sleep(time.Millisecond)
+	}
+	if b.State().Stale {
+		t.Fatal("stale before any change")
+	}
+	m := f.model(t, "qwen")
+	m.Description = "changed"
+	body, _ := json.Marshal(m)
+	req := httptest.NewRequest("PUT", "/api/models/qwen", strings.NewReader(string(body)))
+	req.Host = "127.0.0.1:5010"
+	req.Header.Set("X-InferMux", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", rec.Code, rec.Body)
+	}
+	if !b.State().Stale {
+		t.Fatal("not stale after a save")
+	}
+	b.Start()
+	if b.State().Stale {
+		t.Fatal("a new build is still stale")
+	}
+}

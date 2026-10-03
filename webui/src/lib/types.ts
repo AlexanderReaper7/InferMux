@@ -153,6 +153,7 @@ export interface BuildState {
   started: string | null;
   ended: string | null;
   ok: boolean | null;
+  stale: boolean;
   error: string;
   output: string;
   log: string[] | null;
