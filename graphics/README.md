@@ -1,4 +1,4 @@
-# llama-warden — the mark
+# InferMux — the mark
 
 An obelisk standing in a neural network.
 

@@ -13,7 +13,7 @@ On NixOS, through the flake's module:
 ```nix
 # flake inputs
 infermux = {
-  url = "git+https://github.com/AlexanderReaper7/llama-warden";
+  url = "git+https://github.com/AlexanderReaper7/InferMux";
   inputs.nixpkgs.follows = "nixpkgs";
 };
 

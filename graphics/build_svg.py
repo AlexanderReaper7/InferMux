@@ -618,7 +618,7 @@ def warden_icon() -> tuple[Path, str]:
         k,
         256,
         256,
-        "llama-warden",
+        "InferMux",
         "An elongated octahedron standing in a neural network that bends toward its lower tip: the local model the warden keeps.",
     )
 

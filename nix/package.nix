@@ -95,7 +95,7 @@ in
 
   meta = {
     description = "llama-swap with a GPU warden: model routing that yields the card to other work and never kills the user's own prompt";
-    homepage = "https://github.com/AlexanderReaper7/llama-warden";
+    homepage = "https://github.com/AlexanderReaper7/InferMux";
     license = lib.licenses.mit;
     mainProgram = "infermux";
     platforms = lib.platforms.linux;

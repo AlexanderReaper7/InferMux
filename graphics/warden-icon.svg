@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="llama-warden">
-<title>llama-warden</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="InferMux">
+<title>InferMux</title>
 <desc>An elongated octahedron standing in a neural network that bends toward its lower tip: the local model the warden keeps.</desc>
 <path d="M50.35 239.36 L11.52 129.28" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
 <path d="M50.35 239.36 L69.76 188.72" fill="none" stroke="rgb(23,217,142)" stroke-opacity="0.73" stroke-width="4.61" stroke-linecap="round"/>
