@@ -103,6 +103,10 @@ Retry-After: 300
 
 Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_modalities`, `reasoning_efforts` and `default_effort`, derived from its command and its GGUF's chat template, never declared. Codex's own request, which carries `client_version`, gets the same models as a Codex catalog when the module's `codexPrompt` is set. [0007](docs/decisions/0007-model-settings-derived.md). A cloud peer's models get the same fields from the peer's own `/v1/models` in OpenRouter's format, read at most once an hour ([0010](docs/decisions/0010-a-peers-facts-from-its-own-list.md)).
 
+## A client that cannot send a key
+
+`infermux-adapter -listen <addr> -target <url> -key-file <file>` forwards every request to the target with the key from the file, replacing whatever credentials the client sent; the request's path is appended to the target's. `-route /ping=/health` sends one path to another path on the target's host. The NixOS module runs one per entry in `services.infermux.adapters`. Immich's ML URL is the reason: Immich reaches `/upstream/immich-ml/` through one, and its 30 s health check goes to `/health`, so it never starts the model ([0013](docs/decisions/0013-immich-ml-under-the-zbox-through-an-adapter.md)).
+
 ## The other host
 
 `remotes` in warden.yaml lists the other InferMux hosts, each with the file holding this host's key for it. InferMux reads each one's `/v1/models` every 30 s and lists its models as `<host>/<model>`. A request for one is forwarded with the client's own key, so the other host applies that key's class and allow list. A host that stops answering keeps its models listed and fails a request for them at once with 502. Off the machine, traffic goes over HTTPS with `tailscale serve`.

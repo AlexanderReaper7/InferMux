@@ -35,12 +35,12 @@ Later milestones, decided now:
 8. **A model file may name its GGUF on Hugging Face** as `metadata.hf`, the path is derived under `/srv/models/hf/`, and the host that runs the model downloads it on save, with progress in the UI. Local-only GGUFs keep a plain path.
 9. **Groups are a per-host text file,** edited in the UI's text editor.
 10. *Replaced by 0011: the embedder is a peer of its own unit.* **The desktop embedder moves under InferMux** on the CPU, and `never_unload` in `warden.yaml` keeps a yield from stopping it. Rejected: inferring "CPU only" from `--device none` in the command.
-11. **Immich ML runs under the zbox's InferMux,** natively from nixpkgs built at the Immich server's tag, reached as `/upstream/immich-ml/predict`, so the zbox's card has one scheduler. Immich's requests are interactive. The 4B embedder takes turns with it on the card; a swap waits for in-flight requests (`internal/router/base.go`). Nothing runs on the zbox's CPU, a dual core. The rest of the zbox's layout waits for the semantic search project.
+11. *Built in 0013.* **Immich ML runs under the zbox's InferMux,** natively from nixpkgs built at the Immich server's tag, reached as `/upstream/immich-ml/predict`, so the zbox's card has one scheduler. Immich's requests are interactive. The 4B embedder takes turns with it on the card; a swap waits for in-flight requests (`internal/router/base.go`). Nothing runs on the zbox's CPU, a dual core. The rest of the zbox's layout waits for the semantic search project.
 
 ## Open
 
-- **Immich cannot send a key.** Its ML URL takes no headers, and 4 refuses keyless requests. To be decided before 11.
-- **The never-kill rule covers `/upstream/` only for inference paths** (`internal/server/inflight.go`). Immich's `/predict` is not one. To be extended in 11.
+- **Immich cannot send a key.** Its ML URL takes no headers, and 4 refuses keyless requests. Ended by 0013: an adapter adds it.
+- **The never-kill rule covers `/upstream/` only for inference paths** (`internal/server/inflight.go`). Immich's `/predict` is not one. Ended by 0013, 4: that tracker only feeds llama-swap's panel; the swap, the TTL and the warden all count `/predict`.
 - **`/v1/models` lists every model to every key,** including ones its `allow` refuses.
 - **The zbox reads keys.yaml from its last deploy** (the user's call, 2026-10-03), so a key revoked in the Keys tab still works there until the next `nixos-rebuild --target-host`. Ended by 0008: it reads its checkout, which a timer fast-forwards.
 - **A service's key is in two sops files**: the hosts' file, which sops-nix reads, and the Keys tab's, which Show reads. A revoke from the tab removes only the second copy. The fix is the tab reading and writing the hosts' file too, for keys a host holds.
