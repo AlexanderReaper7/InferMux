@@ -24,7 +24,7 @@ func control(handler http.Handler, path, body string) (int, map[string]any) {
 func TestManualOverHTTP(t *testing.T) {
 	h := newHarness(t, nil)
 	h.w.Tick()
-	handler := h.w.Wrap(http.NotFoundHandler())
+	handler := h.wrap(http.NotFoundHandler())
 	for _, c := range []struct {
 		body string
 		want int
@@ -54,7 +54,7 @@ func TestUnloadAndForgiveOverHTTP(t *testing.T) {
 	h := newHarness(t, nil)
 	h.w.Tick()
 	inside, release := make(chan struct{}), make(chan struct{})
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/chat/completions" {
 			close(inside)
 			<-release
@@ -91,7 +91,7 @@ func TestCancelBatchOverHTTPLeavesInteractiveAlone(t *testing.T) {
 	started := make(chan string, 2)
 	ended := make(chan string, 2)
 	release := make(chan struct{})
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			return
 		}
@@ -105,7 +105,7 @@ func TestCancelBatchOverHTTPLeavesInteractiveAlone(t *testing.T) {
 		}
 	}))
 	go post(handler, "/v1/chat/completions", map[string]string{"Authorization": "Bearer batch-key"})
-	go post(handler, "/v1/chat/completions", map[string]string{"Authorization": "Bearer mine"})
+	go post(handler, "/v1/chat/completions", map[string]string{"Authorization": "Bearer my-key"})
 	<-started
 	<-started
 	if code, out := control(handler, "/warden/cancel-batch", ""); code != 200 || out["cancelled"] != float64(1) {
@@ -115,14 +115,14 @@ func TestCancelBatchOverHTTPLeavesInteractiveAlone(t *testing.T) {
 		t.Fatalf("first to end: %s", got)
 	}
 	close(release)
-	if got := <-ended; got != "Bearer mine finished" {
+	if got := <-ended; got != "Bearer my-key finished" {
 		t.Fatalf("the interactive request: %s", got)
 	}
 }
 
 func TestFreeComfyUIOverHTTP(t *testing.T) {
 	h := newHarness(t, nil)
-	handler := h.w.Wrap(http.NotFoundHandler())
+	handler := h.wrap(http.NotFoundHandler())
 	if code, _ := control(handler, "/warden/comfyui/free", ""); code != http.StatusBadGateway {
 		t.Fatalf("free with no ComfyUI: %d", code)
 	}

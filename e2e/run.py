@@ -9,6 +9,7 @@ to keep its own verdict at resume.
 See CLAUDE.md for the command. Exits 1 if any check failed.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,8 @@ from playwright.sync_api import sync_playwright
 REPO = Path(__file__).resolve().parent.parent
 BIN = Path(os.environ.get("INFERMUX_BIN", REPO / "result" / "bin"))
 DAEMON, UI = "http://127.0.0.1:5101", "http://127.0.0.1:5110"
+# The clients' keys (0006): my-key is the user's, ui-key the UI's own.
+KEYS = {"batch-key": ("batch", None), "my-key": ("interactive", None), "ui-key": ("interactive", None), "narrow-key": ("interactive", ["e2e/beta"])}
 OUT = Path(os.environ.get("E2E_OUT", "/tmp/infermux-e2e"))
 
 results = []
@@ -52,9 +55,13 @@ def wait_for(fn, timeout=10.0, step=0.1):
 
 
 def http(method, url, body=None, headers=None):
+    """A request as the user's own client: my-key unless headers name another."""
     req = urllib.request.Request(url, method=method, data=None if body is None else json.dumps(body).encode())
     req.add_header("Content-Type", "application/json")
-    for k, v in (headers or {}).items():
+    headers = {"Authorization": "Bearer my-key", **(headers or {})}
+    for k, v in headers.items():
+        if v is None:
+            continue
         req.add_header(k, v)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -70,7 +77,7 @@ def verdict():
 class Stream(threading.Thread):
     """A streaming chat completion, read to the end in the background."""
 
-    def __init__(self, model, tokens, key=None):
+    def __init__(self, model, tokens, key="my-key"):
         super().__init__(daemon=True)
         self.model, self.tokens, self.key = model, tokens, key
         self.chunks, self.done, self.status, self.ended = 0, False, None, None
@@ -136,7 +143,8 @@ models:
     )
     (cfg / "warden.yaml").write_text(
         """# The e2e warden.
-batch_api_keys: [batch-key]
+host: e2e
+keys_file: keys.yaml
 policy:
   gpu_busy_percent: 100
   min_free_vram_mb: 0
@@ -151,21 +159,33 @@ healthCheckTimeout: 30
 logToStdout: proxy
 """
     )
+    lines = ["# The e2e clients.", "keys:"]
+    for name, (cls, allow) in KEYS.items():
+        lines += [f"  {name.removesuffix('-key')}:", f"    sha256: {hashlib.sha256(name.encode()).hexdigest()}", f"    class: {cls}"]
+        if allow is not None:
+            lines.append(f"    allow: {json.dumps(allow)}")
+    (cfg / "keys.yaml").write_text("\n".join(lines) + "\n")
+    # The Keys tab's sops file, encrypted to an age key outside the repo.
+    identity = root / "age.txt"
+    public = subprocess.run(["age-keygen", "-o", identity], capture_output=True, text=True, check=True).stderr.split()[-1]
+    (cfg / ".sops.yaml").write_text(f"creation_rules:\n  - path_regex: secrets/.*\\.yaml$\n    age: {public}\n")
+    (cfg / "secrets").mkdir()
     kv = root / "kv.json"
     kv.write_text(json.dumps({"fake-server": ["q8_0-q8_0", "f16-f16"]}))
     git = ["git", "-C", str(cfg), "-c", "user.name=e2e", "-c", "user.email=e2e@example"]
     subprocess.run(["git", "init", "-q", str(cfg)], check=True)
     subprocess.run(git + ["add", "-A"], check=True)
     subprocess.run(git + ["commit", "-qm", "start"], check=True)
-    return cfg, base, kv, gguf
+    return cfg, base, kv, gguf, identity
 
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="infermux-e2e-"))
-    cfg, base, kv, gguf = setup(root)
+    cfg, base, kv, gguf, identity = setup(root)
     models = cfg / "models"
-    env = dict(os.environ, GIT_AUTHOR_NAME="e2e", GIT_AUTHOR_EMAIL="e2e@example", GIT_COMMITTER_NAME="e2e", GIT_COMMITTER_EMAIL="e2e@example")
+    (root / "ui-key").write_text("ui-key\n")
+    env = dict(os.environ, SOPS_AGE_KEY_FILE=str(identity), GIT_AUTHOR_NAME="e2e", GIT_AUTHOR_EMAIL="e2e@example", GIT_COMMITTER_NAME="e2e", GIT_COMMITTER_EMAIL="e2e@example")
     daemon_log = open(OUT / "daemon.log", "w")
     daemon = subprocess.Popen(
         [BIN / "infermux", "-listen", "127.0.0.1:5101", "-config", base, "-config-dir", models, "-warden-config", cfg / "warden.yaml"],
@@ -173,7 +193,8 @@ def main():
     )
     ui = subprocess.Popen(
         [BIN / "infermux-ui", "-listen", "127.0.0.1:5110", "-daemon", DAEMON, "-models-dir", models,
-         "-warden-config", cfg / "warden.yaml", "-base-config", base, "-gguf-dirs", gguf, "-kv-kernels", kv],
+         "-warden-config", cfg / "warden.yaml", "-base-config", base, "-gguf-dirs", gguf, "-kv-kernels", kv,
+         "-daemon-key-file", root / "ui-key", "-key-secrets", cfg / "secrets" / "infermux-keys.yaml"],
         stdout=open(OUT / "ui.log", "w"), stderr=subprocess.STDOUT, env=env,
     )
     try:
@@ -208,7 +229,8 @@ def git(cfg, *args):
 def run(cfg, models, gguf):
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
-        page = browser.new_page(viewport={"width": 2560, "height": 1300}, color_scheme="dark")
+        # The browser's key for llama-swap's UI, given at the Basic prompt.
+        page = browser.new_page(viewport={"width": 2560, "height": 1300}, color_scheme="dark", http_credentials={"username": "me", "password": "my-key"})
         errors = []
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
         page.on("console", lambda m: m.type == "error" and errors.append(f"console: {m.text}"))
@@ -246,6 +268,19 @@ def run(cfg, models, gguf):
 
         def save():
             page.get_by_role("button", name="Save", exact=True).click()
+
+        # --- Keys at the daemon ---------------------------------------------------
+        chat = {"model": "alpha", "max_tokens": 1, "messages": []}
+        status, _ = http("POST", DAEMON + "/v1/chat/completions", chat, {"Authorization": None})
+        check("no key gets 401", status == 401, status)
+        status, _ = http("GET", DAEMON + "/warden/verdict", None, {"Authorization": "Bearer guess"})
+        check("an unknown key gets 401, the warden's API too", status == 401, status)
+        status, _ = http("GET", DAEMON + "/health", None, {"Authorization": None})
+        check("the health check needs no key", status == 200, status)
+        status, body = http("POST", DAEMON + "/v1/chat/completions", chat, {"Authorization": "Bearer narrow-key"})
+        check("a model outside the key's allow list gets 403", status == 403 and "e2e/alpha" in body, f"{status} {body[:100]}")
+        status, body = http("POST", DAEMON + "/v1/chat/completions", dict(chat, model="beta"), {"x-api-key": "narrow-key", "Authorization": None})
+        check("one inside it is served, the key read from x-api-key", status == 200, f"{status} {body[:100]}")
 
         # --- Status -----------------------------------------------------------
         open_tab("status")
@@ -414,6 +449,32 @@ def run(cfg, models, gguf):
         check("a policy number no one could mean is refused", visible(page.locator(".card.text-red-300", has_text="poll_seconds")))
         check("and the file keeps the last good one", (cfg / "warden.yaml").read_text() == wtext)
         shot("settings")
+
+        # --- Keys -------------------------------------------------------------------
+        open_tab("keys")
+        check("keys lists the file's keys", visible(page.locator("td", has_text="narrow")))
+        page.get_by_placeholder("episteme-batch").fill("phone")
+        page.get_by_role("button", name="Make key").click()
+        made = page.locator("code.select-all").first
+        check("a new key is shown once made", visible(made))
+        key = made.inner_text().strip() if made.count() else ""
+        ktext = (cfg / "keys.yaml").read_text()
+        secrets = (cfg / "secrets" / "infermux-keys.yaml").read_text()
+        check("keys.yaml has its hash, not the key, comment kept",
+              hashlib.sha256(key.encode()).hexdigest() in ktext and key not in ktext and ktext.startswith("# The e2e clients."), ktext)
+        check("the sops file has it encrypted", key and key not in secrets and "sops:" in secrets, secrets[:200])
+        check("the daemon accepts it without a restart",
+              wait_for(lambda: http("POST", DAEMON + "/v1/chat/completions", chat, {"Authorization": "Bearer " + key})[0] == 200, 10))
+        shot("keys-made")
+        page.get_by_role("button", name="Done").click()
+        phone = page.locator("tr", has_text="phone")
+        phone.get_by_role("button", name="Show").click()
+        check("show reads it back from sops", visible(phone.get_by_text(key)) if key else False)
+        phone.get_by_role("button", name="Revoke").click()
+        check("revoke takes it out of keys.yaml", wait_for(lambda: "phone:" not in (cfg / "keys.yaml").read_text(), 5))
+        check("and the daemon refuses it",
+              wait_for(lambda: http("POST", DAEMON + "/v1/chat/completions", chat, {"Authorization": "Bearer " + key})[0] == 401, 10))
+        shot("keys")
 
         # --- Changes ---------------------------------------------------------------
         open_tab("changes")

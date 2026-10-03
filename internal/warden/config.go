@@ -38,11 +38,22 @@ type Config struct {
 	// unloaded the model that was writing the reply.
 	DesktopProcesses []string `yaml:"desktop_processes" json:"desktop_processes"`
 
-	// BatchAPIKeys mark a request as batch: it is refused while the verdict is
-	// pause and cancelled on a yield. Any other key, or none, is interactive.
-	// These are labels, not secrets: InferMux listens on loopback and does no
-	// authentication of its own.
-	BatchAPIKeys []string `yaml:"batch_api_keys" json:"batch_api_keys"`
+	// Host is this machine's name among the hosts, the <host> in
+	// <host>/<model> (0006, 2). Empty means "this", in a single-host setup.
+	Host string `yaml:"host" json:"host"`
+
+	// KeysFile is keys.yaml, relative to this file. Set, every request but a
+	// health check needs a key in it, and the key decides the class (0006, 4).
+	// Empty, no key is needed and every request is interactive.
+	KeysFile string `yaml:"keys_file" json:"keys_file"`
+
+	// Remotes are the other hosts whose models this one routes to (0006, 2).
+	Remotes []Remote `yaml:"remotes" json:"remotes"`
+
+	// Keys is KeysFile, read with this file. Nil without a KeysFile.
+	Keys *KeyFile `yaml:"-" json:"-"`
+	// KeysPath is KeysFile resolved, for the watcher.
+	KeysPath string `yaml:"-" json:"-"`
 
 	// TrustedHosts are host names, besides the loopback ones, on which a
 	// browser may write: the name `tailscale serve` answers on, which it
@@ -53,6 +64,15 @@ type Config struct {
 
 	Policy    Policy     `yaml:"policy" json:"policy"`
 	Consumers []Consumer `yaml:"consumers" json:"consumers"`
+}
+
+// Remote is another InferMux. URL is its HTTPS address on the tailnet
+// (0006, 5); KeyFile holds this host's own key there, for discovery: a
+// forwarded request carries its client's key, not this one.
+type Remote struct {
+	Name    string `yaml:"name" json:"name"`
+	URL     string `yaml:"url" json:"url"`
+	KeyFile string `yaml:"key_file" json:"key_file"`
 }
 
 // Policy is the decision table's numbers. See Decide for what each one does.
@@ -129,6 +149,31 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return cfg, fmt.Errorf("%s: %w", path, err)
+	}
+	var keys map[string]any
+	if yaml.Unmarshal(raw, &keys) == nil {
+		if _, old := keys["batch_api_keys"]; old {
+			// Dropping it silently would make a batch client interactive.
+			return cfg, fmt.Errorf("%s: batch_api_keys moved to keys.yaml, as keys with class: batch (0006)", path)
+		}
+	}
+	if cfg.KeysFile != "" {
+		cfg.KeysPath = keysPath(path, cfg.KeysFile)
+		kf, err := LoadKeys(cfg.KeysPath)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.Keys = &kf
+	}
+	seen := map[string]bool{cfg.Host: true}
+	for i, r := range cfg.Remotes {
+		if r.Name == "" || r.URL == "" {
+			return cfg, fmt.Errorf("%s: remote %d needs a name and a url", path, i+1)
+		}
+		if seen[r.Name] {
+			return cfg, fmt.Errorf("%s: remote %s is named twice, or is this host", path, r.Name)
+		}
+		seen[r.Name] = true
 	}
 	for i := range cfg.Consumers {
 		c := &cfg.Consumers[i]

@@ -1,4 +1,4 @@
-import type { BuildState, GGUF, GitState, Model, UIState, VerdictState, WardenConfig } from "./types";
+import type { BuildState, GGUF, GitState, Key, KeysState, Model, UIState, VerdictState, WardenConfig } from "./types";
 
 // Every request carries X-InferMux: infermux-ui refuses a write without it,
 // and a page from another origin cannot add it.
@@ -29,6 +29,11 @@ export const api = {
   deleteModel: (name: string) => call("DELETE", `/api/models/${encodeURIComponent(name)}`),
   ggufs: () => call<GGUF[]>("GET", "/api/gguf"),
   saveWarden: (cfg: WardenConfig) => call<WardenConfig>("PUT", "/api/warden", cfg),
+  keys: () => call<KeysState>("GET", "/api/keys"),
+  createKey: (name: string, k: Key) => call<{ key: string }>("POST", `/api/keys/${encodeURIComponent(name)}`, k),
+  saveKey: (name: string, k: Key) => call("PUT", `/api/keys/${encodeURIComponent(name)}`, k),
+  deleteKey: (name: string) => call("DELETE", `/api/keys/${encodeURIComponent(name)}`),
+  revealKey: (name: string) => call<{ key: string }>("POST", `/api/keys/${encodeURIComponent(name)}/reveal`),
   git: () => call<GitState>("GET", "/api/git"),
   build: () => call<BuildState>("GET", "/api/build"),
   startBuild: () => call<BuildState>("POST", "/api/build"),

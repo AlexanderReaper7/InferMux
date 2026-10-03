@@ -15,10 +15,24 @@ our_units: [llama-embed.service]
 # Electron app shares that name. (Default: none.)
 desktop_processes: [cosmic-comp, electron]
 
-# A request presenting one of these keys (Bearer, x-api-key or Basic) is
-# batch: refused with 503 while paused, cancelled on a yield. Anything else is
-# interactive and never killed. Labels, not secrets. (Default: none.)
-batch_api_keys: [episteme-batch]
+# This machine's name among the hosts: the <host> in <host>/<model>, which a
+# key's allow list matches. (Default: none.)
+host: reaperboi
+
+# The clients' keys, relative to this file. Set, every request but a health
+# check needs a key from it (Bearer, x-api-key, the password of Basic, or the
+# subprotocol openai-insecure-api-key.<key>), and the key's class decides
+# whether it is batch: refused with 503 while paused, cancelled on a yield.
+# Unset, no key is needed and every request is interactive. (Default: none.)
+keys_file: keys.example.yaml
+
+# The other hosts. Their local models are listed here as <name>/<model> and
+# forwarded with the client's own key; key_file is this host's key there, for
+# reading the list. (Default: none.)
+remotes:
+  - name: zbox
+    url: https://zbox.tailnet.ts.net:5001
+    key_file: /run/credentials/infermux.service/remote-key
 
 # Host names besides localhost, 127.0.0.1 and [::1] that a browser may write
 # on, here and in infermux-ui: the name `tailscale serve` publishes them on,

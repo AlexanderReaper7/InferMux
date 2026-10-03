@@ -6,18 +6,18 @@
   let path = $state("");
   let error = $state<string | null>(null);
   let saved = $state(false);
-  let lists = $state({ our_units: "", desktop_processes: "", batch_api_keys: "", trusted_hosts: "" });
+  let lists = $state({ our_units: "", desktop_processes: "", trusted_hosts: "" });
 
   async function load() {
     try {
       const ui = await api.state();
       cfg = ui.warden;
       cfg.consumers ??= [];
+      cfg.remotes ??= [];
       path = ui.paths.warden_file;
       lists = {
         our_units: (cfg.our_units ?? []).join("\n"),
         desktop_processes: (cfg.desktop_processes ?? []).join("\n"),
-        batch_api_keys: (cfg.batch_api_keys ?? []).join("\n"),
         trusted_hosts: (cfg.trusted_hosts ?? []).join("\n"),
       };
     } catch (e) {
@@ -40,7 +40,6 @@
       ...$state.snapshot(cfg),
       our_units: lines(lists.our_units),
       desktop_processes: lines(lists.desktop_processes),
-      batch_api_keys: lines(lists.batch_api_keys),
       trusted_hosts: lines(lists.trusted_hosts),
     };
     try {
@@ -88,7 +87,7 @@
 
     <section class="card">
       <h2 class="mb-3 font-medium">Whose work is whose</h2>
-      <div class="grid gap-3 sm:grid-cols-3">
+      <div class="grid gap-3 sm:grid-cols-2">
         <label class="flex flex-col gap-1">
           <span class="label">Our units</span>
           <textarea class="h-28 font-mono text-sm" bind:value={lists.our_units}></textarea>
@@ -98,11 +97,6 @@
           <span class="label">Desktop processes</span>
           <textarea class="h-28 font-mono text-sm" bind:value={lists.desktop_processes}></textarea>
           <span class="text-xs text-neutral-500">Never contention.</span>
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="label">Batch API keys</span>
-          <textarea class="h-28 font-mono text-sm" bind:value={lists.batch_api_keys}></textarea>
-          <span class="text-xs text-neutral-500">Requests with one are batch; all others are yours.</span>
         </label>
       </div>
       <label class="mt-4 flex flex-col gap-1">
@@ -117,6 +111,38 @@
         <span class="label">ComfyUI URL, empty for none</span>
         <input bind:value={cfg.comfyui_url} />
       </label>
+    </section>
+
+    <section class="card lg:col-span-2">
+      <h2 class="mb-3 font-medium">Hosts and keys</h2>
+      <div class="grid gap-3 sm:grid-cols-2">
+        <label class="flex flex-col gap-1">
+          <span class="label">This host</span>
+          <input bind:value={cfg.host} />
+          <span class="text-xs text-neutral-500">Its models are &lt;host&gt;/&lt;model&gt; to a key's allow list.</span>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="label">Keys file, empty for no keys</span>
+          <input bind:value={cfg.keys_file} />
+          <span class="text-xs text-neutral-500">Relative to this file. With it, every request but the health checks needs a key.</span>
+        </label>
+      </div>
+      <table class="mt-4 w-full text-sm">
+        <thead class="text-left text-neutral-500">
+          <tr><th class="py-1 font-normal">Remote host</th><th class="font-normal">URL</th><th class="font-normal">Key file</th><th></th></tr>
+        </thead>
+        <tbody>
+          {#each cfg.remotes ?? [] as r, i}
+            <tr>
+              <td class="py-1 pr-2"><input class="w-full" bind:value={r.name} /></td>
+              <td class="pr-2"><input class="w-full" bind:value={r.url} /></td>
+              <td class="pr-2"><input class="w-full" bind:value={r.key_file} /></td>
+              <td><button class="text-neutral-500 hover:text-red-400" onclick={() => cfg!.remotes!.splice(i, 1)}>✕</button></td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      <button class="btn mt-2" onclick={() => cfg!.remotes!.push({ name: "", url: "", key_file: "" })}>Add remote host</button>
     </section>
 
     <section class="card lg:col-span-2">

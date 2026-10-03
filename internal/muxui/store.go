@@ -28,6 +28,10 @@ type Store struct {
 	// KVKernels is, per runtime macro, the K-V cache pairs its FlashAttention
 	// kernels were compiled for. A runtime missing here is not checked.
 	KVKernels map[string][]string
+	// KeySecrets is the sops file with each key's plaintext; Sops is the sops
+	// binary, "sops" from PATH when empty.
+	KeySecrets string
+	Sops       string
 
 	mu sync.Mutex
 }
@@ -276,7 +280,8 @@ func (s *Store) SaveWarden(cfg warden.Config) error {
 	}
 	enc.Close()
 
-	tmp, err := os.CreateTemp("", "infermux-warden-*.yaml")
+	// Beside the file, so a relative keys_file resolves as the warden will.
+	tmp, err := os.CreateTemp(filepath.Dir(s.WardenFile), ".infermux-warden-*.yaml")
 	if err != nil {
 		return err
 	}
@@ -362,7 +367,18 @@ func (s *Store) IntentToAdd() error {
 	return err
 }
 
-func (s *Store) paths() []string { return []string{s.ModelsDir, s.WardenFile} }
+// paths is what Git shows and Commit commits. The keys' two files count once
+// they exist: git refuses a path that matches nothing.
+func (s *Store) paths() []string {
+	paths := []string{s.ModelsDir, s.WardenFile}
+	keys, _ := s.keysPath()
+	for _, p := range []string{keys, s.KeySecrets} {
+		if _, err := os.Stat(p); p != "" && err == nil {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
 
 func (s *Store) git(args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{"-C", s.ModelsDir}, args...)...)

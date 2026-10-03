@@ -114,11 +114,32 @@ export interface Consumer {
   timeout_seconds: number;
 }
 
+export interface Remote {
+  name: string;
+  url: string;
+  key_file: string;
+}
+
+export interface Key {
+  sha256?: string;
+  class: "interactive" | "batch";
+  // Absent: every model. Empty: none.
+  allow?: string[] | null;
+}
+
+export interface KeysState {
+  file: string;
+  secrets: string;
+  keys: Record<string, Key>;
+}
+
 export interface WardenConfig {
   comfyui_url: string;
   our_units: string[] | null;
   desktop_processes: string[] | null;
-  batch_api_keys: string[] | null;
+  host: string;
+  keys_file: string;
+  remotes: Remote[] | null;
   trusted_hosts: string[] | null;
   policy: Policy;
   consumers: Consumer[] | null;

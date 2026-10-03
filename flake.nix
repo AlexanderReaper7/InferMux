@@ -22,6 +22,9 @@
           pkgs.go_1_27
           pkgs.gopls
           pkgs.nodejs
+          # infermux-ui's keys tests encrypt for real.
+          pkgs.sops
+          pkgs.age
         ];
         # As in nix/package.nix: go-nvml's symbols resolve at dlopen, not at load.
         hardeningDisable = [ "bindnow" ];

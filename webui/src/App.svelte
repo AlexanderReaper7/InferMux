@@ -4,12 +4,14 @@
   import Models from "./routes/Models.svelte";
   import Settings from "./routes/Settings.svelte";
   import Changes from "./routes/Changes.svelte";
+  import Keys from "./routes/Keys.svelte";
   import { api } from "./lib/api";
 
   const tabs = [
     { id: "status", label: "Status" },
     { id: "models", label: "Models" },
     { id: "settings", label: "Warden" },
+    { id: "keys", label: "Keys" },
     { id: "changes", label: "Changes" },
     { id: "llama-swap", label: "llama-swap" },
   ] as const;
@@ -72,6 +74,8 @@
     <Models />
   {:else if tab === "settings"}
     <Settings />
+  {:else if tab === "keys"}
+    <Keys />
   {:else if tab === "changes"}
     <Changes />
   {/if}

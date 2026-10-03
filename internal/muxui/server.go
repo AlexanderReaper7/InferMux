@@ -22,9 +22,9 @@ var dist embed.FS
 // Handler is infermux-ui's whole HTTP side:
 //
 //	/api/...     the files, through Store
-//	/daemon/...  the daemon at Daemon, with X-InferMux added
+//	/daemon/...  the daemon, with X-InferMux and the UI's own key added
 //	/            the web app
-func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
+func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/state", func(rw http.ResponseWriter, r *http.Request) {
@@ -108,6 +108,54 @@ func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
 		}
 		reply(rw, cfg)
 	})
+	mux.HandleFunc("GET /api/keys", func(rw http.ResponseWriter, r *http.Request) {
+		st, err := store.Keys()
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		reply(rw, st)
+	})
+	mux.HandleFunc("POST /api/keys/{name}", func(rw http.ResponseWriter, r *http.Request) {
+		var k warden.Key
+		if !decode(rw, r, &k) {
+			return
+		}
+		key, err := store.CreateKey(r.PathValue("name"), k)
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		reply(rw, map[string]string{"key": key})
+	})
+	mux.HandleFunc("PUT /api/keys/{name}", func(rw http.ResponseWriter, r *http.Request) {
+		var k warden.Key
+		if !decode(rw, r, &k) {
+			return
+		}
+		if err := store.UpdateKey(r.PathValue("name"), k); err != nil {
+			fail(rw, err)
+			return
+		}
+		reply(rw, map[string]bool{"saved": true})
+	})
+	mux.HandleFunc("DELETE /api/keys/{name}", func(rw http.ResponseWriter, r *http.Request) {
+		if err := store.DeleteKey(r.PathValue("name")); err != nil {
+			fail(rw, err)
+			return
+		}
+		reply(rw, map[string]bool{"deleted": true})
+	})
+	// A POST, though it changes nothing: a write needs X-InferMux from the
+	// UI's own origin, and a key should need no less.
+	mux.HandleFunc("POST /api/keys/{name}/reveal", func(rw http.ResponseWriter, r *http.Request) {
+		key, err := store.RevealKey(r.PathValue("name"))
+		if err != nil {
+			fail(rw, err)
+			return
+		}
+		reply(rw, map[string]string{"key": key})
+	})
 	mux.HandleFunc("GET /api/build", func(rw http.ResponseWriter, r *http.Request) {
 		reply(rw, build.State())
 	})
@@ -141,7 +189,7 @@ func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
 		reply(rw, map[string]string{"commit": hash})
 	})
 
-	mux.Handle("/daemon/", daemonProxy(daemon))
+	mux.Handle("/daemon/", daemonProxy(daemon, daemonKey))
 
 	app, _ := fs.Sub(dist, "dist")
 	files := http.FileServerFS(app)
@@ -165,8 +213,9 @@ func Handler(store *Store, build *Builder, daemon *url.URL) http.Handler {
 }
 
 // daemonProxy passes /daemon/<path> to the daemon. The browser's Origin is
-// dropped: the request is now infermux-ui's, which marks it with X-InferMux.
-func daemonProxy(daemon *url.URL) http.Handler {
+// dropped: the request is now infermux-ui's, which marks it with X-InferMux
+// and sends its own key (0006, 4). The browser brings no key to the UI.
+func daemonProxy(daemon *url.URL, key string) http.Handler {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(daemon)
@@ -175,6 +224,12 @@ func daemonProxy(daemon *url.URL) http.Handler {
 			pr.Out.Header.Del("Origin")
 			pr.Out.Header.Del("Referer")
 			pr.Out.Header.Set("X-InferMux", "infermux-ui")
+			for _, h := range []string{"Authorization", "X-Api-Key"} {
+				pr.Out.Header.Del(h)
+			}
+			if key != "" {
+				pr.Out.Header.Set("Authorization", "Bearer "+key)
+			}
 		},
 		FlushInterval: -1, // llama-swap's /api/events is a stream
 	}

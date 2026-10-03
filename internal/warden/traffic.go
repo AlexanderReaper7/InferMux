@@ -9,11 +9,10 @@ import (
 	"time"
 )
 
-// Who is asking (0004). A request presenting one of Config.BatchAPIKeys is
-// batch: work that can wait, or not happen at all, like Episteme's scheduled
-// jobs. Everything else is interactive, because a prompt the user just sent is
-// never the thing to kill, and a client nobody configured should not be killed
-// either. Forgetting the key makes a batch client too polite, never too rude.
+// Who is asking (0004). The class comes with the client's key in keys.yaml
+// (0006): batch is work that can wait, or not happen at all, like Episteme's
+// scheduled jobs; interactive is a prompt the user just sent, never the thing
+// to kill. Without a keys file every request is interactive.
 //
 // Batch requests are refused with 503 while the verdict is pause, and cancelled
 // on a yield. Interactive requests always pass, and the models are not unloaded
@@ -50,8 +49,8 @@ type TrafficState struct {
 }
 
 type traffic struct {
-	batchKeys map[string]bool
-	now       func() time.Time
+	keys *keyring // nil: no keys file, no key needed
+	now  func() time.Time
 
 	mu              sync.Mutex
 	paused          bool
@@ -62,39 +61,40 @@ type traffic struct {
 	cancelled       int
 }
 
-func newTraffic(batchKeys []string, now func() time.Time) *traffic {
+func newTraffic(keys *KeyFile, now func() time.Time) *traffic {
 	t := &traffic{now: now, flights: map[uint64]*flight{}}
-	t.setBatchKeys(batchKeys)
+	t.setKeys(keys)
 	return t
 }
 
-func (t *traffic) setBatchKeys(batchKeys []string) {
-	keys := map[string]bool{}
-	for _, k := range batchKeys {
-		if k != "" {
-			keys[k] = true
-		}
+func (t *traffic) setKeys(keys *KeyFile) {
+	var ring *keyring
+	if keys != nil {
+		ring = newKeyring(*keys)
 	}
 	t.mu.Lock()
-	t.batchKeys = keys
+	t.keys = ring
 	t.mu.Unlock()
 }
 
-// classify reads the key the way llama-swap accepts one: a bearer token,
-// x-api-key, or the password of HTTP Basic.
-func (t *traffic) classify(r *http.Request) Class {
+// identify finds the client. required is false without a keys file, and the
+// request is then an unnamed interactive one.
+func (t *traffic) identify(r *http.Request) (key namedKey, required, ok bool) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	for _, key := range presentedKeys(r) {
-		if t.batchKeys[key] {
-			return Batch
-		}
+	ring := t.keys
+	t.mu.Unlock()
+	if ring == nil {
+		return namedKey{Key: Key{Class: Interactive}}, false, true
 	}
-	return Interactive
+	key, ok = ring.identify(r)
+	return key, true, ok
 }
 
+// presentedKeys reads the key the way llama-swap accepts one: a bearer token,
+// x-api-key, or the password of HTTP Basic; and from a browser's WebSocket,
+// the subprotocol OpenAI's realtime clients use.
 func presentedKeys(r *http.Request) []string {
-	var keys []string
+	keys := websocketKeys(r)
 	if k := r.Header.Get("x-api-key"); k != "" {
 		keys = append(keys, k)
 	}
@@ -115,10 +115,11 @@ func presentedKeys(r *http.Request) []string {
 }
 
 // isInference is a request that can load or run a model: any POST outside the
-// management API. A GET of /v1/models is not activity, and a POST to
-// /api/models/unload from a batch client must not be refused.
+// management API, and a WebSocket opened to a model, which is a GET that
+// lasts as long as the session. A GET of /v1/models is not activity, and a
+// POST to /api/models/unload from a batch client must not be refused.
 func isInference(r *http.Request) bool {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodPost && !(r.Method == http.MethodGet && isWebSocket(r)) {
 		return false
 	}
 	return !strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/warden/")

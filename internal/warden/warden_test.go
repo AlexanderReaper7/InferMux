@@ -2,6 +2,7 @@ package warden
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,6 +35,17 @@ func (m *fakeModels) Running() map[string]string {
 	return out
 }
 
+func (m *fakeModels) Qualify(r *http.Request) (string, bool) {
+	var body struct{ Model string }
+	if r.Body == nil || json.NewDecoder(r.Body).Decode(&body) != nil || body.Model == "" {
+		return "", false
+	}
+	if strings.Contains(body.Model, "/") {
+		return body.Model, true
+	}
+	return "this/" + body.Model, true
+}
+
 func (m *fakeModels) UnloadAll() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -60,7 +72,7 @@ type harness struct {
 func newHarness(t *testing.T, mutate func(*Config)) *harness {
 	t.Helper()
 	cfg := DefaultConfig()
-	cfg.BatchAPIKeys = []string{"batch-key"}
+	cfg.Keys = testKeys()
 	cfg.Consumers = []Consumer{{Name: "episteme", URL: "http://episteme", AnnouncePath: "/announce", TimeoutSeconds: 1}}
 	if mutate != nil {
 		mutate(&cfg)
@@ -188,34 +200,69 @@ func post(handler http.Handler, path string, header map[string]string) *httptest
 	return rec
 }
 
-func TestKeysClassifyAndUnmarkedIsInteractive(t *testing.T) {
-	tr := newTraffic([]string{"batch-key"}, time.Now)
+// testKeys is the harness's keys.yaml: one batch key, one interactive.
+func testKeys() *KeyFile {
+	return &KeyFile{Keys: map[string]Key{
+		"batch": {SHA256: HashKey("batch-key"), Class: Batch},
+		"me":    {SHA256: HashKey("my-key"), Class: Interactive},
+	}}
+}
+
+// wrap is the warden in front of next, for a test that is not about keys: a
+// request that presents none is sent as the interactive key.
+func (h *harness) wrap(next http.Handler) http.Handler {
+	wrapped := h.w.Wrap(next)
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if len(presentedKeys(r)) == 0 {
+			r.Header.Set("Authorization", "Bearer my-key")
+		}
+		wrapped.ServeHTTP(rw, r)
+	})
+}
+
+func TestTheKeyDecidesTheClass(t *testing.T) {
+	tr := newTraffic(testKeys(), time.Now)
 	cases := map[string]Class{
 		"Bearer batch-key":            Batch,
-		"Bearer other":                Interactive,
-		"":                            Interactive,
+		"Bearer my-key":               Interactive,
 		"Basic " + "dTpiYXRjaC1rZXk=": Batch, // u:batch-key
 	}
 	for auth, want := range cases {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-		if auth != "" {
-			req.Header.Set("Authorization", auth)
-		}
-		if got := tr.classify(req); got != want {
-			t.Errorf("%q: got %s want %s", auth, got, want)
+		req.Header.Set("Authorization", auth)
+		key, required, ok := tr.identify(req)
+		if !required || !ok || key.Class != want {
+			t.Errorf("%q: got %s %v %v, want %s", auth, key.Class, required, ok, want)
 		}
 	}
-	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
-	req.Header.Set("x-api-key", "batch-key")
-	if tr.classify(req) != Batch {
-		t.Error("x-api-key not read")
+	for name, set := range map[string]func(*http.Request){
+		"x-api-key": func(r *http.Request) { r.Header.Set("x-api-key", "batch-key") },
+		"subprotocol": func(r *http.Request) {
+			r.Header.Set("Sec-WebSocket-Protocol", "realtime, openai-insecure-api-key.batch-key")
+		},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
+		set(req)
+		if key, _, ok := tr.identify(req); !ok || key.Class != Batch {
+			t.Errorf("%s not read", name)
+		}
+	}
+	for _, auth := range []string{"", "Bearer other", "Bearer " + HashKey("my-key")} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		req.Header.Set("Authorization", auth)
+		if _, _, ok := tr.identify(req); ok {
+			t.Errorf("%q was taken as a key", auth)
+		}
+	}
+	if key, required, ok := newTraffic(nil, time.Now).identify(httptest.NewRequest(http.MethodPost, "/v1/x", nil)); required || !ok || key.Class != Interactive {
+		t.Error("without a keys file, a request should be an unnamed interactive one")
 	}
 }
 
 func TestBatchIsRefusedDuringAPauseAndInteractivePasses(t *testing.T) {
 	h := newHarness(t, nil)
 	served := 0
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { served++ }))
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { served++ }))
 	h.reading = busy(60)
 	h.w.Tick()
 
@@ -239,7 +286,7 @@ func TestTheHandlerTracksARequestUntilItsResponseEnds(t *testing.T) {
 	h := newHarness(t, nil)
 	inside := make(chan struct{})
 	release := make(chan struct{})
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		close(inside)
 		<-release
 	}))
@@ -262,7 +309,7 @@ func TestAYieldCancelsTheBatchRequestsContext(t *testing.T) {
 	h := newHarness(t, nil)
 	inside := make(chan struct{})
 	ended := make(chan error, 1)
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		close(inside)
 		<-r.Context().Done()
 		ended <- r.Context().Err()
@@ -286,7 +333,7 @@ func TestAYieldCancelsTheBatchRequestsContext(t *testing.T) {
 func TestACancelledBatchRequestIsA503NotAnEmpty200(t *testing.T) {
 	h := newHarness(t, nil)
 	inside := make(chan struct{})
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		close(inside)
 		<-r.Context().Done()
 	}))
@@ -306,7 +353,7 @@ func TestACancelledBatchRequestIsA503NotAnEmpty200(t *testing.T) {
 func TestACancelledStreamBreaksTheConnection(t *testing.T) {
 	h := newHarness(t, nil)
 	inside := make(chan struct{})
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Write([]byte("data: {}\n\n"))
 		rw.(http.Flusher).Flush()
 		close(inside)
@@ -327,7 +374,7 @@ func TestACancelledStreamBreaksTheConnection(t *testing.T) {
 
 func TestAClientHangingUpIsNotReportedAsAYield(t *testing.T) {
 	h := newHarness(t, nil)
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {}))
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {}))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
@@ -341,7 +388,7 @@ func TestAClientHangingUpIsNotReportedAsAYield(t *testing.T) {
 
 func TestVerdictIsServedUnderWarden(t *testing.T) {
 	h := newHarness(t, nil)
-	handler := h.w.Wrap(http.NotFoundHandler())
+	handler := h.wrap(http.NotFoundHandler())
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/warden/verdict", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"action": "resume"`) {

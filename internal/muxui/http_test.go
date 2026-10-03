@@ -22,7 +22,7 @@ type ui struct {
 
 func newUI(t *testing.T) ui {
 	f := newFixture(t)
-	return ui{t: t, f: f, h: Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:5001"})}
+	return ui{t: t, f: f, h: Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:5001"}, "")}
 }
 
 // call sends what the web app sends: a loopback Host, its own Origin on a

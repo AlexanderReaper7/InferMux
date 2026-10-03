@@ -3,6 +3,7 @@ package warden
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,7 +13,7 @@ func TestTheExampleFileLoadsWithEveryKeyRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.ComfyUIURL == "" || len(cfg.OurUnits) != 1 || len(cfg.DesktopProcesses) != 2 ||
-		len(cfg.BatchAPIKeys) != 1 || len(cfg.Consumers) != 1 {
+		cfg.Host != "reaperboi" || cfg.Keys == nil || len(cfg.Keys.Keys) != 2 || len(cfg.Remotes) != 1 || len(cfg.Consumers) != 1 {
 		t.Fatalf("a key was not read: %+v", cfg)
 	}
 	if cfg.Policy != DefaultConfig().Policy {
@@ -42,5 +43,49 @@ func TestAConsumerWithoutAURLIsAnError(t *testing.T) {
 	os.WriteFile(path, []byte("consumers:\n  - name: x\n"), 0o644)
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("accepted")
+	}
+}
+
+func TestTheOldBatchKeysAreRefusedNotDropped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "w.yaml")
+	os.WriteFile(path, []byte("batch_api_keys: [episteme-batch]\n"), 0o644)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "keys.yaml") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAKeysFileThatDoesNotCheckOutIsRefusedWhole(t *testing.T) {
+	good := HashKey("k")
+	for name, body := range map[string]string{
+		"short hash":    "keys:\n  a: {sha256: abc, class: batch}\n",
+		"upper hex":     "keys:\n  a: {sha256: " + strings.ToUpper(good) + ", class: batch}\n",
+		"no class":      "keys:\n  a: {sha256: " + good + "}\n",
+		"unknown class": "keys:\n  a: {sha256: " + good + ", class: urgent}\n",
+		"the same key":  "keys:\n  a: {sha256: " + good + ", class: batch}\n  b: {sha256: " + good + ", class: interactive}\n",
+		"bad pattern":   "keys:\n  a: {sha256: " + good + ", class: batch, allow: [\"[\"]}\n",
+		"empty pattern": "keys:\n  a: {sha256: " + good + ", class: batch, allow: [\"\"]}\n",
+		"bad name":      "keys:\n  \"a b\": {sha256: " + good + ", class: batch}\n",
+		"not yaml":      "keys: [\n",
+	} {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "keys.yaml"), []byte(body), 0o644)
+		os.WriteFile(filepath.Join(dir, "w.yaml"), []byte("keys_file: keys.yaml\n"), 0o644)
+		if _, err := LoadConfig(filepath.Join(dir, "w.yaml")); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestARemoteNamedTwiceOrAfterThisHostIsRefused(t *testing.T) {
+	for name, body := range map[string]string{
+		"twice":     "remotes:\n  - {name: zbox, url: https://a}\n  - {name: zbox, url: https://b}\n",
+		"this host": "host: zbox\nremotes:\n  - {name: zbox, url: https://a}\n",
+		"no url":    "remotes:\n  - {name: zbox}\n",
+	} {
+		path := filepath.Join(t.TempDir(), "w.yaml")
+		os.WriteFile(path, []byte(body), 0o644)
+		if _, err := LoadConfig(path); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

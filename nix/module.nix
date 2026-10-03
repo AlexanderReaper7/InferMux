@@ -61,6 +61,20 @@ in
       '';
     };
 
+    credentials = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      example = {
+        remote-zbox = "/run/secrets/infermux/remote-zbox";
+      };
+      description = ''
+        Secrets the daemon reads, such as its key for another host, by name:
+        the file is at /run/credentials/infermux.service/<name>, which a
+        remote's key_file in warden.yaml points at. Passed with LoadCredential,
+        so the files may be root's.
+      '';
+    };
+
     ui = {
       enable = lib.mkEnableOption "infermux-ui, the web UI, as a user service of `ui.user`";
       user = lib.mkOption {
@@ -94,6 +108,24 @@ in
           step. A runtime not listed is not checked.
         '';
       };
+      keySecrets = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/home/alice/nixcfg/secrets/infermux-keys.yaml";
+        description = ''
+          The sops file the Keys tab puts a new key's plaintext in, so it can
+          be shown again. sops finds its recipients in the .sops.yaml above it
+          and decrypts with the user's own identity. null: no new keys.
+        '';
+      };
+      daemonKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          A file, readable by `ui.user`, with the key the UI sends the daemon.
+          Needed once warden.yaml has a keys_file.
+        '';
+      };
       prebuild = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -113,7 +145,7 @@ in
         {
           comfyui_url = "http://127.0.0.1:8188";
           desktop_processes = [ "cosmic-comp" "electron" ];
-          batch_api_keys = [ "episteme-batch" ];
+          keys_file = "keys.yaml";
           consumers = [ { name = "episteme"; url = "http://127.0.0.1:8200"; } ];
         }
       '';
@@ -161,6 +193,7 @@ in
         );
         Restart = "always";
         RestartSec = 5;
+        LoadCredential = lib.mapAttrsToList (name: path: "${name}:${path}") cfg.credentials;
 
         DynamicUser = true;
         StateDirectory = "infermux";
@@ -239,6 +272,16 @@ in
           ++ lib.optionals (cfg.ui.prebuild != null) [
             "-prebuild"
             cfg.ui.prebuild
+          ]
+          ++ lib.optionals (cfg.ui.keySecrets != null) [
+            "-key-secrets"
+            cfg.ui.keySecrets
+            "-sops"
+            (lib.getExe pkgs.sops)
+          ]
+          ++ lib.optionals (cfg.ui.daemonKeyFile != null) [
+            "-daemon-key-file"
+            cfg.ui.daemonKeyFile
           ]
         );
         Restart = "always";

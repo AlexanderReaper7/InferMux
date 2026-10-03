@@ -1,6 +1,10 @@
 package server
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/mostlygeek/llama-swap/internal/swaputil"
+)
 
 // InferMux: the warden's handle on this server's local models. A file of its
 // own, so a merge from upstream never touches it and a rename upstream fails
@@ -27,4 +31,23 @@ func (s *Server) UnloadAllModels() []string {
 		s.local.Unload(0, running...)
 	}
 	return running
+}
+
+// QualifyModel is a model name as a key's allow list sees it (0006, 4): a
+// local model or alias as its real ID with peer "", a peer's as its peer ID
+// and the peer's model name. False for a name this server does not know.
+func (s *Server) QualifyModel(name string) (peer, model string, ok bool) {
+	if real, found := s.cfg.RealModelName(name); found {
+		return "", real, true
+	}
+	if peerID, peerModel, found := s.cfg.ResolvePeerModel(name); found {
+		return peerID, peerModel, true
+	}
+	return "", "", false
+}
+
+// UpstreamModel is the model an /upstream/<model>/... path names.
+func (s *Server) UpstreamModel(path string) (string, bool) {
+	_, real, _, found := swaputil.FindModelInPath(s.cfg, path)
+	return real, found
 }

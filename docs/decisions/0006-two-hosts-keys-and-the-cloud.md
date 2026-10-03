@@ -1,0 +1,43 @@
+# 0006. Two hosts, each a front door; every client has a key; OpenRouter as a peer
+
+- Date: 2026-10-03
+- Status: accepted; milestone 1 (1 to 6 below) being built, 7 to 11 later
+- Rule: InferMux runs on every host with a card (reaperboi, zbox). Each is a front door, each warden judges only its own card, and InferMux itself routes a request for the other host's models there, over the tailnet's HTTPS, with the client's key untouched. Every client has a key; `keys.yaml` holds its SHA-256, its class and the models it may use, and both hosts read the same file. llama-swap's own `peers:` carries only OpenRouter.
+- Keeps 0001 (the machine that measures decides: each warden decides for its own card only) and 0004 (the user's own request is never killed: a forwarded request counts on both hosts it passes through).
+
+## Context
+
+The user wants models spread across machines: embedding, reranking and maybe a small LLM on the zbox (i3-6100T, 16 GB shared with Immich and T3, a 6 GB GTX 1060), the large models on this desktop (RTX 3080), and cloud models from OpenRouter. All of it reachable from any of the user's machines, from anywhere.
+
+llama-swap already has `peers:`, a list of remote OpenAI-compatible servers with their model names. A peer's `apiKey` replaces the client's `Authorization` (`internal/router/peer.go`), which would hide the client's class from the next warden, and a peer list changes only through a config reload, which stops every model on the host (0005, 4).
+
+Two people outside the household have machines on the tailnet. The user's tailnet ACL already keeps them away from these ports.
+
+## Decision
+
+Asked and answered in one session, 2026-10-03.
+
+1. **Both hosts are front doors.** Rejected: the zbox alone, which is always on but makes every desktop model one hop further, and the desktop alone, which takes OpenRouter and the zbox's models down when the desktop sleeps. The cost of two doors is a loop if a model shows up in both hosts' lists; see 2.
+2. **InferMux routes the other host's models itself, from a list it discovers.** Each host polls the other's `/v1/models` and keeps only the entries llama-swap marks as its own local models (`meta.llamaswap.type: model`), so a host never re-exports what it learned from the other, and a forwarded request carries a hop header and is never forwarded again. The other host's models are named `<host>/<model>`; an unqualified name that is not local and is on exactly one other host goes there too. They are merged into this host's `/v1/models`. Rejected: rewriting llama-swap's `peers:` and reloading, because every change on one host, including it going offline, would unload the other's warm model. Rejected: lists generated at deploy, because a model added in the UI would not reach the other door until a redeploy. The cost is forwarding code of our own beside llama-swap's, and llama-swap's UI tab not listing the other host's models.
+3. **An offline host's models stay listed and fail at once.** The last list is kept in the daemon's state directory, so a restart while the other host is down does not forget it. A request gets 502 naming the host, and a re-poll starts, so the first request after it is back succeeds. Rejected: dropping them, which turns "offline" into "model not found" and reads like a typo.
+4. **Every client has a key, checked against its SHA-256.** The user, 2026-10-03: "lets make all consumers have API keys". `keys.yaml` maps a key's name to its `sha256`, its `class` (`interactive` or `batch`, replacing `batch_api_keys`) and an optional `allow` list of model patterns (`openrouter/*`, `reaperboi/*`, one model). No `allow` means every model, the user's "allowed unless listed". Patterns match the qualified name (`<host>/<model>` for the hosts, `<peer>/<model>` for OpenRouter), so one rule reads the same at either door. A request without a known key gets 401 with `WWW-Authenticate: Basic`, so a browser opening llama-swap's UI is asked for it; a model outside `allow` gets 403. The keys travel in `Authorization: Bearer`, `x-api-key`, the password of Basic, or, for a browser's WebSocket, the subprotocol `openai-insecure-api-key.<key>` that OpenAI's realtime clients use. Exempt: `/health`, `/wol-health`, the favicon and the PWA manifest, as in llama-swap. The UI on :5010 takes no key from the browser (the ACL and its guard, 0005), and holds its own key for the daemon.
+   Rejected: keys in plaintext in `keys.yaml` with llama-swap's `apiKeys` generated from them, because the repo, every clone and both hosts' disks would hold usable keys. Rejected: keys only in sops, because a new key would be a sops edit and a redeploy.
+   **The plaintext goes to sops too,** encrypted to the user alone, so a key can be read again. No host needs that file, so it can lag behind `keys.yaml`.
+5. **Transport off a host is HTTPS on the tailnet.** The user: "all transport is secure". Both daemons and the UI bind loopback; `tailscale serve` terminates TLS on `https://<node>.tail.ts.net:<port>`, and the hosts reach each other there. Plain HTTP stays on loopback only. Rejected: Funnel, which puts OpenRouter credit and the cards on the internet.
+6. **OpenRouter is a llama-swap peer on both hosts,** with a curated model list in one shared file the UI edits, and its key from sops-nix on each host. Each host holds the key so cloud models outlive either host. Rejected: OpenRouter's whole catalogue in every picker. Rejected: the Codex subscription; it is not an API product, and a proxy holding a ChatGPT login risks the account.
+   **sops-nix holds every secret a service needs,** decrypted at boot with the host's SSH key. nixcfg had no service secrets before; bw-app-gate asks for a master password per process, which a headless zbox after a reboot cannot give.
+   **WebSocket works end to end.** A WebSocket upgrade is inference to the warden (classified, tracked, never killed when interactive), and the forwarding passes it through.
+
+Later milestones, decided now:
+
+7. **The zbox runs infermux-ui as an agent,** without git and without the web app. The desktop's UI holds every host's files in the one nixcfg checkout and sends a zbox file to it on save. A zbox edit therefore needs the desktop on.
+8. **A model file may name its GGUF on Hugging Face** as `metadata.hf`, the path is derived under `/srv/models/hf/`, and the host that runs the model downloads it on save, with progress in the UI. Local-only GGUFs keep a plain path.
+9. **Groups are a per-host text file,** edited in the UI's text editor.
+10. **The desktop embedder moves under InferMux** on the CPU, and `never_unload` in `warden.yaml` keeps a yield from stopping it. Rejected: inferring "CPU only" from `--device none` in the command.
+11. **Immich ML runs under the zbox's InferMux,** natively from nixpkgs built at the Immich server's tag, reached as `/upstream/immich-ml/predict`, so the zbox's card has one scheduler. Immich's requests are interactive. The 4B embedder takes turns with it on the card; a swap waits for in-flight requests (`internal/router/base.go`). Nothing runs on the zbox's CPU, a dual core. The rest of the zbox's layout waits for the semantic search project.
+
+## Open
+
+- **Immich cannot send a key.** Its ML URL takes no headers, and 4 refuses keyless requests. To be decided before 11.
+- **The never-kill rule covers `/upstream/` only for inference paths** (`internal/server/inflight.go`). Immich's `/predict` is not one. To be extended in 11.
+- **`/v1/models` lists every model to every key,** including ones its `allow` refuses.

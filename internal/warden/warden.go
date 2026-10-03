@@ -24,6 +24,10 @@ type Models interface {
 	Running() map[string]string
 	// UnloadAll stops every model and returns the ones that were running.
 	UnloadAll() []string
+	// Qualify is the model a request names, as <host>/<model> or
+	// <peer>/<model>, for a key's allow list (0006, 4). False when the
+	// request names no model this host knows.
+	Qualify(r *http.Request) (string, bool)
 }
 
 // Logger is the part of llama-swap's proxy log the warden writes to, so its
@@ -66,6 +70,7 @@ type Warden struct {
 	pendingUnload bool
 	deferLogged   bool
 	whenQuiet     map[string]func()
+	remotes       func() any
 	quietLogged   map[string]bool
 
 	stop chan struct{}
@@ -89,7 +94,7 @@ func New(cfg Config, models Models, log Logger) *Warden {
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
 	}
-	w.traffic = newTraffic(cfg.BatchAPIKeys, func() time.Time { return w.now() })
+	w.traffic = newTraffic(cfg.Keys, func() time.Time { return w.now() })
 	w.setComfyUI(cfg.ComfyUIURL)
 	w.comfy = ComfyIdle{BusyAt: w.now()}
 	return w
@@ -335,6 +340,12 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			writeJSON(rw, http.StatusForbidden, map[string]string{"detail": refused})
 			return
 		}
+		key, required, known := w.traffic.identify(r)
+		if required && !known && !keyless(r) {
+			rw.Header().Set("WWW-Authenticate", `Basic realm="InferMux"`)
+			writeJSON(rw, http.StatusUnauthorized, map[string]string{"detail": "a key from keys.yaml is needed"})
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/warden/") {
 			api.ServeHTTP(rw, r)
 			return
@@ -343,7 +354,17 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		class := w.traffic.classify(r)
+		if key.Allow != nil {
+			model, ok := w.models.Qualify(r)
+			if !ok || !key.allows(model) {
+				if !ok {
+					model = "an unknown model"
+				}
+				writeJSON(rw, http.StatusForbidden, map[string]string{"detail": "key " + key.name + " may not use " + model})
+				return
+			}
+		}
+		class := key.Class
 		ctx, cancel := context.WithCancelCause(r.Context())
 		defer cancel(nil)
 		id, ok := w.traffic.begin(class, r.URL.Path, func() { cancel(errYielded) })
@@ -444,6 +465,8 @@ type VerdictState struct {
 	ComfyUI       *comfyState              `json:"comfyui"`
 	ProbeError    *string                  `json:"probe_error"`
 	Resources     *Resources               `json:"resources"`
+	// Remotes is the other hosts and what they list (0006, 2).
+	Remotes any `json:"remotes"`
 }
 
 type comfyState struct {
@@ -474,7 +497,18 @@ func (w *Warden) State() VerdictState {
 	if w.cfg.ComfyUIURL != "" {
 		s.ComfyUI = &comfyState{URL: w.cfg.ComfyUIURL, ComfyIdle: w.comfy}
 	}
+	if w.remotes != nil {
+		s.Remotes = w.remotes()
+	}
 	return s
+}
+
+// ReportRemotes adds the other hosts to /warden/verdict. The warden only
+// shows them; routing to them is the remote package's.
+func (w *Warden) ReportRemotes(state func() any) {
+	w.mu.Lock()
+	w.remotes = state
+	w.mu.Unlock()
 }
 
 func (w *Warden) api() http.Handler {

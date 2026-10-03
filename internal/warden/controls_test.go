@@ -118,7 +118,7 @@ func TestAReloadKeepsTheVerdictAndWhatConsumersHeard(t *testing.T) {
 	h.reading = busy(60)
 	h.w.Tick()
 	cfg := h.w.config()
-	cfg.BatchAPIKeys = []string{"new-key"}
+	cfg.Keys = &KeyFile{Keys: map[string]Key{"new": {SHA256: HashKey("new-key"), Class: Batch}}}
 	cfg.Policy.GPUBusyPercent = 90
 	h.w.Reload(cfg)
 	if !h.w.State().Verdict.Yielded {
@@ -130,7 +130,7 @@ func TestAReloadKeepsTheVerdictAndWhatConsumersHeard(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 	req.Header.Set("Authorization", "Bearer new-key")
-	if h.w.traffic.classify(req) != Batch {
+	if key, _, _ := h.w.traffic.identify(req); key.Class != Batch {
 		t.Fatal("the new batch key is not read")
 	}
 	h.reading = busy(60)
@@ -163,7 +163,7 @@ func TestADeferredReloadWaitsForTheLastInteractiveRequest(t *testing.T) {
 	inside := make(chan struct{})
 	release := make(chan struct{})
 	done := make(chan struct{})
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		close(inside)
 		<-release
 	}))
@@ -190,7 +190,7 @@ func TestADeferredReloadWaitsForTheLastInteractiveRequest(t *testing.T) {
 func TestWritesFromAnotherOriginAndUnmarkedControlsAreRefused(t *testing.T) {
 	h := newHarness(t, nil)
 	served := 0
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { served++ }))
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { served++ }))
 	cases := []struct {
 		path   string
 		header map[string]string
@@ -216,7 +216,7 @@ func TestWritesFromAnotherOriginAndUnmarkedControlsAreRefused(t *testing.T) {
 
 func TestATrustedHostTakesBrowserWritesAfterAReload(t *testing.T) {
 	h := newHarness(t, nil)
-	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {}))
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {}))
 	ts := map[string]string{"Host": "box.tail.ts.net:5001", "Origin": "https://box.tail.ts.net:5001"}
 	if rec := postHost(handler, "/v1/chat/completions", ts); rec.Code != http.StatusForbidden {
 		t.Fatalf("untrusted tailnet name got %d", rec.Code)

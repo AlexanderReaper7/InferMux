@@ -134,7 +134,7 @@ func (w *Warden) Reload(cfg Config) {
 	}
 	w.mu.Unlock()
 
-	w.traffic.setBatchKeys(cfg.BatchAPIKeys)
+	w.traffic.setKeys(cfg.Keys)
 	w.announcer.setConsumers(cfg.Consumers)
 	w.logPolicy("Warden settings reloaded:")
 }
@@ -196,7 +196,11 @@ func (w *Warden) waitingLocked() []string {
 func (w *Warden) guard(r *http.Request) string {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return ""
+		// A WebSocket is a GET that CORS does not cover, and a browser may
+		// send a key it has cached for this host, so it is a write.
+		if !isWebSocket(r) {
+			return ""
+		}
 	}
 	if refused := SameOrigin(r, w.config().TrustedHosts); refused != "" {
 		return refused

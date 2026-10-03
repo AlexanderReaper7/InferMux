@@ -2,7 +2,7 @@
 
 One endpoint for the local models, which gives the GPU back when something else needs it, and never kills the prompt the user just sent.
 
-InferMux is [llama-swap](https://github.com/mostlygeek/llama-swap) with a GPU warden built in. llama-swap starts one model server per request on demand and swaps them one at a time, behind OpenAI and Anthropic compatible APIs. The warden watches the card through NVML. When a game or a ComfyUI job needs it, the warden unloads the model, cancels batch work, tells its consumers to pause, and frees an idle ComfyUI. A request is batch only if it presents a batch API key; everything else is the user's own and is let through, and the model is not unloaded under it.
+InferMux is [llama-swap](https://github.com/mostlygeek/llama-swap) with a GPU warden built in. llama-swap starts one model server per request on demand and swaps them one at a time, behind OpenAI and Anthropic compatible APIs. The warden watches the card through NVML. When a game or a ComfyUI job needs it, the warden unloads the model, cancels batch work, tells its consumers to pause, and frees an idle ComfyUI. Every client has a key, and the key says whether its requests are batch or the user's own. The user's own are let through, and the model is not unloaded under them. Two hosts each running InferMux serve each other's models, so one URL reaches all of them ([0006](docs/decisions/0006-two-hosts-keys-and-the-cloud.md)).
 
 It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-warden-decides-and-says-so.md)), a Windows program until 2026-09-28 ([0002](docs/decisions/0002-linux-nvml-router-unload-comfyui.md)), and llama-warden, a Python sidecar to llama.cpp's router, until 2026-10-03 ([0004](docs/decisions/0004-infermux-request-priority.md)).
 
@@ -25,7 +25,7 @@ services.infermux = {
   settings.models.qwen.cmd = "llama-server --port \${PORT} --model /srv/models/qwen.gguf";
   warden = {
     comfyui_url = "http://127.0.0.1:8188";
-    batch_api_keys = [ "episteme-batch" ];
+    keys_file = "/etc/infermux/keys.yaml";
     consumers = [ { name = "episteme"; url = "http://127.0.0.1:8200"; } ];
   };
 };
@@ -62,35 +62,42 @@ Both answer on loopback names only, plus the warden file's `trusted_hosts`. To r
 
 With `ui.kvKernels` set, the UI marks a model whose K-V cache pair has no compiled FlashAttention kernel, which llama.cpp runs by converting the cache to f16 on every decode step. `ui.prebuild` adds a "Build now" button that runs `nix build` on that installable as the user, ahead of the switch that puts the new kernels in use.
 
+The Keys tab makes, edits and revokes keys. With `ui.keySecrets`, a new key's plaintext goes to that sops file, so the tab can show it again; keys.yaml gets only its SHA-256. `ui.daemonKeyFile` is the UI's own key for the daemon. The browser needs none for the UI; it does for the llama-swap tab, which asks with a Basic prompt (any user name, the key as password).
+
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
 
 ## Talk to it
 
-Loopback :5001, no auth.
+Loopback :5001. With a `keys_file`, every request but `/health` needs a key, as `Authorization: Bearer <key>`, `x-api-key: <key>`, Basic's password, or, for a browser's WebSocket, the subprotocol `openai-insecure-api-key.<key>`. No key or an unknown one gets 401; a model outside the key's `allow` list gets 403. See [keys.example.yaml](keys.example.yaml).
 
 ```sh
-curl 127.0.0.1:5001/v1/models           # llama-swap: every configured model
-curl 127.0.0.1:5001/running             # llama-swap: which are up
-curl 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
-curl 127.0.0.1:5001/warden/resources    # a fresh NVML probe, on purpose
+alias imx='curl -H "Authorization: Bearer $INFERMUX_KEY"'
+imx 127.0.0.1:5001/v1/models           # llama-swap: every configured model
+imx 127.0.0.1:5001/running             # llama-swap: which are up
+imx 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
+imx 127.0.0.1:5001/warden/resources    # a fresh NVML probe, on purpose
 
 # controls; a write needs the X-InferMux header
-curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/manual -d '{"action":"pause"}'   # or resume, auto
-curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/unload         # 409 while a request of yours runs
-curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/forgive        # drop an owed unload
-curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/cancel-batch
-curl -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/comfyui/free
+imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/manual -d '{"action":"pause"}'   # or resume, auto
+imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/unload         # 409 while a request of yours runs
+imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/forgive        # drop an owed unload
+imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/cancel-batch
+imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/comfyui/free
 ```
 
 A manual pause or resume holds until the warden's own verdict changes, then the warden takes over again. A browser POST from another origin, or to a name that is neither loopback nor in `trusted_hosts`, gets 403.
 
-A batch client marks its requests with its key, as `Authorization: Bearer <key>` or `x-api-key: <key>`. While the verdict is pause such a request gets:
+A key with `class: batch` makes its requests batch. While the verdict is pause such a request gets:
 
 ```
 HTTP/1.1 503 Service Unavailable
 Retry-After: 300
 {"error":{"type":"gpu_yielded","message":"batch requests wait while the GPU is yielded: ComfyUI has 1 job queued"}}
 ```
+
+## The other host
+
+`remotes` in warden.yaml lists the other InferMux hosts, each with the file holding this host's key for it. InferMux reads each one's `/v1/models` every 30 s and lists its models as `<host>/<model>`. A request for one is forwarded with the client's own key, so the other host applies that key's class and allow list. A host that stops answering keeps its models listed and fails a request for them at once with 502. Off the machine, traffic goes over HTTPS with `tailscale serve`.
 
 ## What it does on a yield
 
@@ -110,12 +117,12 @@ Nothing expires. A warden that dies while a consumer is paused leaves it paused,
 ## Develop
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/muxui/
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/muxui/
 nix develop -c go test -short ./internal/server/ .
 nix build                              # runs the tests as part of the build
 ```
 
-The warden is `internal/warden/` and `infermux.go`, the UI is `internal/muxui/`, `cmd/infermux-ui/` and `webui/`; the rest is upstream llama-swap, merged rather than vendored. [CLAUDE.md](CLAUDE.md) has the map and how to merge a new llama-swap release.
+The warden is `internal/warden/` and `infermux.go`, the routing to the other host `internal/remote/`, the UI is `internal/muxui/`, `cmd/infermux-ui/` and `webui/`; the rest is upstream llama-swap, merged rather than vendored. [CLAUDE.md](CLAUDE.md) has the map and how to merge a new llama-swap release.
 
 ## License
 

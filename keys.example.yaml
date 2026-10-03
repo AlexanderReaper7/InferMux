@@ -1,0 +1,15 @@
+# The clients' keys (0006). Each key is stored as its SHA-256, never as the
+# key: `printf %s "$KEY" | sha256sum`. infermux-ui makes keys and keeps the
+# plaintext in a sops file only the user can open.
+#
+# class: interactive is never killed; batch is refused while the GPU is
+# yielded and cancelled on a yield. allow: model patterns, matched against
+# <host>/<model> or <peer>/<model>; no allow means every model.
+keys:
+  episteme-batch:
+    sha256: 2d1a1c2b2f1f6f0a0b3a6b9e5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d
+    class: batch
+    allow: ["reaperboi/*", "zbox/*"]
+  phone:
+    sha256: 8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4
+    class: interactive

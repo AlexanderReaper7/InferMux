@@ -18,6 +18,9 @@ import (
 func main() {
 	listen := flag.String("listen", "127.0.0.1:5010", "address to serve the UI on")
 	daemon := flag.String("daemon", "http://127.0.0.1:5001", "the InferMux daemon")
+	keySecrets := flag.String("key-secrets", "", "the sops file a new key's plaintext goes to, so it can be read again")
+	sops := flag.String("sops", "sops", "the sops binary")
+	daemonKeyFile := flag.String("daemon-key-file", "", "a file holding the UI's key for the daemon, when the daemon has a keys_file")
 	modelsDir := flag.String("models-dir", "", "the daemon's -config-dir: one YAML file per model")
 	wardenFile := flag.String("warden-config", "", "the daemon's -warden-config")
 	baseConfig := flag.String("base-config", "", "the daemon's -config: the runtimes' macros and global settings")
@@ -35,7 +38,16 @@ func main() {
 		slog.Error("bad -daemon", "error", err)
 		os.Exit(2)
 	}
-	store := &muxui.Store{ModelsDir: *modelsDir, WardenFile: *wardenFile, BaseConfig: *baseConfig}
+	daemonKey := ""
+	if *daemonKeyFile != "" {
+		raw, err := os.ReadFile(*daemonKeyFile)
+		if err != nil {
+			slog.Error("bad -daemon-key-file", "error", err)
+			os.Exit(2)
+		}
+		daemonKey = strings.TrimSpace(string(raw))
+	}
+	store := &muxui.Store{ModelsDir: *modelsDir, WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops}
 	for _, d := range strings.Split(*ggufDirs, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			store.GGUFDirs = append(store.GGUFDirs, d)
@@ -53,7 +65,7 @@ func main() {
 	}
 	build := &muxui.Builder{Installable: *prebuild, Prepare: store.IntentToAdd}
 	slog.Info("infermux-ui listening", "address", "http://"+*listen, "daemon", *daemon, "models-dir", *modelsDir)
-	if err := http.ListenAndServe(*listen, muxui.Handler(store, build, daemonURL)); err != nil {
+	if err := http.ListenAndServe(*listen, muxui.Handler(store, build, daemonURL, daemonKey)); err != nil {
 		slog.Error("infermux-ui stopped", "error", err)
 		os.Exit(1)
 	}

@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/warden"
 )
 
 const base = `macros:
@@ -54,7 +56,8 @@ func newFixture(t *testing.T) fixture {
 	os.MkdirAll(models, 0o755)
 	os.WriteFile(filepath.Join(models, "qwen.yaml"), []byte(strings.ReplaceAll(qwen, "GGUF", gguf)), 0o644)
 	os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(base), 0o644)
-	os.WriteFile(filepath.Join(dir, "warden.yaml"), []byte("# the warden\nbatch_api_keys: [episteme-batch]\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "warden.yaml"), []byte("# the warden\nhost: here\nkeys_file: keys.yaml\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "keys.yaml"), []byte("keys:\n  episteme-batch:\n    sha256: "+warden.HashKey("k")+"\n    class: batch\n"), 0o644)
 	return fixture{
 		store: &Store{ModelsDir: models, WardenFile: filepath.Join(dir, "warden.yaml"),
 			BaseConfig: filepath.Join(dir, "base.yaml"), GGUFDirs: []string{filepath.Join(dir, "gguf")}},
@@ -273,7 +276,7 @@ func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
 
 func TestTheUIAnswersOnLoopbackAndTakesOnlyMarkedSameOriginWrites(t *testing.T) {
 	f := newFixture(t)
-	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"})
+	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "")
 	do := func(method, host string, header map[string]string) int {
 		req := httptest.NewRequest(method, "/api/models/qwen", strings.NewReader("{}"))
 		req.Host = host
@@ -300,7 +303,7 @@ func TestTheUIAnswersOnLoopbackAndTakesOnlyMarkedSameOriginWrites(t *testing.T) 
 
 func TestTheUIAnswersOnATrustedHostFromTheWardenFile(t *testing.T) {
 	f := newFixture(t)
-	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"})
+	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "")
 	get := func() int {
 		req := httptest.NewRequest("GET", "/api/state", nil)
 		req.Host = "box.tail.ts.net:5010"
@@ -332,15 +335,20 @@ func TestTheDaemonSeesInferMuxUIAndNotTheBrowser(t *testing.T) {
 	}))
 	defer daemon.Close()
 	u, _ := url.Parse(daemon.URL)
-	h := Handler(newFixture(t).store, &Builder{}, u)
+	h := Handler(newFixture(t).store, &Builder{}, u, "ui-key")
 	req := httptest.NewRequest("POST", "/daemon/warden/forgive", nil)
 	req.Host = "127.0.0.1:5010"
 	req.Header.Set("Origin", "http://127.0.0.1:5010")
 	req.Header.Set("X-InferMux", "1")
+	req.Header.Set("Authorization", "Bearer the-browsers")
+	req.Header.Set("X-Api-Key", "the-browsers")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 || got.URL.Path != "/warden/forgive" || got.Header.Get("Origin") != "" || got.Header.Get("X-InferMux") == "" {
 		t.Fatalf("%d %s %v", rec.Code, got.URL.Path, got.Header)
+	}
+	if got.Header.Get("Authorization") != "Bearer ui-key" || got.Header.Get("X-Api-Key") != "" {
+		t.Fatalf("the daemon saw the key %q, %q, not the UI's", got.Header.Get("Authorization"), got.Header.Get("X-Api-Key"))
 	}
 }
 
@@ -431,7 +439,7 @@ func TestIntentToAddMakesANewModelVisibleToGit(t *testing.T) {
 func TestAModelSaveMakesTheLastBuildStale(t *testing.T) {
 	f := newFixture(t)
 	b := &Builder{Installable: "flake#unit", run: func([]string, io.Writer, io.Writer) error { return nil }}
-	h := Handler(f.store, b, &url.URL{Scheme: "http", Host: "127.0.0.1:1"})
+	h := Handler(f.store, b, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "")
 	b.Start()
 	for b.State().Running {
 		time.Sleep(time.Millisecond)

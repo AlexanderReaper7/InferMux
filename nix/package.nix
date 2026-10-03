@@ -9,6 +9,8 @@
   addDriverRunpath,
   makeWrapper,
   git,
+  sops,
+  age,
   # llama-swap's web dashboard. Its npm dependencies come from
   # registry.npmjs.org; without it InferMux serves the API only.
   withUI ? true,
@@ -30,6 +32,7 @@ let
       ../config-schema.json
       ../config.example.yaml
       ../warden.example.yaml
+      ../keys.example.yaml
       ../docs
       ../internal
       ../cmd
@@ -89,8 +92,12 @@ in
   ];
 
   nativeBuildInputs = [ makeWrapper ];
-  # The UI's tests commit to a scratch repository.
-  nativeCheckInputs = [ git ];
+  # The UI's tests commit to a scratch repository and encrypt keys with sops.
+  nativeCheckInputs = [
+    git
+    sops
+    age
+  ];
 
   preBuild = ''
     cp -r ${webui}/. internal/muxui/dist/
@@ -104,7 +111,7 @@ in
   # upstream's to run.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/muxui/ ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/muxui/ ./internal/server/ .
     runHook postCheck
   '';
 
