@@ -39,7 +39,8 @@ export const api = {
   git: () => call<GitState>("GET", "/api/git"),
   build: () => call<BuildState>("GET", "/api/build"),
   startBuild: () => call<BuildState>("POST", "/api/build"),
-  commit: (message: string) => call<{ commit: string }>("POST", "/api/git/commit", { message }),
+  commit: (message: string, passphrase: string) =>
+    call<{ commit: string }>("POST", "/api/git/commit", { message, passphrase }),
 
   verdict: () => call<VerdictState>("GET", "/daemon/warden/verdict"),
   manual: (action: "pause" | "resume" | "auto") => call("POST", "/daemon/warden/manual", { action }),

@@ -35,6 +35,11 @@ type Store struct {
 	// AgeIdentity is the user's age identity, encrypted with a passphrase by
 	// `age -p`: what opens KeySecrets.
 	AgeIdentity string
+	// CommitPassphrase makes Commit take the passphrase of the user's GPG
+	// key and sign in gpg's loopback mode, with GPG, "gpg" from PATH when
+	// empty: for a host with no session to show a pinentry (0008).
+	CommitPassphrase bool
+	GPG              string
 
 	mu sync.Mutex
 }
@@ -360,6 +365,8 @@ type GitState struct {
 	Branch  string   `json:"branch"`
 	Changes []string `json:"changes"` // `git status --porcelain` lines
 	Diff    string   `json:"diff"`
+	// SignPassphrase is Commit asking for the GPG key's passphrase.
+	SignPassphrase bool `json:"sign_passphrase"`
 }
 
 // IntentToAdd marks new model files with `git add -N`, so a flake built
@@ -384,7 +391,10 @@ func (s *Store) paths() []string {
 }
 
 func (s *Store) git(args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", s.ModelsDir}, args...)...)
+	return s.run(exec.Command("git", append([]string{"-C", s.ModelsDir}, args...)...), args)
+}
+
+func (s *Store) run(cmd *exec.Cmd, args []string) (string, error) {
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	err := cmd.Run()
@@ -403,7 +413,7 @@ func (s *Store) Git() (GitState, error) {
 	if err != nil {
 		return GitState{}, err
 	}
-	st := GitState{Repo: strings.TrimSpace(repo), Changes: []string{}}
+	st := GitState{Repo: strings.TrimSpace(repo), Changes: []string{}, SignPassphrase: s.CommitPassphrase}
 	if branch, err := s.git("branch", "--show-current"); err == nil {
 		st.Branch = strings.TrimSpace(branch)
 	}
@@ -436,17 +446,31 @@ func (s *Store) Git() (GitState, error) {
 }
 
 // Commit commits InferMux's files and nothing else, with the user's own git
-// identity. It never pushes.
-func (s *Store) Commit(message string) (string, error) {
+// identity. It never pushes. passphrase is the GPG key's, used only with
+// CommitPassphrase; whether the commit is signed is the repository's git
+// config.
+func (s *Store) Commit(message, passphrase string) (string, error) {
 	if strings.TrimSpace(message) == "" {
 		return "", fmt.Errorf("a commit needs a message")
+	}
+	if s.CommitPassphrase && passphrase == "" {
+		return "", ErrGPGPassphrase
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.git(append([]string{"add", "-A", "--"}, s.paths()...)...); err != nil {
 		return "", err
 	}
-	if _, err := s.git(append([]string{"commit", "-m", message, "--"}, s.paths()...)...); err != nil {
+	args := append([]string{"commit", "-m", message, "--"}, s.paths()...)
+	cmd := exec.Command("git", append([]string{"-C", s.ModelsDir}, args...)...)
+	if s.CommitPassphrase {
+		done, err := s.signWith(cmd, passphrase)
+		if err != nil {
+			return "", err
+		}
+		defer done()
+	}
+	if _, err := s.run(cmd, args); err != nil {
 		return "", err
 	}
 	hash, err := s.git("rev-parse", "--short", "HEAD")

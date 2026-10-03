@@ -166,6 +166,8 @@ export interface GitState {
   branch: string;
   changes: string[];
   diff: string;
+  // Commit needs the GPG key's passphrase: a host with no pinentry (0008).
+  sign_passphrase: boolean;
 }
 
 export interface BuildState {

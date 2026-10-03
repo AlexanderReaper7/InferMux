@@ -261,7 +261,7 @@ func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
 	os.Setenv("GIT_AUTHOR_EMAIL", "t@t")
 	os.Setenv("GIT_COMMITTER_NAME", "t")
 	os.Setenv("GIT_COMMITTER_EMAIL", "t@t")
-	if _, err := f.store.Commit("qwen: describe it"); err != nil {
+	if _, err := f.store.Commit("qwen: describe it", ""); err != nil {
 		t.Fatal(err)
 	}
 	if staged := git("diff", "--cached", "--name-only"); strings.TrimSpace(staged) != "base.yaml" {

@@ -11,6 +11,7 @@
   git,
   sops,
   age,
+  gnupg,
   # llama-swap's web dashboard. Its npm dependencies come from
   # registry.npmjs.org; without it InferMux serves the API only.
   withUI ? true,
@@ -92,11 +93,13 @@ in
   ];
 
   nativeBuildInputs = [ makeWrapper ];
-  # The UI's tests commit to a scratch repository and encrypt keys with sops.
+  # The UI's tests commit to a scratch repository, sign one commit with a
+  # scratch GPG key, and encrypt keys with sops.
   nativeCheckInputs = [
     git
     sops
     age
+    gnupg
   ];
 
   preBuild = ''

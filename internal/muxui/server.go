@@ -184,12 +184,13 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey string) ht
 	})
 	mux.HandleFunc("POST /api/git/commit", func(rw http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Message string `json:"message"`
+			Message    string `json:"message"`
+			Passphrase string `json:"passphrase"`
 		}
 		if !decode(rw, r, &body) {
 			return
 		}
-		hash, err := store.Commit(body.Message)
+		hash, err := store.Commit(body.Message, body.Passphrase)
 		if err != nil {
 			fail(rw, err)
 			return

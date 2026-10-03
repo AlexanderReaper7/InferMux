@@ -4,6 +4,9 @@
 
   let git = $state<GitState | null>(null);
   let message = $state("");
+  // The GPG key's passphrase, on a host that signs without a pinentry. Kept
+  // in this page only, and sent with Commit.
+  let passphrase = $state("");
   let error = $state<string | null>(null);
   let done = $state<string | null>(null);
 
@@ -21,7 +24,7 @@
     error = null;
     done = null;
     try {
-      const { commit } = await api.commit(message);
+      const { commit } = await api.commit(message, passphrase);
       done = `Committed ${commit}. Nothing was pushed.`;
       message = "";
       load();
@@ -61,7 +64,10 @@
       </ul>
       <div class="flex gap-2">
         <input class="flex-1" placeholder="Commit message" bind:value={message} />
-        <button class="btn-primary" disabled={!message.trim()} onclick={commit}>Commit</button>
+        {#if git.sign_passphrase}
+          <input type="password" autocomplete="off" class="w-64" placeholder="GPG passphrase" bind:value={passphrase} />
+        {/if}
+        <button class="btn-primary" disabled={!message.trim() || (git.sign_passphrase && !passphrase)} onclick={commit}>Commit</button>
       </div>
       <div class="mt-1 text-xs text-neutral-500">Commits InferMux's files only, with your git identity. It never pushes.</div>
     </div>

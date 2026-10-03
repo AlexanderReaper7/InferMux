@@ -16,6 +16,7 @@ import (
 )
 
 func main() {
+	muxui.GPGShim()
 	listen := flag.String("listen", "127.0.0.1:5010", "address to serve the UI on")
 	daemon := flag.String("daemon", "http://127.0.0.1:5001", "the InferMux daemon")
 	keySecrets := flag.String("key-secrets", "", "the sops file a new key's plaintext goes to, so it can be read again")
@@ -28,6 +29,8 @@ func main() {
 	ggufDirs := flag.String("gguf-dirs", "", "comma-separated directories to look for .gguf files in")
 	kvKernels := flag.String("kv-kernels", "", "a JSON file: per runtime macro, the K-V cache pairs with a FlashAttention kernel")
 	prebuild := flag.String("prebuild", "", "a flake installable the UI may build ahead of a switch; empty hides the button")
+	commitPassphrase := flag.Bool("commit-passphrase", false, "Commit asks for the passphrase of the user's GPG key and signs in gpg's loopback mode, for a host with no session to show a pinentry")
+	gpg := flag.String("gpg", "gpg", "the gpg binary, for -commit-passphrase")
 	flag.Parse()
 
 	if *modelsDir == "" || *wardenFile == "" || *baseConfig == "" {
@@ -48,7 +51,8 @@ func main() {
 		}
 		daemonKey = strings.TrimSpace(string(raw))
 	}
-	store := &muxui.Store{ModelsDir: *modelsDir, WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity}
+	store := &muxui.Store{ModelsDir: *modelsDir, WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity,
+		CommitPassphrase: *commitPassphrase, GPG: *gpg}
 	for _, d := range strings.Split(*ggufDirs, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			store.GGUFDirs = append(store.GGUFDirs, d)

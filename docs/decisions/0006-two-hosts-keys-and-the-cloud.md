@@ -1,7 +1,7 @@
 # 0006. Two hosts, each a front door; every client has a key; OpenRouter as a peer
 
 - Date: 2026-10-03
-- Status: accepted; milestone 1 (1 to 6 below) being built, 7 to 11 later
+- Status: accepted; milestone 1 (1 to 6 below) being built, 8 to 11 later; 7 replaced by [0008](0008-the-zbox-has-its-own-ui.md)
 - Rule: InferMux runs on every host with a card (reaperboi, zbox). Each is a front door, each warden judges only its own card, and InferMux itself routes a request for the other host's models there, over the tailnet's HTTPS, with the client's key untouched. Every client has a key; `keys.yaml` holds its SHA-256, its class and the models it may use, and both hosts read the same file. llama-swap's own `peers:` carries only OpenRouter.
 - Keeps 0001 (the machine that measures decides: each warden decides for its own card only) and 0004 (the user's own request is never killed: a forwarded request counts on both hosts it passes through).
 
@@ -31,7 +31,7 @@ Asked and answered in one session, 2026-10-03.
 
 Later milestones, decided now:
 
-7. **The zbox runs infermux-ui as an agent,** without git and without the web app. The desktop's UI holds every host's files in the one nixcfg checkout and sends a zbox file to it on save. A zbox edit therefore needs the desktop on.
+7. *Replaced by 0008: the zbox has its own UI and checkout.* **The zbox runs infermux-ui as an agent,** without git and without the web app. The desktop's UI holds every host's files in the one nixcfg checkout and sends a zbox file to it on save. A zbox edit therefore needs the desktop on.
 8. **A model file may name its GGUF on Hugging Face** as `metadata.hf`, the path is derived under `/srv/models/hf/`, and the host that runs the model downloads it on save, with progress in the UI. Local-only GGUFs keep a plain path.
 9. **Groups are a per-host text file,** edited in the UI's text editor.
 10. **The desktop embedder moves under InferMux** on the CPU, and `never_unload` in `warden.yaml` keeps a yield from stopping it. Rejected: inferring "CPU only" from `--device none` in the command.
@@ -42,5 +42,5 @@ Later milestones, decided now:
 - **Immich cannot send a key.** Its ML URL takes no headers, and 4 refuses keyless requests. To be decided before 11.
 - **The never-kill rule covers `/upstream/` only for inference paths** (`internal/server/inflight.go`). Immich's `/predict` is not one. To be extended in 11.
 - **`/v1/models` lists every model to every key,** including ones its `allow` refuses.
-- **The zbox reads keys.yaml from its last deploy** (the user's call, 2026-10-03), so a key revoked in the Keys tab still works there until the next `nixos-rebuild --target-host`. Ends with 7.
+- **The zbox reads keys.yaml from its last deploy** (the user's call, 2026-10-03), so a key revoked in the Keys tab still works there until the next `nixos-rebuild --target-host`. Ended by 0008: it reads its checkout, which a timer fast-forwards.
 - **A service's key is in two sops files**: the hosts' file, which sops-nix reads, and the Keys tab's, which Show reads. A revoke from the tab removes only the second copy. The fix is the tab reading and writing the hosts' file too, for keys a host holds.

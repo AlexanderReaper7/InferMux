@@ -148,6 +148,16 @@ in
           Needed once warden.yaml has a keys_file.
         '';
       };
+      commitPassphrase = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Commit asks for the passphrase of the user's GPG key and signs in
+          gpg's loopback mode. For a host with no desktop session to show a
+          pinentry, where a signed commit would otherwise fail. Decision 0008.
+        '';
+      };
+
       prebuild = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -310,6 +320,11 @@ in
           ++ lib.optionals (cfg.ui.daemonKeyFile != null) [
             "-daemon-key-file"
             cfg.ui.daemonKeyFile
+          ]
+          ++ lib.optionals cfg.ui.commitPassphrase [
+            "-commit-passphrase"
+            "-gpg"
+            (lib.getExe' pkgs.gnupg "gpg")
           ]
         );
         Restart = "always";
