@@ -1,10 +1,12 @@
 package warden
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,15 +37,22 @@ func (m *fakeModels) Running() map[string]string {
 	return out
 }
 
-func (m *fakeModels) Qualify(r *http.Request) (string, bool) {
+// Qualify reads the body and puts it back, as llama-swap's does. A name with
+// a slash is another host's or a peer's; a bare one is this host's.
+func (m *fakeModels) Qualify(r *http.Request) (string, bool, bool) {
+	if r.Body == nil {
+		return "", false, false
+	}
+	raw, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(raw))
 	var body struct{ Model string }
-	if r.Body == nil || json.NewDecoder(r.Body).Decode(&body) != nil || body.Model == "" {
-		return "", false
+	if json.Unmarshal(raw, &body) != nil || body.Model == "" {
+		return "", false, false
 	}
 	if strings.Contains(body.Model, "/") {
-		return body.Model, true
+		return body.Model, false, true
 	}
-	return "this/" + body.Model, true
+	return "this/" + body.Model, true, true
 }
 
 func (m *fakeModels) UnloadAll() []string {
@@ -279,6 +288,52 @@ func TestBatchIsRefusedDuringAPauseAndInteractivePasses(t *testing.T) {
 	// Management stays open to a batch client: it may want to unload.
 	if rec := post(handler, "/api/models/unload", map[string]string{"Authorization": "Bearer batch-key"}); rec.Code != http.StatusOK {
 		t.Fatalf("management got %d", rec.Code)
+	}
+}
+
+func TestOnlyThisHostsModelsAreGated(t *testing.T) {
+	h := newHarness(t, nil)
+	inside := make(chan string, 1)
+	release := make(chan struct{})
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		inside <- string(raw)
+		<-release
+	}))
+	send := func(model, key string) int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"`+model+`"}`))
+		req.Header.Set("Authorization", "Bearer "+key)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	h.reading = busy(60)
+	h.w.Tick()
+
+	if code := send("qwen", "batch-key"); code != http.StatusServiceUnavailable {
+		t.Fatalf("a batch request for this host's model got %d during a pause", code)
+	}
+	close(release)
+	for _, model := range []string{"openrouter/free", "reaperboi/qwen"} {
+		if code := send(model, "batch-key"); code != http.StatusOK {
+			t.Fatalf("a batch request for %s got %d during a pause", model, code)
+		}
+		if body := <-inside; body != `{"model":"`+model+`"}` {
+			t.Fatalf("llama-swap got %q", body)
+		}
+	}
+
+	release = make(chan struct{})
+	done := make(chan struct{})
+	go func() { send("openrouter/free", "my-key"); close(done) }()
+	<-inside
+	if n := len(h.w.traffic.state().InFlight); n != 0 {
+		t.Fatalf("a cloud request is in flight here: %d", n)
+	}
+	close(release)
+	<-done
+	if !h.w.traffic.lastInteractive.IsZero() {
+		t.Fatal("a cloud request started the interactive quiet clock")
 	}
 }
 

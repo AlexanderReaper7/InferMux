@@ -21,7 +21,7 @@ This file is rules and navigation only.
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
 | `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005) |
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build |
-| `internal/server/warden.go` | ours: the accessors the warden needs on llama-swap's server |
+| `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
 | `llama-swap.go` | upstream's `main`, plus one flag and one call |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
@@ -31,7 +31,7 @@ This file is rules and navigation only.
 nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/catalog internal/muxui cmd internal/server/warden.go
+nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/catalog internal/muxui cmd internal/server/warden.go internal/server/warden_test.go
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
 
@@ -56,6 +56,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **Every client has a key once `keys_file` is set, and keys.yaml holds only hashes** (0006). The plaintext lives in the user's sops file and nowhere else, and never on a command line.
 - **Between hosts the client's own key travels; a host's own key is only for discovery** (0006). A llama-swap peer `apiKey` would replace the client's key and with it its class, so the hosts are `remotes`, not `peers`.
 - **The user's own request is never killed** (0004). Unmarked is interactive. Do not add a path that cancels, refuses or unloads under an interactive request; the unload waits for `interactive_recent_seconds` of quiet.
+- **The gate is for this host's card** (0009). Only a request for a local model is refused, cancelled or counted as interactive; another host's and a peer's pass after the key and allow check.
 - **Upstream files stay untouched except at the marked hook points** (0004). New behaviour goes in `internal/warden/`, `infermux.go`, or a new file in upstream's package. Editing upstream code is a merge conflict we pay every release.
 - **`internal/warden` imports nothing from llama-swap.** It sees the models through the `Models` interface, which is what keeps it testable without a server and survives a config reload replacing the server.
 - **The machine that measures is the machine that decides** (0001). A threshold that lives in a consumer's config is the thing this project was created to end.

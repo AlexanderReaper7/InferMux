@@ -42,27 +42,30 @@ func (a activeModels) UnloadAll() []string        { return a.server().UnloadAllM
 // Qualify names the model as a key's allow list sees it (0006, 4): another
 // host's as <host>/<model>, a peer's as <peer>/<model>, a local one as
 // <this host>/<model>.
-func (a activeModels) Qualify(r *http.Request) (string, bool) {
+func (a activeModels) Qualify(r *http.Request) (string, bool, bool) {
 	if name, ok := a.remote.get().Qualify(r); ok {
-		return name, true
+		return name, false, true
 	}
 	srv := a.server()
 	if strings.HasPrefix(r.URL.Path, "/upstream/") {
-		model, ok := srv.UpstreamModel(strings.TrimPrefix(r.URL.Path, "/upstream"))
-		return a.host + "/" + model, ok
+		peer, model, ok := srv.UpstreamModel(strings.TrimPrefix(r.URL.Path, "/upstream"))
+		if peer != "" {
+			return peer + "/" + model, false, ok
+		}
+		return a.host + "/" + model, true, ok
 	}
 	requested, err := swaputil.ExtractModel(r)
 	if err != nil || requested == "" {
-		return "", false
+		return "", false, false
 	}
 	peer, model, ok := srv.QualifyModel(requested)
 	if !ok {
-		return "", false
+		return "", false, false
 	}
 	if peer != "" {
-		return peer + "/" + model, true
+		return peer + "/" + model, false, true
 	}
-	return a.host + "/" + model, true
+	return a.host + "/" + model, true, true
 }
 
 // startWarden puts the warden in front of the HTTP server, starts its loop,

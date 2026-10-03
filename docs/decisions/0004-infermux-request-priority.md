@@ -1,7 +1,7 @@
 # 0004. InferMux: the warden becomes the router, and the user's own prompt has priority
 
 - Date: 2026-10-03
-- Status: accepted
+- Status: accepted; narrowed by 0009 (only this host's models are gated)
 - Rule: InferMux is llama-swap with the warden built in, one binary on :5001. A request presenting a batch API key is refused while paused and cancelled on a yield. Every other request is interactive and is never killed: the models are not unloaded while one is in flight or was within `interactive_recent_seconds` (600). The compositor and Electron's GPU process are not contention.
 - Keeps 0001 whole (decide, push, a pause is a message and not a lease) and 0002's transition-only unload, which may now be owed for a while before it is paid. Supersedes 0003: one router runs both runtimes.
 

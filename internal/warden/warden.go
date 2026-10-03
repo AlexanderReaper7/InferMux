@@ -25,9 +25,10 @@ type Models interface {
 	// UnloadAll stops every model and returns the ones that were running.
 	UnloadAll() []string
 	// Qualify is the model a request names, as <host>/<model> or
-	// <peer>/<model>, for a key's allow list (0006, 4). False when the
-	// request names no model this host knows.
-	Qualify(r *http.Request) (string, bool)
+	// <peer>/<model>, for a key's allow list (0006, 4), and whether it is one
+	// of this host's own, which is all the gate looks at (0009). ok is false
+	// when the request names no model this host knows.
+	Qualify(r *http.Request) (model string, local, ok bool)
 }
 
 // Logger is the part of llama-swap's proxy log the warden writes to, so its
@@ -354,15 +355,21 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(rw, r)
 			return
 		}
-		if key.Allow != nil {
-			model, ok := w.models.Qualify(r)
-			if !ok || !key.allows(model) {
-				if !ok {
-					model = "an unknown model"
-				}
-				writeJSON(rw, http.StatusForbidden, map[string]string{"detail": "key " + key.name + " may not use " + model})
-				return
+		model, local, known := w.models.Qualify(r)
+		if key.Allow != nil && (!known || !key.allows(model)) {
+			if !known {
+				model = "an unknown model"
 			}
+			writeJSON(rw, http.StatusForbidden, map[string]string{"detail": "key " + key.name + " may not use " + model})
+			return
+		}
+		// The gate is for this host's card (0009). Another host's model is
+		// gated by that host's warden, and a cloud peer's uses no card here, so
+		// neither is paused, cancelled or counted as interactive traffic. A
+		// model nobody knows is gated: it fails in llama-swap either way.
+		if known && !local {
+			next.ServeHTTP(rw, r)
+			return
 		}
 		class := key.Class
 		ctx, cancel := context.WithCancelCause(r.Context())

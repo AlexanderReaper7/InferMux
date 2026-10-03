@@ -46,10 +46,14 @@ func (s *Server) QualifyModel(name string) (peer, model string, ok bool) {
 	return "", "", false
 }
 
-// UpstreamModel is the model an /upstream/<model>/... path names.
-func (s *Server) UpstreamModel(path string) (string, bool) {
-	_, real, _, found := swaputil.FindModelInPath(s.cfg, path)
-	return real, found
+// UpstreamModel is the model an /upstream/<model>/... path names, as
+// QualifyModel names it: a peer's model with its peer ID.
+func (s *Server) UpstreamModel(path string) (peer, model string, ok bool) {
+	search, _, _, found := swaputil.FindModelInPath(s.cfg, path)
+	if !found {
+		return "", "", false
+	}
+	return s.QualifyModel(search)
 }
 
 // ModelCommand is a local model's command, macros expanded, split as
