@@ -18,6 +18,7 @@ This file is rules and navigation only.
 | `internal/warden/` | ours: config, policy, probe, ComfyUI, consumers, request classes, the loop and `/warden/*` |
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
+| `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
 | `internal/adapter/`, `cmd/infermux-adapter/` | ours: puts a client's key on the requests of a client that cannot send one, such as Immich (0013) |
 | `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005) |
@@ -29,16 +30,17 @@ This file is rules and navigation only.
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/catalog internal/muxui internal/adapter cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/catalog internal/muxui internal/adapter internal/stats cmd internal/server/warden.go internal/server/warden_test.go
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
 
 # with keys_file set, each of these needs -H "Authorization: Bearer <key>"
 curl 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
 curl 127.0.0.1:5001/warden/resources    # a fresh NVML probe
+curl '127.0.0.1:5001/warden/requests?hosts=all'  # the last requests' timings, every host's
 curl 127.0.0.1:5001/running             # llama-swap: which models are up
 journalctl -u infermux -f
 ```

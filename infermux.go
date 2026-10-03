@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/remote"
 	"github.com/mostlygeek/llama-swap/internal/server"
+	"github.com/mostlygeek/llama-swap/internal/stats"
 	"github.com/mostlygeek/llama-swap/internal/swaputil"
 	"github.com/mostlygeek/llama-swap/internal/warden"
 	configwatcher "github.com/mostlygeek/llama-swap/internal/watcher"
@@ -95,7 +97,8 @@ func (a activeModels) qualifyHere(requested string) (string, bool, bool) {
 // (0005). The warden's file and the keys reload at once: that only moves
 // settings.
 //
-// The request goes warden (key, class, never-kill), then Codex's catalog,
+// The request goes warden (key, class, never-kill), then the timing of each
+// request for a model this host serves (internal/stats), then Codex's catalog,
 // then the list cut to the key's allow list, then remote (another host's
 // model goes there), then the derived settings on the local models, then
 // llama-swap (0006).
@@ -128,7 +131,37 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		slog.Error("failed to read Codex's prompt", "codex-prompt", *flagCodexPrompt, "error", err)
 		os.Exit(1)
 	}
-	httpServer.Handler = w.Wrap(codex)
+	models := activeModels{server: active, host: cfg.Host, remote: remotes}
+	recorder := &stats.Recorder{
+		Capacity: 500,
+		Model: func(r *http.Request) (string, bool) {
+			if _, ok := remotes.get().Qualify(r); ok {
+				return "", false // recorded on the host that runs it
+			}
+			name, _, ok := models.Qualify(r)
+			return name, ok
+		},
+		Client: warden.Client,
+	}
+	w.Handle("GET /warden/requests", stats.Handler(recorder, cfg.Host, func(ctx context.Context) []stats.Host {
+		var hosts []stats.Host
+		for _, reply := range remotes.get().Each(ctx, "/warden/requests") {
+			h := stats.Host{Host: reply.Host}
+			if reply.Err != nil {
+				h.Error = reply.Err.Error()
+			} else {
+				var got struct{ Hosts []stats.Host }
+				if err := json.Unmarshal(reply.Body, &got); err != nil || len(got.Hosts) == 0 {
+					h.Error = "an answer that is not a list of requests"
+				} else {
+					h = got.Hosts[0]
+				}
+			}
+			hosts = append(hosts, h)
+		}
+		return hosts
+	}))
+	httpServer.Handler = w.Wrap(recorder.Wrap(codex))
 	w.Start()
 
 	reloadWarden := func() {

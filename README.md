@@ -70,6 +70,8 @@ The Models tab also edits `routing.yaml` in the models directory as text: llama-
 
 With `ui.hfDir`, a model can take its files from Hugging Face: `org/repo/file.gguf` for the GGUF and for its mmproj, kept in the model file as `metadata.hf`. Saving writes the paths under `ui.hfDir` into `--model` and `--mmproj` and downloads from the repository's `main`, again on a later save only if main has changed; the Models tab shows the progress, and an interrupted download resumes. `ui.hfTokenFile` is a token for gated and private repos ([0012](docs/decisions/0012-a-model-names-its-gguf-on-hugging-face.md)).
 
+The Performance tab shows each host's last 500 requests for the models it serves, kept in memory since the daemon started, and per model the median and 95th percentile of time to the first token, the prefill and decode rates, the prompt cache's share and drafts accepted. The Models table shows the median time to the first token and decode rate beside each model ([0014](docs/decisions/0014-performance-measured-at-the-front-door.md)).
+
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
 
 ## Talk to it
@@ -82,6 +84,7 @@ imx 127.0.0.1:5001/v1/models           # llama-swap: every configured model
 imx 127.0.0.1:5001/running             # llama-swap: which are up
 imx 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
 imx 127.0.0.1:5001/warden/resources    # a fresh NVML probe, on purpose
+imx '127.0.0.1:5001/warden/requests?hosts=all'   # the last requests and their timings, every host's
 
 # controls; a write needs the X-InferMux header
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/manual -d '{"action":"pause"}'   # or resume, auto
@@ -131,7 +134,7 @@ Nothing expires. A warden that dies while a consumer is paused leaves it paused,
 ## Develop
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/
 nix develop -c go test -short ./internal/server/ .
 nix build                              # runs the tests as part of the build
 ```

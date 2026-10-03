@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { api, basename, gib } from "../lib/api";
+  import { api, basename, gib, ms, rate } from "../lib/api";
   import { live } from "../lib/live.svelte";
-  import type { GGUF, Model, UIState } from "../lib/types";
+  import type { GGUF, Model, ModelStat, UIState } from "../lib/types";
   import { kvPair, kvWarning } from "../lib/kv";
   import BuildPanel from "./BuildPanel.svelte";
   import ModelEditor from "./ModelEditor.svelte";
@@ -23,6 +23,22 @@
     }
   }
   load();
+
+  // This host's medians, by model name; the Performance tab has the rest.
+  let stats = $state<Record<string, ModelStat>>({});
+  async function loadStats() {
+    try {
+      const here = (await api.requests(false)).hosts[0];
+      stats = Object.fromEntries((here.models ?? []).map((s) => [s.model.slice(here.host.length + 1), s]));
+    } catch {
+      stats = {};
+    }
+  }
+  $effect(() => {
+    loadStats();
+    const timer = setInterval(loadStats, 10000);
+    return () => clearInterval(timer);
+  });
 
   function flag(m: Model, name: string) {
     const f = m.flags.find((f) => f.name === name);
@@ -85,13 +101,17 @@
       <thead class="text-left text-neutral-500">
         <tr>
           <th class="py-1 font-normal">Model</th><th class="font-normal">Runtime</th><th class="font-normal">GGUF</th>
-          <th class="font-normal">Context</th><th class="font-normal">KV cache</th><th class="font-normal">State</th>
+          <th class="font-normal">Context</th><th class="font-normal">KV cache</th>
+          <th class="text-right font-normal" title="median time to the first token">TTFT</th>
+          <th class="text-right font-normal" title="median decode rate">tok/s</th>
+          <th class="pl-4 font-normal">State</th>
         </tr>
       </thead>
       <tbody>
         {#each ui.models as m (m.name)}
           {@const state = live.state?.models[m.name]}
           {@const warning = kvWarning(m, ui.kv_kernels)}
+          {@const stat = stats[m.name]}
           <tr class="cursor-pointer border-t border-neutral-900 hover:bg-neutral-900" onclick={() => (editing = { model: m, original: m.name })}>
             <td class="py-2">
               <div>{m.name}</div>
@@ -101,7 +121,9 @@
             <td class="text-neutral-400">{m.raw ? "" : basename(m.gguf)}</td>
             <td>{flag(m, "--ctx-size") || flag(m, "-c")}</td>
             <td class={warning ? "text-amber-400" : ""} title={warning ?? ""}>{kvPair(m)}{warning ? " ⚠" : ""}</td>
-            <td class={state ? "text-sky-300" : "text-neutral-600"}>{state ?? "stopped"}</td>
+            <td class="text-right">{ms(stat?.ttft_ms?.median)}</td>
+            <td class="text-right">{rate(stat?.decode_per_second?.median)}</td>
+            <td class="pl-4 {state ? 'text-sky-300' : 'text-neutral-600'}">{state ?? "stopped"}</td>
           </tr>
         {/each}
       </tbody>

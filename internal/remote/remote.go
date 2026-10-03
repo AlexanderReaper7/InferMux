@@ -391,6 +391,53 @@ func (rt *Router) listModels(rw http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(rw).Encode(list)
 }
 
+// Reply is one host's answer to Each.
+type Reply struct {
+	Host string
+	Body []byte
+	Err  error
+}
+
+// Each GETs path from every host with this host's key there, all at once,
+// in the hosts' order. A host that does not answer 200 has Err instead.
+func (rt *Router) Each(ctx context.Context, path string) []Reply {
+	rt.mu.Lock()
+	hosts := make([]*host, 0, len(rt.names))
+	for _, name := range rt.names {
+		hosts = append(hosts, rt.hosts[name])
+	}
+	rt.mu.Unlock()
+	out := make([]Reply, len(hosts))
+	var wg sync.WaitGroup
+	for i, h := range hosts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[i] = Reply{Host: h.Name}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.target.String()+path, nil)
+			if err != nil {
+				out[i].Err = err
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+h.Key)
+			req.Header.Set(HopHeader, "1")
+			resp, err := rt.client.Do(req)
+			if err != nil {
+				out[i].Err = err
+				return
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+			if err == nil && resp.StatusCode != http.StatusOK {
+				err = fmt.Errorf("%s answered %s", path, resp.Status)
+			}
+			out[i].Body, out[i].Err = body, err
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
 // HostState is one host as /warden/verdict's neighbours would report it.
 type HostState struct {
 	Name    string     `json:"name"`

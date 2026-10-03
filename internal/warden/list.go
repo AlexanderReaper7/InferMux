@@ -6,8 +6,15 @@ import (
 	"net/http"
 )
 
-// keyContext carries the request's key from Wrap to FilterModels.
+// keyContext carries the request's key from Wrap to the handlers after it.
 type keyContext struct{}
+
+// Client is the name of the key a request came with, empty without a
+// keys_file.
+func Client(r *http.Request) string {
+	key, _ := r.Context().Value(keyContext{}).(namedKey)
+	return key.name
+}
 
 // FilterModels drops from /v1/models every model the request's key may not
 // use, named as the gate names it, so a client's picker offers nothing that

@@ -1,4 +1,4 @@
-import type { BuildState, Download, GGUF, GitState, Key, KeysState, Model, UIState, VerdictState, WardenConfig } from "./types";
+import type { BuildState, Download, GGUF, GitState, HostStats, Key, KeysState, Model, UIState, VerdictState, WardenConfig } from "./types";
 
 // Every request carries X-InferMux: infermux-ui refuses a write without it,
 // and a page from another origin cannot add it.
@@ -52,6 +52,8 @@ export const api = {
   unloadAll: () => call<{ unloaded: string[] }>("POST", "/daemon/warden/unload"),
   cancelBatch: () => call<{ cancelled: number }>("POST", "/daemon/warden/cancel-batch"),
   freeComfyUI: () => call("POST", "/daemon/warden/comfyui/free"),
+  // This host's first, then with all the other hosts', each as it is now.
+  requests: (all: boolean) => call<{ hosts: HostStats[] }>("GET", `/daemon/warden/requests${all ? "?hosts=all" : ""}`),
 };
 
 export function ago(iso: string | null | undefined): string {
@@ -68,4 +70,19 @@ export function gib(bytes: number): string {
 
 export function basename(path: string): string {
   return path.split("/").pop() ?? path;
+}
+
+// ms is a duration: milliseconds under ten seconds, seconds above.
+export function ms(v: number | null | undefined): string {
+  if (v == null) return "";
+  return v < 10000 ? `${Math.round(v)} ms` : `${(v / 1000).toFixed(1)} s`;
+}
+
+export function rate(v: number | null | undefined): string {
+  if (v == null) return "";
+  return v < 100 ? v.toFixed(1) : String(Math.round(v));
+}
+
+export function percent(v: number | null | undefined): string {
+  return v == null ? "" : `${Math.round(v * 100)}%`;
 }

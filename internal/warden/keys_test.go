@@ -167,3 +167,32 @@ func TestAKeySeesOnlyTheModelsItMayUse(t *testing.T) {
 		t.Errorf("a key without allow sees %v, not the whole list", got)
 	}
 }
+
+func TestAnAddedRouteIsBehindTheKeyAndTheNextHandlerKnowsTheClient(t *testing.T) {
+	h := newHarness(t, nil)
+	h.w.Handle("GET /warden/extra", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Write([]byte("extra " + Client(r)))
+	}))
+	client := ""
+	handler := h.w.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) { client = Client(r) }))
+	call := func(method, path, key string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(`{"model":"qwen"}`))
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := call("GET", "/warden/extra", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("without a key: %d", rec.Code)
+	}
+	for name, key := range map[string]string{"me": "my-key", "batch": "batch-key"} {
+		if rec := call("GET", "/warden/extra", key); rec.Body.String() != "extra "+name {
+			t.Errorf("%s: %d %q", name, rec.Code, rec.Body)
+		}
+	}
+	if call("POST", "/v1/chat/completions", "batch-key"); client != "batch" {
+		t.Errorf("an inference request's client: %q", client)
+	}
+}

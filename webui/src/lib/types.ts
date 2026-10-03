@@ -207,3 +207,53 @@ export interface BuildState {
   output: string;
   log: string[] | null;
 }
+
+// The daemon's /warden/requests (internal/stats): each host's last requests
+// for the models it serves, timed as the client sees them, and their summary
+// per model. A null number was not reported.
+export interface Spread {
+  median: number;
+  p95: number;
+  n: number;
+}
+
+export interface RequestStat {
+  id: number;
+  time: string;
+  model: string;
+  client: string;
+  path: string;
+  status: number;
+  stream: boolean;
+  duration_ms: number;
+  ttft_ms: number | null;
+  prefill_ms: number | null;
+  prompt_tokens: number | null;
+  cached_tokens: number | null;
+  output_tokens: number | null;
+  prefill_per_second: number | null;
+  decode_per_second: number | null;
+  rates_from?: "llama-server" | "client";
+  draft_tokens: number | null;
+  draft_accepted: number | null;
+}
+
+export interface ModelStat {
+  model: string;
+  requests: number;
+  failed: number;
+  ttft_ms: Spread | null;
+  prefill_ms: Spread | null;
+  wait_ms: Spread | null;
+  prefill_per_second: Spread | null;
+  decode_per_second: Spread | null;
+  cache_share: number | null;
+  draft_acceptance: number | null;
+}
+
+export interface HostStats {
+  host: string;
+  requests: RequestStat[] | null;
+  models: ModelStat[] | null;
+  error?: string;
+}

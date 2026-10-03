@@ -54,6 +54,9 @@ type Warden struct {
 	traffic   *traffic
 	announcer *announcer
 
+	// extra are the routes added by Handle.
+	extra []route
+
 	// tickMu serialises everything that moves the verdict: a tick, a manual
 	// verdict, a reload. The probe is only called under it.
 	tickMu sync.Mutex
@@ -350,12 +353,13 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			writeJSON(rw, http.StatusUnauthorized, map[string]string{"detail": "a key from keys.yaml is needed"})
 			return
 		}
+		r = r.WithContext(context.WithValue(r.Context(), keyContext{}, key))
 		if strings.HasPrefix(r.URL.Path, "/warden/") {
 			api.ServeHTTP(rw, r)
 			return
 		}
 		if !isInference(r) {
-			next.ServeHTTP(rw, r.WithContext(context.WithValue(r.Context(), keyContext{}, key)))
+			next.ServeHTTP(rw, r)
 			return
 		}
 		model, local, known := w.models.Qualify(r)
@@ -521,8 +525,22 @@ func (w *Warden) ReportRemotes(state func() any) {
 	w.mu.Unlock()
 }
 
+// Handle adds a route under /warden/, behind the same key check. Call it
+// before Wrap.
+func (w *Warden) Handle(pattern string, h http.Handler) {
+	w.extra = append(w.extra, route{pattern, h})
+}
+
+type route struct {
+	pattern string
+	handler http.Handler
+}
+
 func (w *Warden) api() http.Handler {
 	mux := http.NewServeMux()
+	for _, r := range w.extra {
+		mux.Handle(r.pattern, r.handler)
+	}
 	mux.HandleFunc("GET /warden/verdict", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, http.StatusOK, w.State())
 	})

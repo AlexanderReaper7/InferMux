@@ -404,3 +404,29 @@ func TestAListKeptBeforeTheSettingsIsStillRead(t *testing.T) {
 		t.Fatalf("listed %v", m)
 	}
 }
+
+func TestEachAsksEveryHostWithThisHostsKey(t *testing.T) {
+	zbox := newFakeHost(t, "embed")
+	other := newFakeHost(t)
+	rt, _ := newRouter(t, "", Host{Name: "zbox", URL: zbox.URL, Key: "host-key"}, Host{Name: "other", URL: other.URL, Key: "host-key"})
+	other.down.Store(true)
+	replies := rt.Each(context.Background(), "/warden/requests")
+	// by name, as the hosts are kept
+	if len(replies) != 2 || replies[0].Host != "other" || replies[1].Host != "zbox" {
+		t.Fatalf("%+v", replies)
+	}
+	if replies[1].Err != nil || !strings.Contains(string(replies[1].Body), `"path":"/warden/requests"`) {
+		t.Errorf("zbox: %v %s", replies[1].Err, replies[1].Body)
+	}
+	if r, _ := zbox.last(); r.Header.Get("Authorization") != "Bearer host-key" || r.Header.Get(HopHeader) == "" {
+		t.Errorf("sent %v", r.Header)
+	}
+	if replies[0].Err == nil {
+		t.Error("a host that is down answered")
+	}
+	// the fake host answers /v1/models 401 to any other key
+	wrong, _ := newRouter(t, "", Host{Name: "zbox", URL: zbox.URL, Key: "stale-key"})
+	if replies := wrong.Each(context.Background(), "/v1/models"); replies[0].Err == nil {
+		t.Errorf("a refusal was an answer: %s", replies[0].Body)
+	}
+}

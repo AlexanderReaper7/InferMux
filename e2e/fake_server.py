@@ -3,7 +3,8 @@
 llama-swap starts it as a model's runtime (`${fake-server} --port N --model
 X ...`) and checks /health. A chat completion streams `max_tokens` chunks,
 one every `FAKE_DELAY` seconds (0.1), so a test can act while a reply is
-still being written. It never touches the GPU.
+still being written, and ends with llama-server's `timings`. It never touches
+the GPU.
 """
 
 import json
@@ -23,6 +24,12 @@ def arg(name, default=None):
 
 PORT = int(arg("--port"))
 MODEL = arg("--model", "")
+
+
+def timings(n):
+    """llama-server's account of a request, with fixed numbers a test can find."""
+    return {"cache_n": 4, "prompt_n": 12, "prompt_ms": 30.0, "prompt_per_second": 400.0,
+            "predicted_n": n, "predicted_ms": DELAY * 1000 * n, "predicted_per_second": 1 / DELAY}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -55,7 +62,7 @@ class Handler(BaseHTTPRequestHandler):
         n = int(body.get("max_tokens", 5))
         if not body.get("stream"):
             time.sleep(DELAY * n)
-            self.send_json(200, {"choices": [{"message": {"role": "assistant", "content": "x" * n}}]})
+            self.send_json(200, {"choices": [{"message": {"role": "assistant", "content": "x" * n}}], "timings": timings(n)})
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -71,6 +78,7 @@ class Handler(BaseHTTPRequestHandler):
             for i in range(n):
                 chunk(json.dumps({"choices": [{"delta": {"content": str(i)}}]}))
                 time.sleep(DELAY)
+            chunk(json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}], "timings": timings(n)}))
             chunk("[DONE]")
             self.wfile.write(b"0\r\n\r\n")
         except (BrokenPipeError, ConnectionResetError):

@@ -5,11 +5,13 @@
   import Settings from "./routes/Settings.svelte";
   import Changes from "./routes/Changes.svelte";
   import Keys from "./routes/Keys.svelte";
+  import Performance from "./routes/Performance.svelte";
   import { api } from "./lib/api";
 
   const tabs = [
     { id: "status", label: "Status" },
     { id: "models", label: "Models" },
+    { id: "performance", label: "Performance" },
     { id: "settings", label: "Warden" },
     { id: "keys", label: "Keys" },
     { id: "changes", label: "Changes" },
@@ -73,6 +75,8 @@
     <Status />
   {:else if tab === "models"}
     <Models />
+  {:else if tab === "performance"}
+    <Performance />
   {:else if tab === "settings"}
     <Settings />
   {:else if tab === "keys"}

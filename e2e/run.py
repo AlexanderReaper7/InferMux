@@ -97,7 +97,7 @@ class Stream(threading.Thread):
                     if line.startswith(b"data: "):
                         if line.strip() == b"data: [DONE]":
                             self.done = True
-                        else:
+                        elif b'"content"' in line:  # a token; the last chunk is the timings
                             self.chunks += 1
                             self.first.set()
         except urllib.error.HTTPError as e:
@@ -343,6 +343,26 @@ def run(cfg, models, gguf):
         check("the edited model starts and answers", status == 200, f"{status} {body[:200]}")
         running = json.loads(http("GET", DAEMON + "/running")[1])["running"]
         check("the daemon runs it with the new flag", running and re.search(r"--ctx-size\s+8192", running[0]["cmd"]), running)
+
+        # --- Performance: the request just made, and a streamed one ------------
+        status, _ = http("POST", DAEMON + "/v1/chat/completions", {"model": "alpha", "max_tokens": 3, "stream": True, "messages": []})
+        recorded = json.loads(http("GET", DAEMON + "/warden/requests")[1])["hosts"][0]
+        alpha = [r for r in recorded["requests"] if r["model"] == "e2e/alpha"]
+        streamed = alpha[0]
+        check("a streamed request is recorded with its key and first token",
+              status == 200 and streamed["model"] == "e2e/alpha" and streamed["client"] == "my" and streamed["stream"] and streamed["ttft_ms"] is not None, streamed)
+        check("llama-server's timings come through llama-swap",
+              streamed["prefill_ms"] == 30 and streamed["prompt_tokens"] == 16 and streamed["cached_tokens"] == 4 and streamed["decode_per_second"] == 10, streamed)
+        check("the request that was not streamed has its timings and no first token",
+              len(alpha) == 2 and alpha[1]["ttft_ms"] is None and alpha[1]["prefill_ms"] == 30, recorded["requests"])
+        open_tab("performance")
+        check("the performance tab summarises the model", visible(page.locator("tr", has_text="e2e/alpha").first))
+        check("and lists every request, beta's too", page.locator("tr", has_text="/v1/chat/completions").count() == 3)
+        shot("performance")
+        open_tab("models")
+        alpha_row = page.locator("tr", has_text="alpha").first
+        alpha_row.wait_for()
+        check("the models table shows the median decode rate", wait_for(lambda: "10.0" in alpha_row.inner_text(), 5), alpha_row.inner_text())
 
         # --- Add a flag, a switch, and remove one --------------------------------
         edit("alpha")
