@@ -38,6 +38,10 @@ Later milestones, decided now:
 10. *Replaced by 0011: the embedder is a peer of its own unit.* **The desktop embedder moves under InferMux** on the CPU, and `never_unload` in `warden.yaml` keeps a yield from stopping it. Rejected: inferring "CPU only" from `--device none` in the command.
 11. *Built in 0013.* **Immich ML runs under the zbox's InferMux,** natively from nixpkgs built at the Immich server's tag, reached as `/upstream/immich-ml/predict`, so the zbox's card has one scheduler. Immich's requests are interactive. The 4B embedder takes turns with it on the card; a swap waits for in-flight requests (`internal/router/base.go`). Nothing runs on the zbox's CPU, a dual core. The rest of the zbox's layout waits for the semantic search project.
 
+## Consumers outside this repo
+
+- **The `jail` key** is a standing `interactive` key with `allow: [reaperboi/*, zbox/*]`, so it reaches both hosts' local models and no cloud peer. It is held by the disposable security-work VM on reaperboi, which runs cracked models under containment. Its rationale, and why the key stands rather than being minted per thread, are in nixcfg's `docs/jail.md`. The hash and class live in `modules/nixos/llm/infermux/keys.yaml`, the plaintext in `secrets/infermux.yaml`, same as every other key (point 4). Boot-tested 2026-10-04: the VM reached `/v1/models` and got the six local models only, which is the allow list doing its job.
+
 ## Open
 
 - **Immich cannot send a key.** Its ML URL takes no headers, and 4 refuses keyless requests. Ended by 0013: an adapter adds it.
