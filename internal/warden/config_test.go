@@ -89,3 +89,17 @@ func TestARemoteNamedTwiceOrAfterThisHostIsRefused(t *testing.T) {
 		}
 	}
 }
+
+// 0002: ComfyUI is contention, never ours. With its unit named, a file that
+// also lists it as ours is refused, by the daemon and by the UI's save alike.
+func TestComfyUIsUnitInOurUnitsIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "w.yaml")
+	os.WriteFile(path, []byte("comfyui_unit: comfyui.service\nour_units: [llama-embed.service, comfyui.service]\n"), 0o644)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "0002") {
+		t.Fatalf("accepted, or refused without the reason: %v", err)
+	}
+	os.WriteFile(path, []byte("comfyui_unit: comfyui.service\nour_units: [llama-embed.service]\n"), 0o644)
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatal(err)
+	}
+}

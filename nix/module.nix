@@ -205,6 +205,7 @@ in
       example = lib.literalExpression ''
         {
           comfyui_url = "http://127.0.0.1:8188";
+          comfyui_unit = "comfyui.service";
           desktop_processes = [ "cosmic-comp" "electron" ];
           keys_file = "keys.yaml";
           consumers = [ { name = "episteme"; url = "http://127.0.0.1:8200"; } ];

@@ -91,7 +91,9 @@
         <label class="flex flex-col gap-1">
           <span class="label">Our units</span>
           <textarea class="h-28 font-mono text-sm" bind:value={lists.our_units}></textarea>
-          <span class="text-xs text-neutral-500">systemd units whose GPU work is ours. InferMux's own always is.</span>
+          <span class="text-xs text-neutral-500"
+            >systemd units whose GPU work is ours. InferMux's own always is. Never ComfyUI: its work is contention.</span
+          >
         </label>
         <label class="flex flex-col gap-1">
           <span class="label">Desktop processes</span>
@@ -110,6 +112,11 @@
       <label class="mt-4 flex flex-col gap-1">
         <span class="label">ComfyUI URL, empty for none</span>
         <input bind:value={cfg.comfyui_url} />
+      </label>
+      <label class="mt-4 flex flex-col gap-1">
+        <span class="label">ComfyUI unit</span>
+        <input class="font-mono text-sm" bind:value={cfg.comfyui_unit} />
+        <span class="text-xs text-neutral-500">Its systemd unit. A save that also lists it under our units is refused.</span>
       </label>
     </section>
 

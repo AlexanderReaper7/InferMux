@@ -11,6 +11,7 @@ package warden
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,6 +27,12 @@ import (
 type Config struct {
 	// ComfyUIURL is empty when there is no ComfyUI to watch.
 	ComfyUIURL string `yaml:"comfyui_url" json:"comfyui_url"`
+
+	// ComfyUIUnit is ComfyUI's systemd unit. Its only job is to be refused in
+	// OurUnits: ComfyUI's work is contention, and listing it as ours would
+	// hide it from the utilization signal and count its VRAM as the models'
+	// (0002). A save through the UI did exactly that on 2026-10-04.
+	ComfyUIUnit string `yaml:"comfyui_unit" json:"comfyui_unit"`
 
 	// OurUnits are systemd units whose GPU work is ours, not contention,
 	// matched against the last component of /proc/<pid>/cgroup. InferMux's own
@@ -174,6 +181,9 @@ func LoadConfig(path string) (Config, error) {
 			return cfg, fmt.Errorf("%s: remote %s is named twice, or is this host", path, r.Name)
 		}
 		seen[r.Name] = true
+	}
+	if cfg.ComfyUIUnit != "" && slices.Contains(cfg.OurUnits, cfg.ComfyUIUnit) {
+		return cfg, fmt.Errorf("%s: our_units lists %s, which is ComfyUI: its work is contention, never ours (0002)", path, cfg.ComfyUIUnit)
 	}
 	for i := range cfg.Consumers {
 		c := &cfg.Consumers[i]

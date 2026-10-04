@@ -322,8 +322,9 @@ func (s *Store) TrustedHosts() []string {
 	return cfg.TrustedHosts
 }
 
-// SaveWarden writes every setting out, defaults included, keeping the file's
-// leading comment.
+// SaveWarden writes every setting out, defaults included. It edits the file's
+// node tree rather than replacing it, so its comments, its key order and keys
+// the UI does not know survive the save (0005).
 func (s *Store) SaveWarden(cfg warden.Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -334,8 +335,9 @@ func (s *Store) SaveWarden(cfg warden.Config) error {
 	doc := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{&body}}
 	if raw, err := os.ReadFile(s.WardenFile); err == nil {
 		var old yaml.Node
-		if yaml.Unmarshal(raw, &old) == nil {
-			doc.HeadComment = leadingComment(&old)
+		if yaml.Unmarshal(raw, &old) == nil && len(old.Content) == 1 {
+			old.Content[0] = mergeNode(old.Content[0], &body)
+			doc = &old
 		}
 	}
 	var buf bytes.Buffer
@@ -358,6 +360,89 @@ func (s *Store) SaveWarden(cfg warden.Config) error {
 		return fmt.Errorf("the warden would refuse this: %w", err)
 	}
 	return writeAtomic(s.WardenFile, buf.Bytes())
+}
+
+// mergeNode is next written over old, keeping old's nodes, and with them their
+// comments, wherever next has the same thing. A mapping keeps old's key order
+// and the keys next does not have, which are the ones the struct does not
+// know; keys only next has go at the end. A sequence takes next's items in
+// next's order, each matched to an old item by its name, by its value, or by
+// position. A scalar keeps its node and takes next's value.
+func mergeNode(old, next *yaml.Node) *yaml.Node {
+	if old == nil || old.Kind != next.Kind {
+		return next
+	}
+	switch next.Kind {
+	case yaml.ScalarNode:
+		if old.Value != next.Value {
+			old.Value, old.Tag, old.Style = next.Value, next.Tag, next.Style
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(next.Content); i += 2 {
+			key, value := next.Content[i], next.Content[i+1]
+			if v := mappingValue(old, key.Value, false); v != nil {
+				setValueNode(old, key.Value, mergeNode(v, value))
+			} else {
+				old.Content = append(old.Content, key, value)
+			}
+		}
+	case yaml.SequenceNode:
+		used := make([]bool, len(old.Content))
+		items := make([]*yaml.Node, len(next.Content))
+		for i, item := range next.Content {
+			match := -1
+			for j, o := range old.Content {
+				if !used[j] && sameItem(o, item) {
+					match = j
+					break
+				}
+			}
+			if match < 0 && i < len(old.Content) && !used[i] && !named(old.Content[i]) {
+				match = i
+			}
+			if match < 0 {
+				items[i] = item
+				continue
+			}
+			used[match] = true
+			items[i] = mergeNode(old.Content[match], item)
+		}
+		old.Content = items
+	}
+	return old
+}
+
+// sameItem is whether two sequence items are the same entry: equal scalars,
+// or mappings with the same name.
+func sameItem(a, b *yaml.Node) bool {
+	if a.Kind != b.Kind {
+		return false
+	}
+	switch a.Kind {
+	case yaml.ScalarNode:
+		return a.Value == b.Value
+	case yaml.MappingNode:
+		an, bn := mappingValue(a, "name", false), mappingValue(b, "name", false)
+		return an != nil && bn != nil && an.Value == bn.Value
+	}
+	return false
+}
+
+// named is whether an item can only be matched by its name, which keeps a
+// removed consumer's comment from landing on the next one by position.
+func named(n *yaml.Node) bool {
+	return n.Kind == yaml.ScalarNode || (n.Kind == yaml.MappingNode && mappingValue(n, "name", false) != nil)
+}
+
+// setValueNode replaces a key's value node in place, comments travelling with
+// the node rather than being copied the way setValue copies them.
+func setValueNode(m *yaml.Node, key string, v *yaml.Node) {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			m.Content[i+1] = v
+			return
+		}
+	}
 }
 
 // GGUF is a model file on disk and the models that use it.

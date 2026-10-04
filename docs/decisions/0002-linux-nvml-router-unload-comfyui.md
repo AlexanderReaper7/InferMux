@@ -46,3 +46,9 @@ NVML through `nvidia-ml-py`, in-process. Measured on this host (RTX 3080, driver
 ## Cost
 
 One NVML probe, one `GET /v1/models` and one `GET /queue` every 5 s, all on loopback.
+
+## Amended 2026-10-04: `comfyui_unit`, refused in `our_units`
+
+A save through the UI added `comfyui.service` to `our_units` in nixcfg's warden file. Nothing refused it, because the config knew ComfyUI only by its URL. Listed as ours, ComfyUI's utilization leaves the foreign total the busy check reads, it is never named as the culprit, and its 6 to 12 GB count as the models' VRAM. The queue check would still have caught queued jobs. The utilization backstop for the race above would not.
+
+The user chose a new key over refusing by name or a UI note alone: `comfyui_unit` is ComfyUI's systemd unit, and `LoadConfig` refuses a file that also lists it in `our_units`. The daemon and the UI's save both load through it, so both refuse. The key does nothing else.

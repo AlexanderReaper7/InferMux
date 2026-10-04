@@ -36,6 +36,7 @@ Claude's working list for InferMux: what is built and shipping but has not been 
 - **Hugging Face (0012): a gated repo with `ui.hfTokenFile`, an interrupted download resuming, the Downloads panel and the editor's fields in a browser.** The token is in place on both hosts since nixcfg `d402d80` (whoami answered), but no gated download has run; resume is covered by `hf_test.go` only.
 - **An Immich job through InferMux (0013)**: a smart search or a face detection started from Immich itself. Only predictions sent by curl to the adapter were made.
 - **The routing panel (0006, 9) in a browser**, and a group changing which models swap. Only the API was used.
+- **A warden save through the Settings tab keeping the file's comments, and `comfyui_unit` refusing ComfyUI in `our_units` (0002, 0005), since 2026-10-04.** Covered by `muxui_test.go` and `config_test.go`, and one save of nixcfg's real file through `SaveWarden` in a test, which kept every comment and the key order. Not deployed, not done in a browser.
 - **The UI's peer editor in a browser.** Covered by `peers_test.go`, which saves a symlinked file and checks the placeholder for `${env.*}`, only.
 - **A signed Commit on the zbox (0008).** Needs the user's GPG key there first. Covered by `TestACommitIsSignedWithThePassphraseFromTheBrowser`, against a scratch key, only. Also unwatched: `nixcfg-pull` taking a commit from reaperboi, and the daemon picking up a keys.yaml it changed.
 - **The tailnet from another device (0005, 8).** Only requests from this machine to its own tailnet name were made.

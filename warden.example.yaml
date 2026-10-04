@@ -6,6 +6,10 @@
 # /free after comfyui_idle_seconds of empty queue. (No default.)
 comfyui_url: http://127.0.0.1:8188
 
+# ComfyUI's systemd unit. Named so that a file listing it in our_units is
+# refused: ComfyUI's work is contention, never ours (0002). (No default.)
+comfyui_unit: comfyui.service
+
 # systemd units whose GPU work is ours, not contention. InferMux's own unit is
 # always ours: the models it starts are its children. (Default: none.)
 our_units: [llama-embed.service]

@@ -226,6 +226,63 @@ func TestTheWardenFileKeepsItsCommentAndRefusesWhatTheWardenWould(t *testing.T) 
 	}
 }
 
+// 0005: the UI edits through the node tree, so comments and keys it does not
+// know survive a save. A struct encode kept only the leading comment, and a
+// save through the UI on 2026-10-04 wiped every comment in nixcfg's file.
+func TestAWardenSaveKeepsEveryCommentAndUnknownKey(t *testing.T) {
+	f := newFixture(t)
+	os.WriteFile(f.store.WardenFile, []byte(`# the warden
+
+# ours, a line above
+our_units:
+  - llama-embed.service # the embedder
+desktop_processes:
+  - cosmic-comp
+  # drawn by T3 Code
+  - electron
+host: here
+keys_file: keys.yaml # hashes only
+future_setting: kept
+consumers:
+  # the one that pauses
+  - name: episteme
+    url: http://127.0.0.1:8200 # loopback
+  - name: gone
+    url: http://127.0.0.1:8300
+`), 0o644)
+	cfg, err := f.store.Warden()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Policy.GPUBusyPercent = 40
+	cfg.Consumers = cfg.Consumers[:1]
+	cfg.DesktopProcesses = append(cfg.DesktopProcesses, "firefox")
+	if err := f.store.SaveWarden(cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(f.store.WardenFile)
+	out := string(raw)
+	for _, want := range []string{
+		"# the warden", "# ours, a line above", "# the embedder", "# drawn by T3 Code",
+		"# hashes only", "# the one that pauses", "# loopback",
+		"future_setting: kept", "gpu_busy_percent: 40", "- firefox",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lost %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "gone") {
+		t.Errorf("a removed consumer survived:\n%s", out)
+	}
+	if strings.Index(out, "our_units") > strings.Index(out, "host:") {
+		t.Errorf("the file's key order changed:\n%s", out)
+	}
+	again, err := f.store.Warden()
+	if err != nil || again.Policy.GPUBusyPercent != 40 || len(again.Consumers) != 1 || len(again.DesktopProcesses) != 3 {
+		t.Fatalf("%v %+v", err, again)
+	}
+}
+
 func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git")

@@ -137,6 +137,7 @@ export interface KeysState {
 
 export interface WardenConfig {
   comfyui_url: string;
+  comfyui_unit: string;
   our_units: string[] | null;
   desktop_processes: string[] | null;
   host: string;
