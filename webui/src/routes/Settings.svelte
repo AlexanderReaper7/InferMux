@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from "../lib/api";
-  import type { Policy, WardenConfig } from "../lib/types";
+  import type { Policy, Stuck, WardenConfig } from "../lib/types";
 
   let cfg = $state<WardenConfig | null>(null);
   let path = $state("");
@@ -58,6 +58,12 @@
     { key: "interactive_recent_seconds", label: "Interactive recent, s", help: "No unload this long after your last request." },
     { key: "poll_seconds", label: "Poll every, s", help: "The yield latency." },
     { key: "comfyui_idle_seconds", label: "ComfyUI idle, s", help: "Empty queue this long before /free." },
+  ];
+
+  const stuckSteps: { key: Exclude<keyof Stuck, "escalate_to">; label: string; help: string }[] = [
+    { key: "annotate_after", label: "Note after", help: "A note on the last tool output, and DRY sampling." },
+    { key: "escalate_after", label: "Escalate after", help: "One reply from the model below." },
+    { key: "refuse_after", label: "Refuse after", help: "400, which ends the agent's turn." },
   ];
 </script>
 
@@ -118,6 +124,28 @@
         <input class="font-mono text-sm" bind:value={cfg.comfyui_unit} />
         <span class="text-xs text-neutral-500">Its systemd unit. A save that also lists it under our units is refused.</span>
       </label>
+    </section>
+
+    <section class="card lg:col-span-2">
+      <h2 class="mb-1 font-medium">Stuck agents</h2>
+      <div class="mb-3 text-xs text-neutral-500">
+        Counted in replies in a row that added nothing new: every call already made in this turn, with the same output. This host's models
+        only. 0 turns a step off.
+      </div>
+      <div class="grid gap-3 sm:grid-cols-4">
+        {#each stuckSteps as n}
+          <label class="flex flex-col gap-1">
+            <span class="label">{n.label}</span>
+            <input type="number" min="0" bind:value={cfg.stuck[n.key]} />
+            <span class="text-xs text-neutral-500">{n.help}</span>
+          </label>
+        {/each}
+        <label class="flex flex-col gap-1">
+          <span class="label">Escalate to</span>
+          <input class="font-mono text-sm" bind:value={cfg.stuck.escalate_to} />
+          <span class="text-xs text-neutral-500">Empty skips the step. When this model is the stuck one, it is refused instead.</span>
+        </label>
+      </div>
     </section>
 
     <section class="card lg:col-span-2">

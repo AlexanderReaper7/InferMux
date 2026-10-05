@@ -146,6 +146,15 @@ export interface WardenConfig {
   trusted_hosts: string[] | null;
   policy: Policy;
   consumers: Consumer[] | null;
+  stuck: Stuck;
+}
+
+// What is done about an agent on a local model that repeats itself (0015).
+export interface Stuck {
+  annotate_after: number;
+  escalate_after: number;
+  escalate_to: string;
+  refuse_after: number;
 }
 
 // A cloud API in llama-swap's peers: (0006, 6). The UI edits only the list.

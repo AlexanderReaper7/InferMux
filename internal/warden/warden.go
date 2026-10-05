@@ -370,6 +370,13 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			writeJSON(rw, http.StatusForbidden, map[string]string{"detail": "key " + key.name + " may not use " + model})
 			return
 		}
+		// A stuck agent is only looked for on this host's models (0009, 0015).
+		if known && local {
+			var done bool
+			if r, model, local, done = w.unstick(rw, r, key, model); done {
+				return
+			}
+		}
 		// The gate is for this host's card (0009). Another host's model is
 		// gated by that host's warden, and a cloud peer's uses no card here, so
 		// neither is paused, cancelled or counted as interactive traffic. A

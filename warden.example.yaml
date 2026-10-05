@@ -61,6 +61,19 @@ policy:
   # false: measure on request only, announce nothing, unload nothing.
   enabled: true
 
+# An agent on this host's models that repeats itself (InferMux 0015). Each is
+# a streak: replies in a row in the user's current turn whose every call, with
+# its output, was already made in that turn. 0 turns a step off.
+stuck:
+  # A note on the last tool output, and DRY sampling for that request.
+  annotate_after: 2
+  # That request goes to escalate_to instead. Empty skips the step; a stuck
+  # escalate_to, or a key that may not use it, is refused here instead.
+  escalate_after: 3
+  escalate_to: Qwen3.8-27B-MTP-Q4_K_M
+  # 400, which ends a Codex turn without a retry.
+  refuse_after: 4
+
 # Told {"action": "pause"|"resume", "reason", "since", "warden"} on every
 # change and every 300 s. announce_path defaults to /api/pipeline/announce.
 consumers:

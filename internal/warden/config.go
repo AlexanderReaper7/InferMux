@@ -71,6 +71,10 @@ type Config struct {
 
 	Policy    Policy     `yaml:"policy" json:"policy"`
 	Consumers []Consumer `yaml:"consumers" json:"consumers"`
+
+	// Stuck is what is done about an agent on a local model that repeats
+	// itself (0015).
+	Stuck Stuck `yaml:"stuck" json:"stuck"`
 }
 
 // Remote is another InferMux. URL is its HTTPS address on the tailnet
@@ -144,6 +148,9 @@ func DefaultConfig() Config {
 			InteractiveRecentSeconds: 600,
 			Enabled:                  true,
 		},
+		// Measured against the thread of 2026-10-05 (0015): the streak
+		// reached 2 at its first exact repeat.
+		Stuck: Stuck{AnnotateAfter: 2, EscalateAfter: 3, RefuseAfter: 4},
 	}
 }
 
@@ -198,6 +205,9 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	if err := cfg.Policy.check(); err != nil {
+		return cfg, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := cfg.Stuck.check(); err != nil {
 		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
 	return cfg, nil
