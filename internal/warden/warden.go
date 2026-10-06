@@ -263,6 +263,14 @@ func (w *Warden) act(before, after Verdict) {
 		w.mu.Lock()
 		w.pendingUnload = false
 		w.mu.Unlock()
+	case after.Priority && !before.Priority:
+		// A priority process arriving during a pause owes an unload of its
+		// own: a model loaded again since the first one holds the VRAM it
+		// needs (0017).
+		w.log.Infof("Priority: %s", after.Reason)
+		w.mu.Lock()
+		w.pendingUnload, w.deferLogged = true, false
+		w.mu.Unlock()
 	}
 	w.settleUnload()
 
@@ -285,15 +293,19 @@ func (w *Warden) disabledTick() Verdict {
 }
 
 // settleUnload pays an owed unload unless the user is in the middle of an
-// interactive session.
+// interactive session. For a priority process only a request in flight counts
+// as that (0017).
 func (w *Warden) settleUnload() {
 	w.mu.Lock()
-	pending := w.pendingUnload
+	pending, priority := w.pendingUnload, w.verdict.Priority
 	w.mu.Unlock()
 	if !pending {
 		return
 	}
 	window := time.Duration(w.config().Policy.InteractiveRecentSeconds) * time.Second
+	if priority {
+		window = 0
+	}
 	if recent, last := w.traffic.interactiveRecent(window); recent {
 		w.mu.Lock()
 		logged := w.deferLogged

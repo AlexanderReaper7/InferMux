@@ -126,7 +126,8 @@ func (w *Warden) Reload(cfg Config) {
 	w.mu.Lock()
 	old := w.cfg
 	w.cfg = cfg
-	if !slices.Equal(old.OurUnits, cfg.OurUnits) || !slices.Equal(old.DesktopProcesses, cfg.DesktopProcesses) {
+	if !slices.Equal(old.OurUnits, cfg.OurUnits) || !slices.Equal(old.DesktopProcesses, cfg.DesktopProcesses) ||
+		!slices.Equal(old.PriorityProcesses, cfg.PriorityProcesses) {
 		w.probe, w.freshProbe = newProbe(cfg), newProbe(cfg)
 	}
 	if old.ComfyUIURL != cfg.ComfyUIURL {

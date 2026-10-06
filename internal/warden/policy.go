@@ -16,8 +16,10 @@ import (
 // on whether somebody is at the keyboard. A game left running while the user is
 // away is still contention; a reader typing an email is not.
 //
-// Three signals, each used only where it is valid:
+// Four signals, each used only where it is valid:
 //
+//   - Priority, a priority process with a CUDA context (0017). It takes the
+//     card at any load, and its yield unloads without the interactive wait.
 //   - ComfyUIJobs, running plus pending. A queued job is contention before it
 //     has drawn any power, so the models unload before ComfyUI loads much (0002).
 //   - ForeignGPUPercent, per-process utilization minus our processes and the
@@ -32,8 +34,11 @@ import (
 // elapse while the game was still running, and the first dip after that would
 // resume into a lull between two loading screens.
 type Verdict struct {
-	Yielded     bool       `json:"yielded"`
-	Reason      string     `json:"reason"`
+	Yielded bool   `json:"yielded"`
+	Reason  string `json:"reason"`
+	// Priority is a yield for a priority process (0017): its unload waits for
+	// no interactive request but one in flight.
+	Priority    bool       `json:"priority"`
 	Since       *time.Time `json:"since"`
 	ContendedAt *time.Time `json:"contended_at"`
 	SampledAt   *time.Time `json:"sampled_at"`
@@ -55,6 +60,10 @@ func initialVerdict() Verdict {
 // stopped on its own must be able to say what it saw, or the feature is
 // indistinguishable from a bug.
 func IsContended(r Resources, modelsLoaded bool, p Policy) (bool, string) {
+	if len(r.Priority) > 0 {
+		return true, strings.Join(r.Priority, ", ") + " needs the GPU (priority process with CUDA)"
+	}
+
 	if r.ComfyUIJobs != nil && *r.ComfyUIJobs > 0 {
 		jobs := *r.ComfyUIJobs
 		plural := "s"
@@ -89,16 +98,17 @@ func IsContended(r Resources, modelsLoaded bool, p Policy) (bool, string) {
 // during a lull between two loading screens is worse than waiting.
 func Decide(previous Verdict, r Resources, now time.Time, modelsLoaded bool, p Policy) Verdict {
 	contended, why := IsContended(r, modelsLoaded, p)
+	priority := len(r.Priority) > 0
 
 	if contended {
 		if previous.Yielded {
 			// Still busy: re-stamp the observation without moving Since, which
 			// is what the announcement reports as the start.
 			next := previous
-			next.Reason, next.ContendedAt, next.SampledAt = why, &now, &now
+			next.Reason, next.ContendedAt, next.SampledAt, next.Priority = why, &now, &now, priority
 			return next
 		}
-		return Verdict{Yielded: true, Reason: why, Since: &now, ContendedAt: &now, SampledAt: &now}
+		return Verdict{Yielded: true, Reason: why, Priority: priority, Since: &now, ContendedAt: &now, SampledAt: &now}
 	}
 
 	if !previous.Yielded {
@@ -112,7 +122,8 @@ func Decide(previous Verdict, r Resources, now time.Time, modelsLoaded bool, p P
 		if quiet < float64(p.ResumeQuietSeconds) {
 			next := previous
 			next.Reason = fmt.Sprintf("%s, but only for %.0fs of %ds", why, quiet, p.ResumeQuietSeconds)
-			next.SampledAt = &now
+			// The priority process is gone; what remains is an ordinary pause.
+			next.SampledAt, next.Priority = &now, false
 			return next
 		}
 	}

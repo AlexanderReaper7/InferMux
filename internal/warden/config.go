@@ -45,6 +45,14 @@ type Config struct {
 	// unloaded the model that was writing the reply.
 	DesktopProcesses []string `yaml:"desktop_processes" json:"desktop_processes"`
 
+	// PriorityProcesses are process names whose CUDA work takes the card
+	// (0017). One of them in NVML's compute list is contention at any load,
+	// and the yield it causes unloads the models without waiting out
+	// InteractiveRecentSeconds, though never under a request in flight. OBS
+	// running NVIDIA's green screen is the case: 6-8% SM, under
+	// GPUBusyPercent, and ~360 MB it cannot get while a model holds the card.
+	PriorityProcesses []string `yaml:"priority_processes" json:"priority_processes"`
+
 	// Host is this machine's name among the hosts, the <host> in
 	// <host>/<model> (0006, 2). Empty means "this", in a single-host setup.
 	Host string `yaml:"host" json:"host"`
@@ -203,6 +211,11 @@ func LoadConfig(path string) (Config, error) {
 		cfg.Failover, err = LoadFailover(cfg.FailoverPath, seen)
 		if err != nil {
 			return cfg, err
+		}
+	}
+	for _, name := range cfg.PriorityProcesses {
+		if slices.Contains(cfg.DesktopProcesses, name) {
+			return cfg, fmt.Errorf("%s: %s is in both desktop_processes and priority_processes, which say its work is never contention and always is (0017)", path, name)
 		}
 	}
 	if cfg.ComfyUIUnit != "" && slices.Contains(cfg.OurUnits, cfg.ComfyUIUnit) {

@@ -87,7 +87,7 @@ func TestOurGenerationIsSplitFromEveryoneElses(t *testing.T) {
 	r := Summarise(
 		map[uint32]int{1: 6000, 2: 2000, 3: 4000},
 		map[uint32]float64{1: 90, 2: 30, 3: 5},
-		9000, 10240, f64(100), a,
+		nil, 9000, 10240, f64(100), a,
 	)
 	if *r.ForeignGPUPercent != 35 || r.OurGPUPercent != 90 || r.OurVRAMMB != 6000 {
 		t.Fatalf("got foreign %v ours %v vram %v", *r.ForeignGPUPercent, r.OurGPUPercent, r.OurVRAMMB)
@@ -108,7 +108,7 @@ func TestDesktopProcessesAreNeitherOursNorContention(t *testing.T) {
 		map[uint32]string{1: "app-t3.scope", 2: "session.scope", 3: "app-firefox.scope"},
 		nil, []string{"electron", "cosmic-comp"},
 	)
-	r := Summarise(nil, map[uint32]float64{1: 22, 2: 14, 3: 4}, 4000, 10240, nil, a)
+	r := Summarise(nil, map[uint32]float64{1: 22, 2: 14, 3: 4}, nil, 4000, 10240, nil, a)
 	if *r.ForeignGPUPercent != 4 || r.DesktopGPUPercent != 36 {
 		t.Fatalf("foreign %v desktop %v", *r.ForeignGPUPercent, r.DesktopGPUPercent)
 	}
@@ -119,8 +119,53 @@ func TestDesktopProcessesAreNeitherOursNorContention(t *testing.T) {
 
 func TestMemoryWithoutWorkIsNotACulprit(t *testing.T) {
 	a := attribution(map[uint32]string{1: "steam"}, map[uint32]string{1: "app.scope"}, nil, nil)
-	r := Summarise(map[uint32]int{1: 500}, nil, 4000, 10240, nil, a)
+	r := Summarise(map[uint32]int{1: 500}, nil, nil, 4000, 10240, nil, a)
 	if len(r.Culprits) != 0 {
 		t.Fatalf("culprits %v", r.Culprits)
+	}
+}
+
+// OBS with NVIDIA's green screen, measured 2026-10-06: graphics only at 34 MB
+// with the filter off, in the compute list at 360 MB with it on (0017).
+func TestAPriorityProcessTakesTheCardOnlyWithACUDAContext(t *testing.T) {
+	a := attribution(map[uint32]string{1: "obs", 2: "obs"}, map[uint32]string{1: "app-obs.scope", 2: "app-obs.scope"}, nil, nil)
+	a.Priority = map[string]bool{"obs": true}
+
+	r := Summarise(map[uint32]int{1: 34}, map[uint32]float64{1: 3}, nil, 4000, 10240, nil, a)
+	if len(r.Priority) != 0 || r.Processes[0].Priority {
+		t.Fatalf("graphics only: priority %v", r.Priority)
+	}
+
+	r = Summarise(map[uint32]int{1: 360, 2: 360}, map[uint32]float64{1: 7}, map[uint32]bool{1: true, 2: true}, 4000, 10240, nil, a)
+	if len(r.Priority) != 1 || r.Priority[0] != "obs" {
+		t.Fatalf("with CUDA: priority %v", r.Priority)
+	}
+}
+
+// The process list is cut to ten for display. A priority process idle enough
+// to sort last is still named.
+func TestAPriorityProcessPastTheDisplayCapIsStillNamed(t *testing.T) {
+	names, units := map[uint32]string{}, map[uint32]string{}
+	util := map[uint32]float64{}
+	for pid := uint32(1); pid <= 12; pid++ {
+		names[pid], units[pid] = "game", "app.scope"
+		util[pid] = float64(pid)
+	}
+	names[13], units[13] = "obs", "app-obs.scope"
+	a := attribution(names, units, nil, nil)
+	a.Priority = map[string]bool{"obs": true}
+	r := Summarise(map[uint32]int{13: 360}, util, map[uint32]bool{13: true}, 4000, 10240, nil, a)
+	if len(r.Processes) != 10 || len(r.Priority) != 1 {
+		t.Fatalf("%d processes shown, priority %v", len(r.Processes), r.Priority)
+	}
+}
+
+// A priority process that is ours is the models' own work, not a claim on the card.
+func TestOurOwnProcessIsNeverPriority(t *testing.T) {
+	a := attribution(map[uint32]string{1: "llama-server"}, map[uint32]string{1: "infermux.service"}, []string{"infermux.service"}, nil)
+	a.Priority = map[string]bool{"llama-server": true}
+	r := Summarise(map[uint32]int{1: 6000}, map[uint32]float64{1: 90}, map[uint32]bool{1: true}, 9000, 10240, nil, a)
+	if len(r.Priority) != 0 {
+		t.Fatalf("priority %v", r.Priority)
 	}
 }

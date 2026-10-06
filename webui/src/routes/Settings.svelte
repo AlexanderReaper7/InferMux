@@ -6,7 +6,7 @@
   let path = $state("");
   let error = $state<string | null>(null);
   let saved = $state(false);
-  let lists = $state({ our_units: "", desktop_processes: "", trusted_hosts: "" });
+  let lists = $state({ our_units: "", desktop_processes: "", priority_processes: "", trusted_hosts: "" });
 
   async function load() {
     try {
@@ -18,6 +18,7 @@
       lists = {
         our_units: (cfg.our_units ?? []).join("\n"),
         desktop_processes: (cfg.desktop_processes ?? []).join("\n"),
+        priority_processes: (cfg.priority_processes ?? []).join("\n"),
         trusted_hosts: (cfg.trusted_hosts ?? []).join("\n"),
       };
     } catch (e) {
@@ -40,6 +41,7 @@
       ...$state.snapshot(cfg),
       our_units: lines(lists.our_units),
       desktop_processes: lines(lists.desktop_processes),
+      priority_processes: lines(lists.priority_processes),
       trusted_hosts: lines(lists.trusted_hosts),
     };
     try {
@@ -105,6 +107,14 @@
           <span class="label">Desktop processes</span>
           <textarea class="h-28 font-mono text-sm" bind:value={lists.desktop_processes}></textarea>
           <span class="text-xs text-neutral-500">Never contention.</span>
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="label">Priority processes</span>
+          <textarea class="h-28 font-mono text-sm" bind:value={lists.priority_processes}></textarea>
+          <span class="text-xs text-neutral-500"
+            >Contention whenever one holds CUDA, at any load. Unloads without waiting for your recent requests, never
+            under one in flight.</span
+          >
         </label>
       </div>
       <label class="mt-4 flex flex-col gap-1">

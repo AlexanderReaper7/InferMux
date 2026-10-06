@@ -56,7 +56,8 @@ func (p *nvmlProbe) sample() (Resources, error) {
 	// A process in both lists (compute and graphics) reports the same figure
 	// in each.
 	vram := map[uint32]int{}
-	for _, list := range []func() ([]nvml.ProcessInfo, nvml.Return){
+	compute := map[uint32]bool{}
+	for i, list := range []func() ([]nvml.ProcessInfo, nvml.Return){
 		device.GetComputeRunningProcesses,
 		device.GetGraphicsRunningProcesses,
 	} {
@@ -66,6 +67,9 @@ func (p *nvmlProbe) sample() (Resources, error) {
 		}
 		for _, row := range rows {
 			vram[row.Pid] = max(vram[row.Pid], int(row.UsedGpuMemory>>20))
+			if i == 0 {
+				compute[row.Pid] = true
+			}
 		}
 	}
 
@@ -88,5 +92,5 @@ func (p *nvmlProbe) sample() (Resources, error) {
 		return Resources{}, fmt.Errorf("nvml process utilization: %s", nvml.ErrorString(ret))
 	}
 
-	return Summarise(vram, util, int(memory.Used>>20), int(memory.Total>>20), gpuPercent, p.attr), nil
+	return Summarise(vram, util, compute, int(memory.Used>>20), int(memory.Total>>20), gpuPercent, p.attr), nil
 }

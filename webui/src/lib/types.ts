@@ -140,6 +140,7 @@ export interface WardenConfig {
   comfyui_unit: string;
   our_units: string[] | null;
   desktop_processes: string[] | null;
+  priority_processes: string[] | null;
   host: string;
   keys_file: string;
   remotes: Remote[] | null;

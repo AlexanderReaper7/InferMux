@@ -196,6 +196,52 @@ func TestAResumeForgivesAnOwedUnload(t *testing.T) {
 	}
 }
 
+// --- priority processes (0017) ------------------------------------------------
+
+func TestAPriorityYieldUnloadsWithinTheInteractiveWindow(t *testing.T) {
+	h := newHarness(t, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/embeddings", func() {})
+	h.w.traffic.end(id)
+	h.reading = obsWithCUDA()
+	h.at(time.Minute).w.Tick()
+	if h.models.unloads != 1 {
+		t.Fatalf("unloaded %d times a minute after an interactive request", h.models.unloads)
+	}
+}
+
+func TestAPriorityYieldStillWaitsForARequestInFlight(t *testing.T) {
+	h := newHarness(t, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", func() {})
+	h.reading = obsWithCUDA()
+	h.w.Tick()
+	if h.models.unloads != 0 || !h.w.State().PendingUnload {
+		t.Fatal("unloaded under a request in flight")
+	}
+	h.w.traffic.end(id)
+	h.at(5 * time.Second).w.Tick()
+	if h.models.unloads != 1 {
+		t.Fatalf("owed unload not paid once the request ended: %d", h.models.unloads)
+	}
+}
+
+func TestAPriorityProcessDuringAPauseOwesAnotherUnload(t *testing.T) {
+	h := newHarness(t, nil)
+	h.reading = busy(60, "Warframe.x64.exe")
+	h.w.Tick()
+	h.models.running = map[string]string{"embedder": "ready"} // a client loaded it again
+	h.at(5 * time.Second).w.Tick()
+	if h.models.unloads != 1 {
+		t.Fatalf("game alone: unloaded %d times", h.models.unloads)
+	}
+	h.reading = obsWithCUDA()
+	h.at(10 * time.Second).w.Tick()
+	h.models.running = map[string]string{"embedder": "ready"} // and again, which stays (0002)
+	h.at(15 * time.Second).w.Tick()
+	if h.models.unloads != 2 {
+		t.Fatalf("with OBS: unloaded %d times", h.models.unloads)
+	}
+}
+
 func TestAYieldCancelsBatchButNotInteractive(t *testing.T) {
 	h := newHarness(t, nil)
 	var batchCancelled, interactiveCancelled bool

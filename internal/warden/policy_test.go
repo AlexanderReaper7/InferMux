@@ -134,3 +134,30 @@ func TestAnUnreadableQueueMovesNothing(t *testing.T) {
 		t.Fatalf("got %+v %v", after, due)
 	}
 }
+
+func obsWithCUDA() Resources {
+	r := busy(7, "obs")
+	r.Priority = []string{"obs"}
+	return r
+}
+
+// OBS's green screen draws 6-8% SM, far under gpu_busy_percent (0017).
+func TestAPriorityProcessIsContentionAtAnyLoad(t *testing.T) {
+	ok, why := IsContended(obsWithCUDA(), true, DefaultConfig().Policy)
+	if !ok || !strings.Contains(why, "obs") {
+		t.Fatalf("got %v %q", ok, why)
+	}
+	v := Decide(initialVerdict(), obsWithCUDA(), t0, true, DefaultConfig().Policy)
+	if !v.Yielded || !v.Priority {
+		t.Fatalf("got %+v", v)
+	}
+}
+
+func TestThePriorityEndsWithItsProcessButThePauseWaitsItsWindow(t *testing.T) {
+	p := DefaultConfig().Policy
+	v := Decide(initialVerdict(), obsWithCUDA(), t0, true, p)
+	v = Decide(v, quiet(), t0.Add(time.Minute), true, p)
+	if !v.Yielded || v.Priority {
+		t.Fatalf("got %+v", v)
+	}
+}

@@ -105,6 +105,19 @@ func TestComfyUIsUnitInOurUnitsIsRefused(t *testing.T) {
 	}
 }
 
+func TestAProcessBothDesktopAndPriorityIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "w.yaml")
+	os.WriteFile(path, []byte("desktop_processes: [cosmic-comp, obs]\npriority_processes: [obs]\n"), 0o644)
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "0017") {
+		t.Fatalf("accepted, or refused without the reason: %v", err)
+	}
+	os.WriteFile(path, []byte("desktop_processes: [cosmic-comp]\npriority_processes: [obs]\n"), 0o644)
+	cfg, err := LoadConfig(path)
+	if err != nil || len(cfg.PriorityProcesses) != 1 {
+		t.Fatalf("%v %v", cfg.PriorityProcesses, err)
+	}
+}
+
 func TestAFailoverFileIsCheckedAgainstTheHosts(t *testing.T) {
 	for _, tc := range []struct {
 		name, file, err string

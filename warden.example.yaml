@@ -19,6 +19,12 @@ our_units: [llama-embed.service]
 # Electron app shares that name. (Default: none.)
 desktop_processes: [cosmic-comp, electron]
 
+# Process names whose CUDA work takes the card: one of them in NVML's compute
+# list is contention at any load, and the models unload without waiting for a
+# recent interactive request, though never under one in flight (0017). OBS
+# joins that list when NVIDIA's green screen loads. (Default: none.)
+priority_processes: [obs]
+
 # This machine's name among the hosts: the <host> in <host>/<model>, which a
 # key's allow list matches. (Default: none.)
 host: reaperboi

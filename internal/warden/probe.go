@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,18 +29,20 @@ import (
 // Resources is one measurement, as the policy reads it. A nil pointer is a
 // reading that was not taken, which is never evidence of contention.
 type Resources struct {
-	ForeignGPUPercent *float64  `json:"foreign_gpu_percent"`
-	OurGPUPercent     float64   `json:"our_gpu_percent"`
-	DesktopGPUPercent float64   `json:"desktop_gpu_percent"`
-	OurVRAMMB         int       `json:"our_vram_mb"`
-	VRAMUsedMB        int       `json:"vram_used_mb"`
-	VRAMTotalMB       int       `json:"vram_total_mb"`
-	VRAMFreeMB        *int      `json:"vram_free_mb"`
-	GPUPercent        *float64  `json:"gpu_percent"`
-	Culprits          []string  `json:"culprits"`
-	Processes         []Process `json:"processes"`
-	SampledAt         time.Time `json:"sampled_at"`
-	ComfyUIJobs       *int      `json:"comfyui_jobs"`
+	ForeignGPUPercent *float64 `json:"foreign_gpu_percent"`
+	OurGPUPercent     float64  `json:"our_gpu_percent"`
+	DesktopGPUPercent float64  `json:"desktop_gpu_percent"`
+	OurVRAMMB         int      `json:"our_vram_mb"`
+	VRAMUsedMB        int      `json:"vram_used_mb"`
+	VRAMTotalMB       int      `json:"vram_total_mb"`
+	VRAMFreeMB        *int     `json:"vram_free_mb"`
+	GPUPercent        *float64 `json:"gpu_percent"`
+	Culprits          []string `json:"culprits"`
+	// Priority names the priority processes holding a CUDA context (0017).
+	Priority    []string  `json:"priority"`
+	Processes   []Process `json:"processes"`
+	SampledAt   time.Time `json:"sampled_at"`
+	ComfyUIJobs *int      `json:"comfyui_jobs"`
 }
 
 type Process struct {
@@ -50,6 +53,11 @@ type Process struct {
 	VRAMMB  int     `json:"vram_mb"`
 	Ours    bool    `json:"ours"`
 	Desktop bool    `json:"desktop"`
+	// Compute is whether NVML lists the process among those with a CUDA
+	// context, not only a graphics one.
+	Compute bool `json:"compute"`
+	// Priority is a priority process with a CUDA context (0017).
+	Priority bool `json:"priority"`
 }
 
 // Attribution decides whose a process is. Separate from the NVML calls so it is
@@ -57,6 +65,7 @@ type Process struct {
 type Attribution struct {
 	OurUnits map[string]bool
 	Desktop  map[string]bool
+	Priority map[string]bool
 	Name     func(pid uint32) string
 	Unit     func(pid uint32) string
 }
@@ -73,16 +82,22 @@ func newAttribution(cfg Config, proc string) Attribution {
 	for _, name := range cfg.DesktopProcesses {
 		desktop[name] = true
 	}
+	priority := map[string]bool{}
+	for _, name := range cfg.PriorityProcesses {
+		priority[name] = true
+	}
 	return Attribution{
 		OurUnits: ours,
 		Desktop:  desktop,
+		Priority: priority,
 		Name:     func(pid uint32) string { return ProcessName(proc, strconv.Itoa(int(pid))) },
 		Unit:     func(pid uint32) string { return ProcessUnit(proc, strconv.Itoa(int(pid))) },
 	}
 }
 
-// Summarise turns raw per-process readings into Resources.
-func Summarise(vram map[uint32]int, util map[uint32]float64, usedMB, totalMB int, gpuPercent *float64, a Attribution) Resources {
+// Summarise turns raw per-process readings into Resources. compute holds the
+// PIDs NVML lists with a CUDA context.
+func Summarise(vram map[uint32]int, util map[uint32]float64, compute map[uint32]bool, usedMB, totalMB int, gpuPercent *float64, a Attribution) Resources {
 	pids := map[uint32]bool{}
 	for pid := range vram {
 		pids[pid] = true
@@ -97,13 +112,15 @@ func Summarise(vram map[uint32]int, util map[uint32]float64, usedMB, totalMB int
 		name := a.Name(pid)
 		ours := unit != "" && a.OurUnits[unit]
 		processes = append(processes, Process{
-			PID:     pid,
-			Name:    name,
-			Unit:    unit,
-			Percent: util[pid],
-			VRAMMB:  vram[pid],
-			Ours:    ours,
-			Desktop: !ours && a.Desktop[name],
+			PID:      pid,
+			Name:     name,
+			Unit:     unit,
+			Percent:  util[pid],
+			VRAMMB:   vram[pid],
+			Ours:     ours,
+			Desktop:  !ours && a.Desktop[name],
+			Compute:  compute[pid],
+			Priority: !ours && compute[pid] && a.Priority[name],
 		})
 	}
 	sort.Slice(processes, func(i, j int) bool {
@@ -119,7 +136,13 @@ func Summarise(vram map[uint32]int, util map[uint32]float64, usedMB, totalMB int
 	var foreign, ours, desktop float64
 	var ourVRAM int
 	culprits := []string{}
+	priority := []string{}
 	for _, p := range processes {
+		// Before the cap below: a priority process idle enough to sort last
+		// still takes the card.
+		if p.Priority && !slices.Contains(priority, p.Name) {
+			priority = append(priority, p.Name)
+		}
 		switch {
 		case p.Ours:
 			ours += p.Percent
@@ -151,6 +174,7 @@ func Summarise(vram map[uint32]int, util map[uint32]float64, usedMB, totalMB int
 		VRAMFreeMB:        &free,
 		GPUPercent:        gpuPercent,
 		Culprits:          culprits,
+		Priority:          priority,
 		Processes:         processes,
 		SampledAt:         time.Now(),
 	}
