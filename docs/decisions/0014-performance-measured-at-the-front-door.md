@@ -17,6 +17,8 @@ The user asked for tok/s, time to the first token and the prefill rate in the UI
 5. **The rates.** When llama-server sends `timings`, the prefill and decode rates are its own, the prompt is `prompt_n` plus `cache_n`, and drafts accepted come from `draft_n_accepted`. A cloud peer sends none, so its decode rate is the output tokens after the first, over the time after the first token, measured here and marked with `*`.
 6. **What is counted.** A request the warden refuses (401, 403, 503) never reaches the recorder, so it says nothing about the model. A failed one that reached the model is listed and counted as failed, but its numbers stay out of the summary. The summary's cache share and draft acceptance are ratios of sums, so a long request weighs what it cost.
 
+7. **Bytes, to decide compression on data** (the user's choice, 2026-10-06). Each request records its request and reply body in bytes, uncompressed and without headers. Nothing between the hosts compresses today. Over the tailnet 1 MB took 75 ms to the zbox and 28 ms through this host's own `tailscale serve`, against seconds of prefill for a prompt that size, so compression was not worth building on estimates. If the agents' turns between hosts turn out large, these numbers say so.
+
 ## Consequences
 
 - Any key can read `/warden/requests`, as it can `/warden/verdict`. The list names the key behind each request and its token counts, never its content.

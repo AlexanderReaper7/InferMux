@@ -26,6 +26,12 @@
     return new Date(iso).toLocaleTimeString([], { hour12: false });
   }
 
+  function bytes(n: number) {
+    if (n < 1000) return `${n} B`;
+    if (n < 1e6) return `${(n / 1e3).toFixed(1)} kB`;
+    return `${(n / 1e6).toFixed(1)} MB`;
+  }
+
   function tokens(r: RequestStat) {
     if (r.prompt_tokens == null) return "";
     return r.cached_tokens ? `${r.prompt_tokens} (${r.cached_tokens} cached)` : String(r.prompt_tokens);
@@ -100,6 +106,8 @@
             <th class="text-right font-normal">Prefill tok/s</th>
             <th class="text-right font-normal">Decode tok/s</th>
             <th class="text-right font-normal">Drafts</th>
+            <th class="text-right font-normal" title="the request's body, uncompressed">In</th>
+            <th class="text-right font-normal" title="the reply's body, uncompressed">Out</th>
             <th class="text-right font-normal">Total</th>
           </tr>
         </thead>
@@ -120,6 +128,8 @@
                 >{rate(r.decode_per_second)}{r.rates_from === "client" ? "*" : ""}</td
               >
               <td class="text-right">{r.draft_tokens ? `${r.draft_accepted}/${r.draft_tokens}` : ""}</td>
+              <td class="text-right text-neutral-400">{bytes(r.request_bytes ?? 0)}</td>
+              <td class="text-right text-neutral-400">{bytes(r.response_bytes ?? 0)}</td>
               <td class="text-right text-neutral-400">{ms(r.duration_ms)}</td>
             </tr>
           {/each}

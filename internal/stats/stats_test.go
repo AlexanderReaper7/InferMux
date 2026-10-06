@@ -117,6 +117,28 @@ func TestAReplyThatIsNotStreamedHasNoFirstToken(t *testing.T) {
 	}
 }
 
+func TestBothBodiesAreCountedOnce(t *testing.T) {
+	c := &clock{t: time.Unix(1000, 0)}
+	rec := recorder(c)
+	rec.Model = func(r *http.Request) (string, bool) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		return "reaperboi/qwen", true
+	}
+	request := `{"model":"qwen","messages":[{"role":"user","content":"` + strings.Repeat("x", 5000) + `"}]}`
+	h := rec.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		rw.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(rw, "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n")
+		io.WriteString(rw, "data: [DONE]\n\n")
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(request)))
+	r := rec.Recent()[0]
+	if r.RequestBytes != int64(len(request)) || r.ResponseBytes != 62 {
+		t.Errorf("request %d of %d bytes, response %d of 62", r.RequestBytes, len(request), r.ResponseBytes)
+	}
+}
+
 // OpenRouter sends usage and no timings: the decode rate is the client's,
 // the tokens after the first over the time after it.
 func TestACloudReplysRateIsTheClients(t *testing.T) {

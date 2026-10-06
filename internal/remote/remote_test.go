@@ -185,6 +185,23 @@ func TestARemoteModelGoesThereWithTheClientsKeyAndItsOwnName(t *testing.T) {
 	}
 }
 
+func TestAForwardedRequestGoesOverThePollsConnection(t *testing.T) {
+	zbox := newFakeHost(t, "embed")
+	rt, _ := newRouter(t, "", Host{Name: "zbox", URL: zbox.URL, Key: "host-key"})
+	send(rt, "POST", "/v1/embeddings", `{"model":"zbox/embed"}`, nil)
+	rt.Poll("zbox")
+	send(rt, "POST", "/v1/embeddings", `{"model":"zbox/embed"}`, nil)
+	zbox.mu.Lock()
+	defer zbox.mu.Unlock()
+	conns := map[string]bool{}
+	for _, r := range zbox.seen {
+		conns[r.RemoteAddr] = true
+	}
+	if len(zbox.seen) != 4 || len(conns) != 1 {
+		t.Fatalf("%d connections for %d requests", len(conns), len(zbox.seen))
+	}
+}
+
 func TestLocalNamesWinAndAnAmbiguousOneIsNotGuessed(t *testing.T) {
 	zbox := newFakeHost(t, "qwen", "both")
 	other := newFakeHost(t, "both")

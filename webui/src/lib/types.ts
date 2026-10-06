@@ -247,6 +247,9 @@ export interface RequestStat {
   rates_from?: "llama-server" | "client";
   draft_tokens: number | null;
   draft_accepted: number | null;
+  // absent from a host older than 2026-10-06
+  request_bytes?: number;
+  response_bytes?: number;
 }
 
 export interface ModelStat {

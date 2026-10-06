@@ -60,7 +60,6 @@ type Router struct {
 	local    func(model string) bool
 	stateDir string
 	log      Logger
-	client   *http.Client
 
 	mu    sync.Mutex
 	hosts map[string]*host
@@ -70,6 +69,9 @@ type Router struct {
 type host struct {
 	Host
 	target *url.URL
+	// client and proxy share one transport, so the poll every PollEvery
+	// keeps the connection a forwarded request goes over open.
+	client *http.Client
 	proxy  *httputil.ReverseProxy
 	repoll chan struct{}
 	models []string
@@ -90,7 +92,6 @@ func New(hosts []Host, next http.Handler, local func(string) bool, stateDir stri
 		local:    local,
 		stateDir: stateDir,
 		log:      log,
-		client:   &http.Client{Timeout: 10 * time.Second},
 		hosts:    map[string]*host{},
 	}
 	for _, h := range hosts {
@@ -100,7 +101,9 @@ func New(hosts []Host, next http.Handler, local func(string) bool, stateDir stri
 		}
 		hs := &host{Host: h, target: target, repoll: make(chan struct{}, 1)}
 		hs.models, hs.facts = rt.loadState(h.Name)
-		hs.proxy = rt.newProxy(hs)
+		transport := newTransport()
+		hs.client = &http.Client{Timeout: 10 * time.Second, Transport: transport}
+		hs.proxy = rt.newProxy(hs, transport)
 		rt.hosts[h.Name] = hs
 		rt.names = append(rt.names, h.Name)
 	}
@@ -164,7 +167,7 @@ func (rt *Router) fetch(h *host) ([]string, map[string]json.RawMessage, error) {
 		return nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+h.Key)
-	resp, err := rt.client.Do(req)
+	resp, err := h.client.Do(req)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -313,14 +316,19 @@ func rewrite(r *http.Request, hostName, model string) (*http.Request, error) {
 	return swaputil.ReplaceRequestModel(out, requested, model)
 }
 
-func (rt *Router) newProxy(h *host) *httputil.ReverseProxy {
-	transport := &http.Transport{
+// newTransport is one host's connections. IdleConnTimeout is longer than
+// PollEvery, so the poll alone keeps one open.
+func newTransport() *http.Transport {
+	return &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2:   true,
 		TLSHandshakeTimeout: 10 * time.Second,
 		IdleConnTimeout:     90 * time.Second,
 	}
+}
+
+func (rt *Router) newProxy(h *host, transport http.RoundTripper) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(h.target)
@@ -421,7 +429,7 @@ func (rt *Router) Each(ctx context.Context, path string) []Reply {
 			}
 			req.Header.Set("Authorization", "Bearer "+h.Key)
 			req.Header.Set(HopHeader, "1")
-			resp, err := rt.client.Do(req)
+			resp, err := h.client.Do(req)
 			if err != nil {
 				out[i].Err = err
 				return

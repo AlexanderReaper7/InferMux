@@ -13,6 +13,7 @@ package stats
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -50,6 +51,11 @@ type Request struct {
 	RatesFrom     string `json:"rates_from,omitempty"`
 	DraftTokens   *int   `json:"draft_tokens"`
 	DraftAccepted *int   `json:"draft_accepted"`
+	// RequestBytes and ResponseBytes are the bodies as this handler sees
+	// them: uncompressed, without headers or TLS. What crosses between
+	// hosts is the same body, so they say what compressing it could save.
+	RequestBytes  int64 `json:"request_bytes"`
+	ResponseBytes int64 `json:"response_bytes"`
 }
 
 // Recorder keeps the last Capacity requests.
@@ -102,6 +108,10 @@ func (rec *Recorder) Wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(rw, r)
 			return
 		}
+		// Counted before Model reads it. Whoever reads the body first puts
+		// back a copy, so each byte passes the counter once.
+		body := &counter{ReadCloser: r.Body}
+		r.Body = body
 		model, here := rec.Model(r)
 		if !here {
 			next.ServeHTTP(rw, r)
@@ -113,8 +123,22 @@ func (rec *Recorder) Wrap(next http.Handler) http.Handler {
 		if rec.Client != nil {
 			client = rec.Client(r)
 		}
-		rec.add(w.request(model, client, r.URL.Path))
+		out := w.request(model, client, r.URL.Path)
+		out.RequestBytes = body.n
+		rec.add(out)
 	})
+}
+
+// counter counts the bytes read through it.
+type counter struct {
+	io.ReadCloser
+	n int64
+}
+
+func (c *counter) Read(b []byte) (int, error) {
+	n, err := c.ReadCloser.Read(b)
+	c.n += int64(n)
+	return n, err
 }
 
 // bodyLimit is how much of a reply that is not a stream is kept to read its
@@ -135,6 +159,7 @@ type watcher struct {
 	overflow          bool
 	timings           *timings
 	usage             *usage
+	written           int64
 }
 
 func (w *watcher) WriteHeader(code int) {
@@ -152,6 +177,7 @@ func (w *watcher) Write(b []byte) (int, error) {
 		}
 		w.stream = strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream")
 	}
+	w.written += int64(len(b))
 	if w.stream {
 		w.read(b)
 	} else if !w.overflow {
@@ -298,7 +324,7 @@ func (w *watcher) request(model, client, path string) Request {
 	if status == 0 {
 		status = http.StatusOK
 	}
-	out := Request{Time: w.start, Model: model, Client: client, Path: path, Status: status, Stream: w.stream, DurationMs: ms(end.Sub(w.start))}
+	out := Request{Time: w.start, Model: model, Client: client, Path: path, Status: status, Stream: w.stream, DurationMs: ms(end.Sub(w.start)), ResponseBytes: w.written}
 	if !w.firstToken.IsZero() {
 		ttft := ms(w.firstToken.Sub(w.start))
 		out.TTFTMs = &ttft
