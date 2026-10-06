@@ -17,6 +17,7 @@ This file is rules and navigation only.
 |---|---|
 | `internal/warden/` | ours: config, policy, probe, ComfyUI, consumers, request classes, stuck agents, the loop and `/warden/*` |
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
+| `internal/failover/` | ours: a model listed in failover.yaml tried at each of its places in turn, in front of the warden (0016) |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
 | `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
@@ -30,10 +31,10 @@ This file is rules and navigation only.
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/catalog internal/muxui internal/adapter internal/stats cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats cmd internal/server/warden.go internal/server/warden_test.go
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
 

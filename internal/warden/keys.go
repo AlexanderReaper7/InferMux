@@ -163,12 +163,13 @@ func keyless(r *http.Request) bool {
 	return false
 }
 
-// keysPath resolves keys_file against the warden file's directory.
-func keysPath(wardenFile, keysFile string) string {
-	if keysFile == "" || filepath.IsAbs(keysFile) {
-		return keysFile
+// besideWarden resolves a file the warden file names, keys_file or
+// failover_file, against the warden file's directory.
+func besideWarden(wardenFile, file string) string {
+	if file == "" || filepath.IsAbs(file) {
+		return file
 	}
-	return filepath.Join(filepath.Dir(wardenFile), keysFile)
+	return filepath.Join(filepath.Dir(wardenFile), file)
 }
 
 // websocketKeyProtocol is how a browser, which cannot set headers on a

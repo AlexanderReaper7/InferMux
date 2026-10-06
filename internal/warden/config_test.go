@@ -13,7 +13,8 @@ func TestTheExampleFileLoadsWithEveryKeyRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.ComfyUIURL == "" || len(cfg.OurUnits) != 1 || len(cfg.DesktopProcesses) != 2 ||
-		cfg.Host != "reaperboi" || cfg.Keys == nil || len(cfg.Keys.Keys) != 2 || len(cfg.Remotes) != 1 || len(cfg.Consumers) != 1 {
+		cfg.Host != "reaperboi" || cfg.Keys == nil || len(cfg.Keys.Keys) != 2 || len(cfg.Remotes) != 1 || len(cfg.Consumers) != 1 ||
+		len(cfg.Failover["Octen-Embedding-4B.Q8_0"]) != 2 {
 		t.Fatalf("a key was not read: %+v", cfg)
 	}
 	if cfg.Policy != DefaultConfig().Policy {
@@ -101,5 +102,34 @@ func TestComfyUIsUnitInOurUnitsIsRefused(t *testing.T) {
 	os.WriteFile(path, []byte("comfyui_unit: comfyui.service\nour_units: [llama-embed.service]\n"), 0o644)
 	if _, err := LoadConfig(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAFailoverFileIsCheckedAgainstTheHosts(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, err string
+	}{
+		{"a host and this host", "m: [zbox, reaperboi]\n", ""},
+		{"another model here", "m: [zbox, reaperboi/m-cpu]\n", ""},
+		{"an unknown host", "m: [zbx, reaperboi]\n", `"zbx" is not this host or a remote`},
+		{"a peer is not a place", "m: [openrouter/m, reaperboi]\n", `"openrouter/m" is not this host or a remote`},
+		{"one place", "m: [zbox]\n", "at least two places"},
+		{"twice", "m: [zbox, reaperboi, zbox]\n", `"zbox" is listed twice`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.WriteFile(filepath.Join(dir, "w.yaml"), []byte("host: reaperboi\nfailover_file: f.yaml\nremotes:\n  - name: zbox\n    url: https://zbox\n"), 0o644)
+			os.WriteFile(filepath.Join(dir, "f.yaml"), []byte(tc.file), 0o644)
+			cfg, err := LoadConfig(filepath.Join(dir, "w.yaml"))
+			if tc.err == "" {
+				if err != nil || cfg.FailoverPath != filepath.Join(dir, "f.yaml") || len(cfg.Failover["m"]) < 2 {
+					t.Fatalf("err %v, path %q, table %v", err, cfg.FailoverPath, cfg.Failover)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("err %v, want %q", err, tc.err)
+			}
+		})
 	}
 }

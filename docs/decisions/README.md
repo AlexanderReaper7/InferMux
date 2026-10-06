@@ -23,5 +23,6 @@ Nothing here is edited to reflect later changes. A decision that was replaced ge
 | [0013](0013-immich-ml-under-the-zbox-through-an-adapter.md) | Immich ML runs under the zbox's InferMux, and an adapter gives Immich its key | 2026-10-03 |
 | [0014](0014-performance-measured-at-the-front-door.md) | Each host times the requests it serves, in memory, and the UI shows both hosts | 2026-10-04 |
 | [0015](0015-a-stuck-agent-is-noted-escalated-then-refused.md) | A stuck agent is noted, sent to a stronger model, then refused; the presets get Qwen's sampling | 2026-10-05 |
+| [0016](0016-a-model-fails-over-between-places.md) | A model fails over between places, listed in failover.yaml, on 502, 503 or 504 | 2026-10-06 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.

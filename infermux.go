@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/mostlygeek/llama-swap/internal/catalog"
+	"github.com/mostlygeek/llama-swap/internal/failover"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/remote"
 	"github.com/mostlygeek/llama-swap/internal/server"
@@ -101,7 +102,9 @@ func (a activeModels) qualifyHere(requested string) (string, bool, bool) {
 // request for a model this host serves (internal/stats), then Codex's catalog,
 // then the list cut to the key's allow list, then remote (another host's
 // model goes there), then the derived settings on the local models, then
-// llama-swap (0006).
+// llama-swap (0006). In front of all of it, failover sends a request for a
+// model in failover.yaml through that chain once per place it lists, until
+// one answers (0016).
 func startWarden(path, configPath, configDir string, httpServer *http.Server, active func() *server.Server, log *logmon.Monitor) {
 	if path == "" {
 		return
@@ -161,7 +164,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		}
 		return hosts
 	}))
-	httpServer.Handler = w.Wrap(recorder.Wrap(codex))
+	failovers := failover.New(w.Wrap(recorder.Wrap(codex)), cfg.Host, log)
+	failovers.Set(cfg.Failover)
+	httpServer.Handler = failovers
 	w.Start()
 
 	reloadWarden := func() {
@@ -173,11 +178,15 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		if err := remotes.set(ctx, cfg.Remotes); err != nil {
 			log.Warnf("Remote hosts not reloaded: %v", err)
 		}
+		failovers.Set(cfg.Failover)
 		w.Reload(cfg)
 	}
 	go (&configwatcher.Watcher{Path: absolute(path), OnChange: reloadWarden}).Run(ctx)
 	if cfg.KeysPath != "" {
 		go (&configwatcher.Watcher{Path: absolute(cfg.KeysPath), OnChange: reloadWarden}).Run(ctx)
+	}
+	if cfg.FailoverPath != "" {
+		go (&configwatcher.Watcher{Path: absolute(cfg.FailoverPath), OnChange: reloadWarden}).Run(ctx)
 	}
 
 	reload := func() {

@@ -57,6 +57,15 @@ type Config struct {
 	// Remotes are the other hosts whose models this one routes to (0006, 2).
 	Remotes []Remote `yaml:"remotes" json:"remotes"`
 
+	// FailoverFile is failover.yaml, relative to this file (0016): for a
+	// model, the places to try in order. Empty, a model is served where its
+	// name resolves.
+	FailoverFile string `yaml:"failover_file,omitempty" json:"failover_file,omitempty"`
+	// Failover is FailoverFile, read with this file. Nil without one.
+	Failover Failover `yaml:"-" json:"-"`
+	// FailoverPath is FailoverFile resolved, for the watcher.
+	FailoverPath string `yaml:"-" json:"-"`
+
 	// Keys is KeysFile, read with this file. Nil without a KeysFile.
 	Keys *KeyFile `yaml:"-" json:"-"`
 	// KeysPath is KeysFile resolved, for the watcher.
@@ -172,7 +181,7 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	if cfg.KeysFile != "" {
-		cfg.KeysPath = keysPath(path, cfg.KeysFile)
+		cfg.KeysPath = besideWarden(path, cfg.KeysFile)
 		kf, err := LoadKeys(cfg.KeysPath)
 		if err != nil {
 			return cfg, err
@@ -188,6 +197,13 @@ func LoadConfig(path string) (Config, error) {
 			return cfg, fmt.Errorf("%s: remote %s is named twice, or is this host", path, r.Name)
 		}
 		seen[r.Name] = true
+	}
+	if cfg.FailoverFile != "" {
+		cfg.FailoverPath = besideWarden(path, cfg.FailoverFile)
+		cfg.Failover, err = LoadFailover(cfg.FailoverPath, seen)
+		if err != nil {
+			return cfg, err
+		}
 	}
 	if cfg.ComfyUIUnit != "" && slices.Contains(cfg.OurUnits, cfg.ComfyUIUnit) {
 		return cfg, fmt.Errorf("%s: our_units lists %s, which is ComfyUI: its work is contention, never ours (0002)", path, cfg.ComfyUIUnit)

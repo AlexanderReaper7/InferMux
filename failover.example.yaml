@@ -1,0 +1,12 @@
+# Failover (0016): a model's name, as clients send it, to the places to try
+# in order. A place is a host, which serves the same name, or <host>/<model>,
+# which serves another. The host's own name means its own models. Every place
+# must be this host (warden.yaml's host) or one of its remotes.
+#
+# A place fails over on 502 (offline, unreachable, or its model would not
+# start), 503 (its warden refused, or the model is busy) or 504. Any other
+# answer, and the last place's, goes to the client.
+
+# The embedder runs on the zbox's card, and on this host's when the zbox
+# cannot serve it.
+Octen-Embedding-4B.Q8_0: [zbox, reaperboi]

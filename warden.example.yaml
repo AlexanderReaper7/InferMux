@@ -38,6 +38,11 @@ remotes:
     url: https://zbox.tailnet.ts.net:5001
     key_file: /run/credentials/infermux.service/remote-key
 
+# For a model, the places to try in order, relative to this file (0016). A
+# request for it goes to the first; a 502, 503 or 504 there sends it on to
+# the next, and the last one's answer is the client's. Reloads at once.
+failover_file: failover.example.yaml
+
 # Host names besides localhost, 127.0.0.1 and [::1] that a browser may write
 # on, here and in infermux-ui: the name `tailscale serve` publishes them on,
 # which it passes through as the Host. A name someone else's DNS could point
