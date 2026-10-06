@@ -1,13 +1,13 @@
 # 0016. A model fails over between places, in a file of its own
 
 - Date: 2026-10-06
-- Status: accepted; built and tested 2026-10-06, not yet watched running
+- Status: accepted; built, tested and running 2026-10-06. Failing over from an offline host was watched; a 503 or 504 was not
 - Rule: `failover_file` in `warden.yaml` names `failover.yaml`, which maps a model's name to the places to try in order. A place is a host (the same name there) or `<host>/<model>`; the host's own name means its own models. A request for a listed model goes through the whole handler chain once per place, renamed for it, until one answers something other than 502, 503 or 504. The last place's answer is the client's whatever it is. The file reloads at once.
 - Keeps 0006, 2 (an unqualified name that is local stays local unless listed here, and a forwarded request is served where it lands) and 0009 (the gate is for this host's card).
 
 ## Context
 
-The semantic search project (Semantic-Search, 2026-10-06) moves the embedder, Octen-Embedding-4B Q8_0, from reaperboi's CPU to the zbox's GTX 1060. Measured that day: a query embedding is 0.04 s there against 2.7–6.6 s on reaperboi's CPU while it is loaded, and eight 919-token chunks take 12 s against 47–49 s. The card holds it at ubatch 1024 in 5341 MiB, so it takes turns with Immich ML (0013).
+The semantic search project (Semantic-Search, 2026-10-06) moves the embedder, Octen-Embedding-4B Q8_0, from reaperboi's CPU to the zbox's GTX 1060. Measured that day: a query embedding is 0.04 s there against 2.7–6.6 s on reaperboi's CPU while it is loaded, and eight 919-token chunks take 12 s against 47–49 s. The card holds it at ubatch 2048 in 5655 MiB, so it takes turns with Immich ML (0013).
 
 The user wanted a fallback on reaperboi's GPU while the zbox cannot serve, and chose InferMux for it, so every client gets it rather than only hister. Episteme names the same model.
 
