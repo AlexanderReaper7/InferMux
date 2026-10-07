@@ -198,7 +198,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			if n := w.CloseSessions(stream.ServiceRestart, "infermux: the model configuration was reloaded"); n > 0 {
 				log.Infof("Closed %d idle session(s) for the config reload", n)
 			}
-			syscall.Kill(os.Getpid(), syscall.SIGHUP)
+			reloadSignal()
 		})
 	}
 	if configPath != "" {
@@ -208,6 +208,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		go (&configwatcher.DirWatcher{Path: absolute(configDir), OnChange: reload}).Run(ctx)
 	}
 }
+
+// reloadSignal is llama-swap's own reload. A test replaces it.
+var reloadSignal = func() { syscall.Kill(os.Getpid(), syscall.SIGHUP) }
 
 // remoteHolder is the remote router, replaced when the warden file's
 // remotes change. A replaced router's requests finish on it.

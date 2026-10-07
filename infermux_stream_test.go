@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -46,17 +47,25 @@ func (s *seen) last(t *testing.T) *http.Request {
 	return s.reqs[len(s.reqs)-1]
 }
 
+// chainOptions are what a test adds to streamChain: speech is the stub's
+// /v1/audio/speech, and configPath a file whose change starts llama-swap's
+// reload.
+type chainOptions struct {
+	speech     http.Handler
+	configPath string
+}
+
 // streamChain is InferMux as startWarden builds it, in front of a llama-swap
 // whose model "stub" is an echo backend, with a remote host "zbox" that lists
 // "stub" and "gone" and answers 502 for "gone". gone fails over from zbox to
-// this host's stub. speech, when set, is the stub's /v1/audio/speech.
-func streamChain(t *testing.T, speech http.Handler) (front *httptest.Server, local, zbox *seen) {
+// this host's stub.
+func streamChain(t *testing.T, opt chainOptions) (front *httptest.Server, local, zbox *seen) {
 	t.Helper()
 	local, zbox = &seen{}, &seen{}
 	echo := wstest.Echo()
 	backend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/audio/speech" && speech != nil {
-			speech.ServeHTTP(rw, r)
+		if r.URL.Path == "/v1/audio/speech" && opt.speech != nil {
+			opt.speech.ServeHTTP(rw, r)
 			return
 		}
 		if r.Header.Get("Upgrade") == "" {
@@ -122,7 +131,7 @@ models:
 		st.Close()
 	})
 	httpServer := &http.Server{Handler: srv}
-	startWarden(wardenFile, "", "", httpServer, func() *server.Server { return srv }, logs.ProxyLogs)
+	startWarden(wardenFile, opt.configPath, "", httpServer, func() *server.Server { return srv }, logs.ProxyLogs)
 	front = httptest.NewServer(httpServer.Handler)
 	t.Cleanup(front.Close)
 
@@ -170,7 +179,7 @@ func echoes(t *testing.T, c *wstest.Client) {
 // the path and query the client sent, with the key in the subprotocol, the
 // way a browser has to send it (0018, 5).
 func TestAWebSocketReachesTheModelItNames(t *testing.T) {
-	front, local, _ := streamChain(t, nil)
+	front, local, _ := streamChain(t, chainOptions{})
 
 	if c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=stub&intent=transcription", nil); c != nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no key: %s, want 401", resp.Status)
@@ -209,7 +218,7 @@ func TestAWebSocketReachesTheModelItNames(t *testing.T) {
 // Another host's model goes to that host as a request for its own name, with
 // the hop marked, so the host there routes it (0006, 2).
 func TestAWebSocketForAnotherHostsModelGoesThere(t *testing.T) {
-	front, local, zbox := streamChain(t, nil)
+	front, local, zbox := streamChain(t, chainOptions{})
 	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=zbox/stub", chainKey)
 	if c == nil {
 		t.Fatalf("upgrade: %s", resp.Status)
@@ -227,7 +236,7 @@ func TestAWebSocketForAnotherHostsModelGoesThere(t *testing.T) {
 // Failover decides before the upgrade: a place that answers 502 is passed
 // over, and the next one's session is the client's (0018, 9).
 func TestAWebSocketFailsOverBeforeTheUpgrade(t *testing.T) {
-	front, local, zbox := streamChain(t, nil)
+	front, local, zbox := streamChain(t, chainOptions{})
 	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=gone", chainKey)
 	if c == nil {
 		t.Fatalf("upgrade: %s", resp.Status)
@@ -244,7 +253,7 @@ func TestAWebSocketFailsOverBeforeTheUpgrade(t *testing.T) {
 // A session through the whole chain is followed by the warden while it is
 // open and leaves one stats row when it ends (0018, 6 and 8).
 func TestASessionThroughTheChainIsOneStatsRow(t *testing.T) {
-	front, _, _ := streamChain(t, nil)
+	front, _, _ := streamChain(t, chainOptions{})
 	get := func(path string, into any) {
 		t.Helper()
 		req, _ := http.NewRequest(http.MethodGet, front.URL+path, nil)
@@ -337,7 +346,7 @@ func TestSpeechChunksArriveAsTheyAreSent(t *testing.T) {
 	// Smaller than net/http's 4 KB write buffer, so a flush lost on the way holds it.
 	const chunks, size = 5, 1000
 	received := make(chan int)
-	front, _, _ := streamChain(t, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+	front, _, _ := streamChain(t, chainOptions{speech: http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body)
 		rw.Header().Set("Content-Type", "audio/pcm")
 		for i := range chunks {
@@ -353,7 +362,7 @@ func TestSpeechChunksArriveAsTheyAreSent(t *testing.T) {
 				return
 			}
 		}
-	}))
+	})})
 	req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/audio/speech", strings.NewReader(`{"model":"stub","input":"hej","response_format":"pcm"}`))
 	req.Header.Set("Authorization", "Bearer chain-key")
 	req.Header.Set("Content-Type", "application/json")
@@ -400,5 +409,57 @@ func TestSpeechChunksArriveAsTheyAreSent(t *testing.T) {
 	rows := requests.Hosts[0].Requests
 	if len(rows) != 1 || rows[0].Path != "/v1/audio/speech" || rows[0].TTFTMs == nil || *rows[0].TTFTMs > rows[0].DurationMs || rows[0].ResponseBytes != chunks*size {
 		t.Fatalf("rows %+v", rows)
+	}
+}
+
+// A config reload closes the sessions with 1012 before it signals llama-swap,
+// once none moves data (0018, 7).
+func TestAReloadClosesSessionsWithServiceRestartFirst(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out a session's 10 s window")
+	}
+	// The code of the close frame the client had when the signal came, or 0.
+	signalled := make(chan int, 1)
+	clients := make(chan *wstest.Client, 1)
+	reloadSignal = func() {
+		client := <-clients
+		client.Conn.SetReadDeadline(time.Now().Add(time.Second))
+		op, p, err := wstest.ReadFrame(client.R)
+		if err != nil || op != wstest.Close || len(p) < 2 {
+			signalled <- 0
+			return
+		}
+		signalled <- int(p[0])<<8 | int(p[1])
+	}
+	t.Cleanup(func() { reloadSignal = func() { syscall.Kill(os.Getpid(), syscall.SIGHUP) } })
+	config := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(config, []byte("models: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	front, _, _ := streamChain(t, chainOptions{configPath: config})
+	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=stub", chainKey)
+	if c == nil {
+		t.Fatalf("upgrade: %s", resp.Status)
+	}
+	echoes(t, c)
+	moved := time.Now()
+	time.Sleep(2500 * time.Millisecond) // past the watcher's first look
+	if err := os.WriteFile(config, []byte("models: {}\n# changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The reload waits while the session moves data.
+	select {
+	case <-signalled:
+		t.Fatal("reloaded under a session moving data")
+	case <-time.After(time.Until(moved.Add(9 * time.Second))):
+	}
+	clients <- c
+	select {
+	case code := <-signalled:
+		if code != 1012 {
+			t.Fatalf("the signal came with the client holding close code %d, want 1012", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("never reloaded")
 	}
 }
