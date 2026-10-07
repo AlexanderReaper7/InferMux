@@ -48,11 +48,13 @@ func (s *seen) last(t *testing.T) *http.Request {
 }
 
 // chainOptions are what a test adds to streamChain: speech is the stub's
-// /v1/audio/speech, and configPath a file whose change starts llama-swap's
-// reload.
+// /v1/audio/speech, configPath a file whose change starts llama-swap's
+// reload, and swapGroup a second model, stub2, on the same backend, in one
+// exclusive swap group with stub.
 type chainOptions struct {
 	speech     http.Handler
 	configPath string
+	swapGroup  bool
 }
 
 // streamChain is InferMux as startWarden builds it, in front of a llama-swap
@@ -103,6 +105,19 @@ func streamChain(t *testing.T, opt chainOptions) (front *httptest.Server, local,
 	write("failover.yaml", "gone: [zbox, test/stub]\n")
 	wardenFile := write("warden.yaml", fmt.Sprintf("host: test\nkeys_file: keys.yaml\nfailover_file: failover.yaml\nremotes:\n  - name: zbox\n    url: %s\npolicy:\n  enabled: false\n", other.URL))
 
+	group := ""
+	if opt.swapGroup {
+		group = fmt.Sprintf(`  stub2:
+    cmd: sleep 3600
+    proxy: %s
+    checkEndpoint: /health
+groups:
+  pair:
+    swap: true
+    exclusive: true
+    members: [stub, stub2]
+`, backend.URL)
+	}
 	cfg, err := config.LoadConfigFromReader(strings.NewReader(fmt.Sprintf(`
 healthCheckTimeout: 15
 logLevel: warn
@@ -113,7 +128,7 @@ models:
     cmd: sleep 3600
     proxy: %s
     checkEndpoint: /health
-`, backend.URL)))
+%s`, backend.URL, group)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,5 +476,50 @@ func TestAReloadClosesSessionsWithServiceRestartFirst(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("never reloaded")
+	}
+}
+
+// An idle session stops holding its model in llama-swap's scheduler: a
+// request for the other model of its swap group waits while the session
+// moves data, then goes ahead, and the session is closed with 1013 before
+// its model stops (0018, 10).
+func TestAnIdleSessionLetsItsGroupSwap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out a session's 10 s window")
+	}
+	front, _, _ := streamChain(t, chainOptions{swapGroup: true})
+	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=stub", chainKey)
+	if c == nil {
+		t.Fatalf("upgrade: %s", resp.Status)
+	}
+	echoes(t, c)
+	moved := time.Now()
+	answered := make(chan string, 1)
+	go func() {
+		req, _ := http.NewRequest(http.MethodGet, front.URL+"/upstream/stub2/health", nil)
+		req.Header.Set("Authorization", "Bearer chain-key")
+		resp, err := (&http.Client{Timeout: 40 * time.Second}).Do(req)
+		if err != nil {
+			answered <- err.Error()
+			return
+		}
+		resp.Body.Close()
+		answered <- resp.Status
+	}()
+	select {
+	case got := <-answered:
+		t.Fatalf("stub2 answered %s under a session moving data", got)
+	case <-time.After(time.Until(moved.Add(9 * time.Second))):
+	}
+	if code, reason := c.Closed(); code != 1013 || reason != "infermux: stub unloaded to load stub2" {
+		t.Fatalf("the session was closed with %d %q", code, reason)
+	}
+	select {
+	case got := <-answered:
+		if got != "200 OK" {
+			t.Fatalf("stub2 answered %s", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("stub2 never answered")
 	}
 }
