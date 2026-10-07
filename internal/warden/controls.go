@@ -82,6 +82,7 @@ func (w *Warden) UnloadNow() ([]string, error) {
 	if n := w.traffic.interactiveInFlight(); n > 0 {
 		return nil, fmt.Errorf("%d interactive request(s) in flight", n)
 	}
+	w.closeSessions("infermux: the models were unloaded by hand")
 	unloaded := w.models.UnloadAll()
 	w.mu.Lock()
 	w.pendingUnload = false
@@ -93,7 +94,7 @@ func (w *Warden) UnloadNow() ([]string, error) {
 
 // CancelBatch cancels every batch request in flight without refusing new ones.
 func (w *Warden) CancelBatch() int {
-	n := w.traffic.cancelBatch()
+	n := w.traffic.cancelBatch("infermux: batch session cancelled by hand")
 	w.log.Infof("Cancelled %d batch request(s) by hand", n)
 	return n
 }

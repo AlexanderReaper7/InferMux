@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/stream"
 )
 
 // Who is asking (0004). The class comes with the client's key in keys.yaml
@@ -17,6 +19,10 @@ import (
 // Batch requests are refused with 503 while the verdict is pause, and cancelled
 // on a yield. Interactive requests always pass, and the models are not unloaded
 // while one is in flight or was recent.
+//
+// A WebSocket is a request in flight until its upgrade, and from then on a
+// session, in flight only while data moves (0018, 6): its last data frame is
+// what counts toward interactive_recent_seconds, not its being open.
 
 type Class string
 
@@ -30,6 +36,23 @@ type flight struct {
 	path    string
 	started time.Time
 	cancel  context.CancelFunc
+	// session is a WebSocket's, nil for any other request.
+	session *stream.Session
+}
+
+// inFlight is whether f counts as a request in flight at now: a request, a
+// WebSocket before its upgrade, or a session that moved data within
+// stream.ActiveWindow. last is an idle session's last data.
+func (f *flight) inFlight(now time.Time) (yes bool, last time.Time) {
+	if f.session == nil {
+		return true, time.Time{}
+	}
+	moving, upgraded := f.session.Moving(now)
+	if !upgraded || moving {
+		return true, time.Time{}
+	}
+	last, _ = f.session.LastData()
+	return false, last
 }
 
 // FlightState is one in-flight request as /warden/verdict reports it.
@@ -37,6 +60,15 @@ type FlightState struct {
 	Class      Class   `json:"class"`
 	Path       string  `json:"path"`
 	AgeSeconds float64 `json:"age_seconds"`
+	// Session is set for an upgraded WebSocket.
+	Session *SessionState `json:"session,omitempty"`
+}
+
+// SessionState is an open WebSocket: whether it counts as in flight, and how
+// long since its last data frame.
+type SessionState struct {
+	Moving      bool    `json:"moving"`
+	IdleSeconds float64 `json:"idle_seconds"`
 }
 
 // TrafficState is what /warden/verdict reports about requests.
@@ -115,9 +147,10 @@ func presentedKeys(r *http.Request) []string {
 }
 
 // isInference is a request that can load or run a model: any POST outside the
-// management API, and a WebSocket opened to a model, which is a GET that
-// lasts as long as the session. A GET of /v1/models is not activity, and a
-// POST to /api/models/unload from a batch client must not be refused.
+// management API, and a WebSocket opened to a model, a GET that lasts as long
+// as the session and counts only while data moves (0018). A GET of /v1/models
+// is not activity, and a POST to /api/models/unload from a batch client must
+// not be refused. Every WebSocket stream.Route sends to a model is one.
 func isInference(r *http.Request) bool {
 	if r.Method != http.MethodPost && !(r.Method == http.MethodGet && isWebSocket(r)) {
 		return false
@@ -127,8 +160,9 @@ func isInference(r *http.Request) bool {
 
 // begin registers a request, or refuses it. The pause check and the
 // registration share one lock with pause(), so a batch request is either
-// refused or registered before the yield, never neither.
-func (t *traffic) begin(class Class, path string, cancel context.CancelFunc) (uint64, bool) {
+// refused or registered before the yield, never neither. session is a
+// WebSocket's, nil for any other request.
+func (t *traffic) begin(class Class, path string, cancel context.CancelFunc, session *stream.Session) (uint64, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if class == Batch && t.paused {
@@ -137,13 +171,15 @@ func (t *traffic) begin(class Class, path string, cancel context.CancelFunc) (ui
 	}
 	t.next++
 	now := t.now()
-	t.flights[t.next] = &flight{class: class, path: path, started: now, cancel: cancel}
+	t.flights[t.next] = &flight{class: class, path: path, started: now, cancel: cancel, session: session}
 	if class == Interactive {
 		t.lastInteractive = now
 	}
 	return t.next, true
 }
 
+// end unregisters a request. A request's end is interactive activity; a
+// session's end is not, only its last data frame was (0018, 6).
 func (t *traffic) end(id uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -152,32 +188,70 @@ func (t *traffic) end(id uint64) {
 		return
 	}
 	delete(t.flights, id)
-	if f.class == Interactive {
-		t.lastInteractive = t.now()
+	if f.class != Interactive {
+		return
+	}
+	end := t.now()
+	if f.session != nil {
+		if last, upgraded := f.session.LastData(); upgraded {
+			end = last
+		}
+	}
+	if end.After(t.lastInteractive) {
+		t.lastInteractive = end
 	}
 }
 
-// pause refuses batch requests from now on and cancels the ones in flight.
-// Returns how many were cancelled.
-func (t *traffic) pause() int {
+// pause refuses batch requests from now on and cancels the ones in flight,
+// a session with a close frame that gives the reason. Returns how many were
+// cancelled.
+func (t *traffic) pause(reason string) int {
 	t.mu.Lock()
 	t.paused = true
 	t.mu.Unlock()
-	return t.cancelBatch()
+	return t.cancelBatch("infermux: batch session cancelled, the GPU was yielded: " + reason)
 }
 
-// cancelBatch cancels the batch requests in flight. Returns how many.
-func (t *traffic) cancelBatch() int {
+// cancelBatch cancels the batch requests in flight, and closes a batch
+// session with reason first. Returns how many. The set is taken under the
+// lock and cancelled after it, since a close frame to a slow client can take
+// up to a second.
+func (t *traffic) cancelBatch(reason string) int {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	n := 0
+	var batch []*flight
 	for _, f := range t.flights {
 		if f.class == Batch {
-			f.cancel()
+			batch = append(batch, f)
+		}
+	}
+	t.cancelled += len(batch)
+	t.mu.Unlock()
+	for _, f := range batch {
+		if f.session != nil {
+			f.session.Close(stream.TryAgainLater, reason)
+		}
+		f.cancel()
+	}
+	return len(batch)
+}
+
+// closeSessions closes every upgraded session with code and reason, before
+// the models under them stop (0018, 7). Returns how many.
+func (t *traffic) closeSessions(code int, reason string) int {
+	t.mu.Lock()
+	var sessions []*stream.Session
+	for _, f := range t.flights {
+		if f.session != nil {
+			sessions = append(sessions, f.session)
+		}
+	}
+	t.mu.Unlock()
+	n := 0
+	for _, s := range sessions {
+		if s.Close(code, reason) {
 			n++
 		}
 	}
-	t.cancelled += n
 	return n
 }
 
@@ -187,12 +261,15 @@ func (t *traffic) resume() {
 	t.paused = false
 }
 
+// interactiveInFlight counts the interactive requests in flight, an idle
+// session not among them.
 func (t *traffic) interactiveInFlight() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
 	n := 0
 	for _, f := range t.flights {
-		if f.class == Interactive {
+		if yes, _ := f.inFlight(now); yes && f.class == Interactive {
 			n++
 		}
 	}
@@ -200,19 +277,28 @@ func (t *traffic) interactiveInFlight() int {
 }
 
 // interactiveRecent is true while an interactive request is in flight, and for
-// window after the last one ended.
+// window after the last one ended or an idle session's last data.
 func (t *traffic) interactiveRecent(window time.Duration) (bool, time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	now := t.now()
+	latest := t.lastInteractive
 	for _, f := range t.flights {
-		if f.class == Interactive {
+		if f.class != Interactive {
+			continue
+		}
+		yes, last := f.inFlight(now)
+		if yes {
 			return true, t.lastInteractive
 		}
+		if last.After(latest) {
+			latest = last
+		}
 	}
-	if t.lastInteractive.IsZero() {
-		return false, t.lastInteractive
+	if latest.IsZero() {
+		return false, latest
 	}
-	return t.now().Sub(t.lastInteractive) < window, t.lastInteractive
+	return now.Sub(latest) < window, latest
 }
 
 func (t *traffic) state() TrafficState {
@@ -225,13 +311,21 @@ func (t *traffic) state() TrafficState {
 		RefusedBatch:   t.refused,
 		CancelledBatch: t.cancelled,
 	}
+	last := t.lastInteractive
 	for _, f := range t.flights {
-		s.InFlight = append(s.InFlight, FlightState{
-			Class: f.class, Path: f.path, AgeSeconds: round1(now.Sub(f.started).Seconds()),
-		})
+		fs := FlightState{Class: f.class, Path: f.path, AgeSeconds: round1(now.Sub(f.started).Seconds())}
+		if f.session != nil {
+			if data, upgraded := f.session.LastData(); upgraded {
+				moving, _ := f.session.Moving(now)
+				fs.Session = &SessionState{Moving: moving, IdleSeconds: round1(now.Sub(data).Seconds())}
+				if f.class == Interactive && data.After(last) {
+					last = data
+				}
+			}
+		}
+		s.InFlight = append(s.InFlight, fs)
 	}
-	if !t.lastInteractive.IsZero() {
-		last := t.lastInteractive
+	if !last.IsZero() {
 		s.LastInteractive = &last
 	}
 	return s

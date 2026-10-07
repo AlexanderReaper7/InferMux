@@ -114,7 +114,7 @@ func TestAWebSocketIsInferenceAndCrossOriginOnesAreRefused(t *testing.T) {
 		t.Fatal("a WebSocket session was not tracked as a request in flight")
 	}
 
-	h.w.traffic.pause()
+	h.w.traffic.pause("test")
 	if rec, served := gated(h, "GET", "/v1/realtime?model=qwen", "", ws); *served != 0 || rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("a batch WebSocket while paused: %d", rec.Code)
 	}

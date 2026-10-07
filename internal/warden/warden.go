@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/stream"
 )
 
 // Models is the warden's handle on llama-swap's local models. main supplies it
@@ -249,7 +251,7 @@ func (w *Warden) act(before, after Verdict) {
 	}
 	switch {
 	case after.Yielded && !before.Yielded:
-		if n := w.traffic.pause(); n > 0 {
+		if n := w.traffic.pause(after.Reason); n > 0 {
 			w.log.Infof("Cancelled %d batch request(s)", n)
 		}
 		// The unload is owed once per yield, on the transition (0002). It may
@@ -316,12 +318,31 @@ func (w *Warden) settleUnload() {
 		}
 		return
 	}
+	w.mu.Lock()
+	reason := w.verdict.Reason
+	w.mu.Unlock()
+	w.closeSessions("infermux: the GPU was yielded: " + reason)
 	unloaded := w.models.UnloadAll()
 	w.mu.Lock()
 	w.pendingUnload = false
 	w.lastUnload = unloaded
 	w.mu.Unlock()
 	w.log.Infof("Models unloaded: %s", orNone(strings.Join(unloaded, ", ")))
+}
+
+// closeSessions ends the open sessions with 1013 before their models stop,
+// so a client learns why rather than seeing its connection drop (0018, 7).
+// Every one is idle by now: one that moves data defers the unload.
+func (w *Warden) closeSessions(reason string) {
+	if n := w.traffic.closeSessions(stream.TryAgainLater, reason); n > 0 {
+		w.log.Infof("Closed %d idle session(s): %s", n, reason)
+	}
+}
+
+// CloseSessions ends every open session with code and reason, for a config
+// reload, which stops every model (0018, 7).
+func (w *Warden) CloseSessions(code int, reason string) int {
+	return w.traffic.closeSessions(code, reason)
 }
 
 func describeLast(last, now time.Time) string {
@@ -400,16 +421,24 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 		class := key.Class
 		ctx, cancel := context.WithCancelCause(r.Context())
 		defer cancel(nil)
-		id, ok := w.traffic.begin(class, r.URL.Path, func() { cancel(errYielded) })
+		// A WebSocket becomes a session at its upgrade, followed frame by
+		// frame from then on (0018, 6).
+		var session *stream.Session
+		if isWebSocket(r) {
+			session = stream.New(w.now(), w.now)
+			ctx = stream.With(ctx, session)
+		}
+		id, ok := w.traffic.begin(class, r.URL.Path, func() { cancel(errYielded) }, session)
 		if !ok {
 			w.refuse(rw, "batch requests wait while the GPU is yielded: ")
 			return
 		}
 		defer w.runWhenQuiet()
 		defer w.traffic.end(id)
-		tracked := &trackedWriter{ResponseWriter: rw}
+		tracked := &trackedWriter{ResponseWriter: rw, session: session}
 		next.ServeHTTP(tracked, r.WithContext(ctx))
-		if context.Cause(ctx) != errYielded {
+		if context.Cause(ctx) != errYielded || tracked.hijacked {
+			// A cancelled session has had its close frame (0018, 7).
 			return
 		}
 		// llama-swap returns without a word when the request's context ends,
@@ -444,10 +473,13 @@ func (w *Warden) refuse(rw http.ResponseWriter, why string) {
 }
 
 // trackedWriter remembers whether the response has started. It passes Flush
-// and Hijack through, since llama-swap's streaming asserts both.
+// and Hijack through, since llama-swap's streaming asserts both, and hands a
+// WebSocket's connection to its session.
 type trackedWriter struct {
 	http.ResponseWriter
-	started bool
+	started  bool
+	hijacked bool
+	session  *stream.Session
 }
 
 func (t *trackedWriter) WriteHeader(code int) {
@@ -473,7 +505,15 @@ func (t *trackedWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return nil, nil, fmt.Errorf("%T cannot be hijacked", t.ResponseWriter)
 	}
 	t.started = true
-	return hj.Hijack()
+	conn, brw, err := hj.Hijack()
+	if err != nil {
+		return conn, brw, err
+	}
+	t.hijacked = true
+	if t.session != nil {
+		conn = t.session.Attach(conn)
+	}
+	return conn, brw, nil
 }
 
 func (t *trackedWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
