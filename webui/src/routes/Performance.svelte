@@ -154,50 +154,52 @@
         </table>
       {/if}
 
-      <table class="w-full text-sm">
-        <thead class="text-left text-neutral-500">
-          <tr>
-            <th class="py-1 font-normal">Time</th>
-            <th class="font-normal">Model</th>
-            <th class="font-normal">Client</th>
-            <th class="font-normal">Path</th>
-            <th class="text-right font-normal">Status</th>
-            <th class="text-right font-normal">Prompt</th>
-            <th class="text-right font-normal">Output</th>
-            <th class="text-right font-normal">TTFT</th>
-            <th class="text-right font-normal">Prefill</th>
-            <th class="text-right font-normal">Prefill tok/s</th>
-            <th class="text-right font-normal">Decode tok/s</th>
-            <th class="text-right font-normal">Drafts</th>
-            <th class="text-right font-normal" title="the request's body, uncompressed">In</th>
-            <th class="text-right font-normal" title="the reply's body, uncompressed">Out</th>
-            <th class="text-right font-normal">Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each requests.slice(0, shown) as r (r.id)}
-            <tr class="border-t border-neutral-900">
-              <td class="py-1 text-neutral-400">{time(r.time)}</td>
-              <td>{r.model}</td>
-              <td class="text-neutral-400">{r.client}</td>
-              <td class="text-neutral-500">{r.path}{r.stream ? "" : " (whole)"}</td>
-              <td class="text-right {r.status === 200 ? 'text-neutral-400' : 'text-red-400'}">{r.status}</td>
-              <td class="text-right">{tokens(r)}</td>
-              <td class="text-right">{r.output_tokens ?? ""}</td>
-              <td class="text-right">{ms(r.ttft_ms)}</td>
-              <td class="text-right">{ms(r.prefill_ms)}</td>
-              <td class="text-right">{rate(r.prefill_per_second)}</td>
-              <td class="text-right" title={r.rates_from === "client" ? "measured here, after the first token" : ""}
-                >{rate(r.decode_per_second)}{r.rates_from === "client" ? "*" : ""}</td
-              >
-              <td class="text-right">{r.draft_tokens ? `${r.draft_accepted}/${r.draft_tokens}` : ""}</td>
-              <td class="text-right text-neutral-400">{bytes(r.request_bytes ?? 0)}</td>
-              <td class="text-right text-neutral-400">{bytes(r.response_bytes ?? 0)}</td>
-              <td class="text-right text-neutral-400">{ms(r.duration_ms)}</td>
+      {#if requests.length}
+        <table class="w-full text-sm">
+          <thead class="text-left text-neutral-500">
+            <tr>
+              <th class="py-1 font-normal">Time</th>
+              <th class="font-normal">Model</th>
+              <th class="font-normal">Client</th>
+              <th class="font-normal">Path</th>
+              <th class="text-right font-normal">Status</th>
+              <th class="text-right font-normal">Prompt</th>
+              <th class="text-right font-normal">Output</th>
+              <th class="text-right font-normal">TTFT</th>
+              <th class="text-right font-normal">Prefill</th>
+              <th class="text-right font-normal">Prefill tok/s</th>
+              <th class="text-right font-normal">Decode tok/s</th>
+              <th class="text-right font-normal">Drafts</th>
+              <th class="text-right font-normal" title="the request's body, uncompressed">In</th>
+              <th class="text-right font-normal" title="the reply's body, uncompressed">Out</th>
+              <th class="text-right font-normal">Total</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {#each requests.slice(0, shown) as r (r.id)}
+              <tr class="border-t border-neutral-900">
+                <td class="py-1 text-neutral-400">{time(r.time)}</td>
+                <td>{r.model}</td>
+                <td class="text-neutral-400">{r.client}</td>
+                <td class="text-neutral-500">{r.path}{r.stream ? "" : " (whole)"}</td>
+                <td class="text-right {r.status === 200 ? 'text-neutral-400' : 'text-red-400'}">{r.status}</td>
+                <td class="text-right">{tokens(r)}</td>
+                <td class="text-right">{r.output_tokens ?? ""}</td>
+                <td class="text-right">{ms(r.ttft_ms)}</td>
+                <td class="text-right">{ms(r.prefill_ms)}</td>
+                <td class="text-right">{rate(r.prefill_per_second)}</td>
+                <td class="text-right" title={r.rates_from === "client" ? "measured here, after the first token" : ""}
+                  >{rate(r.decode_per_second)}{r.rates_from === "client" ? "*" : ""}</td
+                >
+                <td class="text-right">{r.draft_tokens ? `${r.draft_accepted}/${r.draft_tokens}` : ""}</td>
+                <td class="text-right text-neutral-400">{bytes(r.request_bytes ?? 0)}</td>
+                <td class="text-right text-neutral-400">{bytes(r.response_bytes ?? 0)}</td>
+                <td class="text-right text-neutral-400">{ms(r.duration_ms)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {/if}
       {#if Math.max(requests.length, sessions.length) > shown}
         <button class="btn mt-2" onclick={() => (shown = Infinity)}>Show all {h.requests.length}</button>
       {/if}
