@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mostlygeek/llama-swap/internal/stream"
 	"gopkg.in/yaml.v3"
 )
 
@@ -189,6 +190,4 @@ func websocketKeys(r *http.Request) []string {
 	return keys
 }
 
-func isWebSocket(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
-}
+func isWebSocket(r *http.Request) bool { return stream.WebSocket(r) }

@@ -19,6 +19,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/remote"
 	"github.com/mostlygeek/llama-swap/internal/server"
 	"github.com/mostlygeek/llama-swap/internal/stats"
+	"github.com/mostlygeek/llama-swap/internal/stream"
 	"github.com/mostlygeek/llama-swap/internal/swaputil"
 	"github.com/mostlygeek/llama-swap/internal/warden"
 	configwatcher "github.com/mostlygeek/llama-swap/internal/watcher"
@@ -101,8 +102,9 @@ func (a activeModels) qualifyHere(requested string) (string, bool, bool) {
 // The request goes warden (key, class, never-kill), then the timing of each
 // request for a model this host serves (internal/stats), then Codex's catalog,
 // then the list cut to the key's allow list, then remote (another host's
-// model goes there), then the derived settings on the local models, then
-// llama-swap (0006). In front of all of it, failover sends a request for a
+// model goes there), then the derived settings on the local models, then a
+// WebSocket that names its model in ?model= sent to that model's /upstream/
+// path (0018), then llama-swap (0006). In front of all of it, failover sends a request for a
 // model in failover.yaml through that chain once per place it lists, until
 // one answers (0016).
 func startWarden(path, configPath, configDir string, httpServer *http.Server, active func() *server.Server, log *logmon.Monitor) {
@@ -121,7 +123,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	}
 	command := func(id string) ([]string, bool) { return active().ModelCommand(id) }
 	peerModel := func(id string) (string, string, bool) { return active().PeerModel(id) }
-	enriched := catalog.Enrich(httpServer.Handler, &catalog.Deriver{}, command, &catalog.Peers{Lookup: peerModel})
+	enriched := catalog.Enrich(stream.Route(httpServer.Handler), &catalog.Deriver{}, command, &catalog.Peers{Lookup: peerModel})
 	remotes := &remoteHolder{next: enriched, local: local, log: log}
 	if err := remotes.set(ctx, cfg.Remotes); err != nil {
 		slog.Error("failed to set up the remote hosts", "warden-config", path, "error", err)
@@ -191,6 +193,11 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 
 	reload := func() {
 		w.WhenNoInteractive("llama-swap config reload", func() {
+			// The reload stops every model: an idle session gets 1012 rather
+			// than a dropped connection (0018, 7).
+			if n := w.CloseSessions(stream.ServiceRestart, "infermux: the model configuration was reloaded"); n > 0 {
+				log.Infof("Closed %d idle session(s) for the config reload", n)
+			}
 			syscall.Kill(os.Getpid(), syscall.SIGHUP)
 		})
 	}

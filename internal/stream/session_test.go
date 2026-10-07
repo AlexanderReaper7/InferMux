@@ -366,6 +366,7 @@ func TestRoute(t *testing.T) {
 		{"GET", "/v1/realtime?intent=transcription", upgrade, "/v1/realtime?intent=transcription"},
 		{"GET", "/v1/realtime?model=qwen", nil, "/v1/realtime?model=qwen"},
 		{"GET", "/v1/realtime?model=qwen", map[string]string{"Upgrade": "websocket"}, "/v1/realtime?model=qwen"},
+		{"GET", "/v1/realtime?model=qwen", map[string]string{"Connection": "upgrade", "Upgrade": "h2c, WebSocket"}, "/upstream/qwen/v1/realtime?model=qwen"},
 		{"POST", "/v1/realtime?model=qwen", upgrade, "/v1/realtime?model=qwen"},
 		{"GET", "/upstream/qwen/ws?model=other", upgrade, "/upstream/qwen/ws?model=other"},
 		{"GET", "/comfyui/ws?model=x", upgrade, "/comfyui/ws?model=x"},
@@ -381,6 +382,11 @@ func TestRoute(t *testing.T) {
 		h.ServeHTTP(httptest.NewRecorder(), req)
 		if got != c.want {
 			t.Errorf("%s %s: %s, want %s", c.method, c.target, got, c.want)
+		}
+		// The warden tracks what WebSocket says yes to, so that has to cover
+		// everything Route sends to a model.
+		if Routed(req) != "" && !WebSocket(req) {
+			t.Errorf("%s %s %v: routed, and not a WebSocket for the warden", c.method, c.target, c.header)
 		}
 	}
 }

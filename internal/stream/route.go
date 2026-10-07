@@ -49,7 +49,14 @@ func Routed(r *http.Request) string {
 // Upgrade is a request to switch the connection to a WebSocket, with both
 // headers the switch needs.
 func Upgrade(r *http.Request) bool {
-	return hasToken(r.Header.Values("Connection"), "upgrade") && hasToken(r.Header.Values("Upgrade"), "websocket")
+	return hasToken(r.Header.Values("Connection"), "upgrade") && WebSocket(r)
+}
+
+// WebSocket is whether r's Upgrade header names a WebSocket. It holds for
+// every request Upgrade does, so the warden, which tracks a request this
+// says yes to, tracks everything Route sends to a model.
+func WebSocket(r *http.Request) bool {
+	return hasToken(r.Header.Values("Upgrade"), "websocket")
 }
 
 func hasToken(values []string, token string) bool {

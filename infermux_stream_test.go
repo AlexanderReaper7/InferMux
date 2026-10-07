@@ -1,0 +1,236 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/mostlygeek/llama-swap/internal/remote"
+	"github.com/mostlygeek/llama-swap/internal/server"
+	"github.com/mostlygeek/llama-swap/internal/store/sqlite"
+	"github.com/mostlygeek/llama-swap/internal/stream/wstest"
+)
+
+// seen is the upgrades a backend was sent, as it got them.
+type seen struct {
+	mu   sync.Mutex
+	reqs []*http.Request
+}
+
+func (s *seen) add(r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reqs = append(s.reqs, r)
+}
+
+func (s *seen) last(t *testing.T) *http.Request {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.reqs) == 0 {
+		t.Fatal("the backend got no upgrade")
+	}
+	return s.reqs[len(s.reqs)-1]
+}
+
+// streamChain is InferMux as startWarden builds it, in front of a llama-swap
+// whose model "stub" is an echo backend, with a remote host "zbox" that lists
+// "stub" and "gone" and answers 502 for "gone". gone fails over from zbox to
+// this host's stub.
+func streamChain(t *testing.T) (front *httptest.Server, local, zbox *seen) {
+	t.Helper()
+	local, zbox = &seen{}, &seen{}
+	echo := wstest.Echo()
+	backend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			return
+		}
+		local.add(r)
+		echo.ServeHTTP(rw, r)
+	}))
+	t.Cleanup(backend.Close)
+	other := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			io.WriteString(rw, `{"object":"list","data":[{"id":"stub","meta":{"llamaswap":{"type":"model"}}},{"id":"gone","meta":{"llamaswap":{"type":"model"}}}]}`)
+			return
+		}
+		zbox.add(r)
+		if r.URL.Query().Get("model") == "gone" {
+			http.Error(rw, "no such place", http.StatusBadGateway)
+			return
+		}
+		echo.ServeHTTP(rw, r)
+	}))
+	t.Cleanup(other.Close)
+
+	dir := t.TempDir()
+	t.Setenv("STATE_DIRECTORY", dir)
+	sum := sha256.Sum256([]byte("chain-key"))
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	write("keys.yaml", fmt.Sprintf("keys:\n  chain:\n    sha256: %s\n    class: interactive\n", hex.EncodeToString(sum[:])))
+	write("failover.yaml", "gone: [zbox, test/stub]\n")
+	wardenFile := write("warden.yaml", fmt.Sprintf("host: test\nkeys_file: keys.yaml\nfailover_file: failover.yaml\nremotes:\n  - name: zbox\n    url: %s\npolicy:\n  enabled: false\n", other.URL))
+
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(fmt.Sprintf(`
+healthCheckTimeout: 15
+logLevel: warn
+performance:
+  disabled: true
+models:
+  stub:
+    cmd: sleep 3600
+    proxy: %s
+    checkEndpoint: /health
+`, backend.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := logmon.NewGroup(io.Discard, true, true, true)
+	srv, err := server.New(cfg, logs, nil, st, server.BuildInfo{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		srv.Shutdown(5 * time.Second)
+		st.Close()
+	})
+	httpServer := &http.Server{Handler: srv}
+	startWarden(wardenFile, "", "", httpServer, func() *server.Server { return srv }, logs.ProxyLogs)
+	front = httptest.NewServer(httpServer.Handler)
+	t.Cleanup(front.Close)
+
+	// The remote's list is read once at the start.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		req, _ := http.NewRequest(http.MethodGet, front.URL+"/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer chain-key")
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if strings.Contains(string(body), `"zbox/stub"`) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("zbox's models never listed: %s %s", resp.Status, body)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("zbox's models never listed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return front, local, zbox
+}
+
+var chainKey = http.Header{"Sec-Websocket-Protocol": {"realtime, openai-insecure-api-key.chain-key"}}
+
+func echoes(t *testing.T, c *wstest.Client) {
+	t.Helper()
+	if op, p := c.RoundTrip(wstest.Text, []byte(`{"type":"session.update"}`)); op != wstest.Text || string(p) != `{"type":"session.update"}` {
+		t.Fatalf("text came back as %d %q", op, p)
+	}
+	audio := make([]byte, 40000)
+	for i := range audio {
+		audio[i] = byte(i * 13)
+	}
+	if op, p := c.RoundTrip(wstest.Binary, audio); op != wstest.Binary || string(p) != string(audio) {
+		t.Fatalf("binary came back as %d, %d bytes", op, len(p))
+	}
+}
+
+// A WebSocket that names its model in ?model= reaches that model's server at
+// the path and query the client sent, with the key in the subprotocol, the
+// way a browser has to send it (0018, 5).
+func TestAWebSocketReachesTheModelItNames(t *testing.T) {
+	front, local, _ := streamChain(t)
+
+	if c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=stub&intent=transcription", nil); c != nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no key: %s, want 401", resp.Status)
+	}
+	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=stub&intent=transcription", chainKey)
+	if c == nil {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("upgrade: %s %s", resp.Status, body)
+	}
+	echoes(t, c)
+	got := local.last(t)
+	if got.URL.Path != "/v1/realtime" || got.URL.RawQuery != "model=stub&intent=transcription" {
+		t.Fatalf("the backend got %s", got.URL)
+	}
+	if !strings.Contains(got.Header.Get("Sec-Websocket-Protocol"), "realtime") {
+		t.Fatalf("subprotocols %q", got.Header.Get("Sec-Websocket-Protocol"))
+	}
+
+	// Any path: Deepgram's and WhisperLiveKit's too.
+	for _, target := range []string{"/v1/listen?model=stub&encoding=linear16", "/asr?model=stub"} {
+		c, resp := wstest.Open(t, front.URL, target, chainKey)
+		if c == nil {
+			t.Fatalf("%s: %s", target, resp.Status)
+		}
+		echoes(t, c)
+		if got := local.last(t).URL.RequestURI(); got != target {
+			t.Fatalf("%s reached the backend as %s", target, got)
+		}
+	}
+
+	if c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=nobody", chainKey); c != nil || resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Fatal("a model nobody serves upgraded")
+	}
+}
+
+// Another host's model goes to that host as a request for its own name, with
+// the hop marked, so the host there routes it (0006, 2).
+func TestAWebSocketForAnotherHostsModelGoesThere(t *testing.T) {
+	front, local, zbox := streamChain(t)
+	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=zbox/stub", chainKey)
+	if c == nil {
+		t.Fatalf("upgrade: %s", resp.Status)
+	}
+	echoes(t, c)
+	got := zbox.last(t)
+	if got.URL.Path != "/v1/realtime" || got.URL.Query().Get("model") != "stub" || got.Header.Get(remote.HopHeader) == "" {
+		t.Fatalf("zbox got %s, hop %q", got.URL, got.Header.Get(remote.HopHeader))
+	}
+	if len(local.reqs) != 0 {
+		t.Fatal("this host's backend got it too")
+	}
+}
+
+// Failover decides before the upgrade: a place that answers 502 is passed
+// over, and the next one's session is the client's (0018, 9).
+func TestAWebSocketFailsOverBeforeTheUpgrade(t *testing.T) {
+	front, local, zbox := streamChain(t)
+	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=gone", chainKey)
+	if c == nil {
+		t.Fatalf("upgrade: %s", resp.Status)
+	}
+	echoes(t, c)
+	if got := zbox.last(t); got.URL.Query().Get("model") != "gone" {
+		t.Fatalf("zbox got %s", got.URL)
+	}
+	if got := local.last(t); got.URL.Path != "/v1/realtime" || got.URL.Query().Get("model") != "stub" {
+		t.Fatalf("the fallback got %s", got.URL)
+	}
+}
