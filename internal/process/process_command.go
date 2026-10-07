@@ -103,6 +103,8 @@ type startResult struct {
 	cancel    context.CancelFunc
 	handlerFn http.HandlerFunc
 	err       error
+	// InferMux: when READY=1 arrived (0019); zero when polled.
+	readyAt time.Time
 }
 
 type ProcessCommand struct {
@@ -178,6 +180,8 @@ func (p *ProcessCommand) run() {
 	// p.status mirrors `state` so State() can observe transitions; setState
 	// writes both.
 	state := StateStopped
+	// InferMux: the last start's startResult.readyAt, for ReadySince (0019).
+	var readyAt time.Time
 	setState := func(s ProcessState) {
 		old := state
 		state = s
@@ -185,6 +189,9 @@ func (p *ProcessCommand) run() {
 		if s == StateReady {
 			if old == StateReady {
 				next.ReadySince = p.status.Load().ReadySince
+			} else if !readyAt.IsZero() {
+				// InferMux: the moment READY=1 arrived (0019).
+				next.ReadySince = readyAt
 			} else {
 				next.ReadySince = time.Now()
 			}
@@ -344,6 +351,7 @@ func (p *ProcessCommand) run() {
 					// lastUse is zero on first start or stale after a restart, so TTL
 					// can unload it on the first one-second ticker tick.
 					p.lastUse.Store(time.Now().UnixNano())
+					readyAt = res.readyAt
 					setState(StateReady)
 					notifyWaiters(nil)
 					if req.block {
@@ -532,6 +540,14 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 
 	p.proxyLogger.Debugf("<%s> Executing start command: %s, env: %s", p.id, strings.Join(args, " "), strings.Join(p.config.Env, ", "))
 
+	// InferMux: a backend that opted in says READY=1 on this socket (0019).
+	notify, err := p.listenNotify(cmd)
+	if err != nil {
+		cmdCancel()
+		return startResult{err: err}
+	}
+	defer notify.close()
+
 	cmdDone := make(chan struct{})
 	if err := cmd.Start(); err != nil {
 		cmdCancel()
@@ -569,6 +585,19 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 
 	if startCtx.Err() != nil {
 		return abort(ErrStartAborted)
+	}
+
+	// InferMux: READY=1 in place of the polling below (0019).
+	if notify != nil {
+		readyAt, err := p.awaitNotify(startCtx, notify, cmd.Process.Pid, cmdDone, healthCheckTimeout, reverseProxy)
+		if errors.Is(err, errExitedBeforeReady) {
+			cmdCancel()
+			return startResult{err: err}
+		}
+		if err != nil {
+			return abort(err)
+		}
+		return startResult{cmd: cmd, cmdDone: cmdDone, cancel: cmdCancel, handlerFn: handlerFn, readyAt: readyAt}
 	}
 
 	checkEndpoint := strings.TrimSpace(p.config.CheckEndpoint)
