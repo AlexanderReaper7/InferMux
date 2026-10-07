@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -48,12 +49,16 @@ func (s *seen) last(t *testing.T) *http.Request {
 // streamChain is InferMux as startWarden builds it, in front of a llama-swap
 // whose model "stub" is an echo backend, with a remote host "zbox" that lists
 // "stub" and "gone" and answers 502 for "gone". gone fails over from zbox to
-// this host's stub.
-func streamChain(t *testing.T) (front *httptest.Server, local, zbox *seen) {
+// this host's stub. speech, when set, is the stub's /v1/audio/speech.
+func streamChain(t *testing.T, speech http.Handler) (front *httptest.Server, local, zbox *seen) {
 	t.Helper()
 	local, zbox = &seen{}, &seen{}
 	echo := wstest.Echo()
 	backend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/audio/speech" && speech != nil {
+			speech.ServeHTTP(rw, r)
+			return
+		}
 		if r.Header.Get("Upgrade") == "" {
 			return // the health check, and the catalog reading /v1/models
 		}
@@ -165,7 +170,7 @@ func echoes(t *testing.T, c *wstest.Client) {
 // the path and query the client sent, with the key in the subprotocol, the
 // way a browser has to send it (0018, 5).
 func TestAWebSocketReachesTheModelItNames(t *testing.T) {
-	front, local, _ := streamChain(t)
+	front, local, _ := streamChain(t, nil)
 
 	if c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=stub&intent=transcription", nil); c != nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no key: %s, want 401", resp.Status)
@@ -204,7 +209,7 @@ func TestAWebSocketReachesTheModelItNames(t *testing.T) {
 // Another host's model goes to that host as a request for its own name, with
 // the hop marked, so the host there routes it (0006, 2).
 func TestAWebSocketForAnotherHostsModelGoesThere(t *testing.T) {
-	front, local, zbox := streamChain(t)
+	front, local, zbox := streamChain(t, nil)
 	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=zbox/stub", chainKey)
 	if c == nil {
 		t.Fatalf("upgrade: %s", resp.Status)
@@ -222,7 +227,7 @@ func TestAWebSocketForAnotherHostsModelGoesThere(t *testing.T) {
 // Failover decides before the upgrade: a place that answers 502 is passed
 // over, and the next one's session is the client's (0018, 9).
 func TestAWebSocketFailsOverBeforeTheUpgrade(t *testing.T) {
-	front, local, zbox := streamChain(t)
+	front, local, zbox := streamChain(t, nil)
 	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=gone", chainKey)
 	if c == nil {
 		t.Fatalf("upgrade: %s", resp.Status)
@@ -239,7 +244,7 @@ func TestAWebSocketFailsOverBeforeTheUpgrade(t *testing.T) {
 // A session through the whole chain is followed by the warden while it is
 // open and leaves one stats row when it ends (0018, 6 and 8).
 func TestASessionThroughTheChainIsOneStatsRow(t *testing.T) {
-	front, _, _ := streamChain(t)
+	front, _, _ := streamChain(t, nil)
 	get := func(path string, into any) {
 		t.Helper()
 		req, _ := http.NewRequest(http.MethodGet, front.URL+path, nil)
@@ -321,5 +326,79 @@ func TestASessionThroughTheChainIsOneStatsRow(t *testing.T) {
 	}
 	if len(h.Models) != 1 || h.Models[0].Sessions != 1 {
 		t.Errorf("summary %+v", h.Models)
+	}
+}
+
+// Text to speech in chunks of unknown length reaches the client chunk by
+// chunk (0018, 5): the stub sends the next chunk only once the client has the
+// last one, so a reply held anywhere in the chain never completes. The stats
+// time its first chunk as its first output (0018, 8).
+func TestSpeechChunksArriveAsTheyAreSent(t *testing.T) {
+	// Smaller than net/http's 4 KB write buffer, so a flush lost on the way holds it.
+	const chunks, size = 5, 1000
+	received := make(chan int)
+	front, _, _ := streamChain(t, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		rw.Header().Set("Content-Type", "audio/pcm")
+		for i := range chunks {
+			rw.Write(bytes.Repeat([]byte{byte(i + 1)}, size))
+			rw.(http.Flusher).Flush()
+			select {
+			case got := <-received:
+				if got != i {
+					t.Errorf("the client had chunk %d, want %d", got, i)
+				}
+			case <-time.After(5 * time.Second):
+				t.Errorf("chunk %d never reached the client", i)
+				return
+			}
+		}
+	}))
+	req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/audio/speech", strings.NewReader(`{"model":"stub","input":"hej","response_format":"pcm"}`))
+	req.Header.Set("Authorization", "Bearer chain-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 || resp.ContentLength != -1 {
+		t.Fatalf("%s, length %d", resp.Status, resp.ContentLength)
+	}
+	for i := range chunks {
+		chunk := make([]byte, size)
+		if _, err := io.ReadFull(resp.Body, chunk); err != nil {
+			t.Fatalf("chunk %d: %v", i, err)
+		}
+		if !bytes.Equal(chunk, bytes.Repeat([]byte{byte(i + 1)}, size)) {
+			t.Fatalf("chunk %d came changed", i)
+		}
+		received <- i
+	}
+	if rest, _ := io.ReadAll(resp.Body); len(rest) != 0 {
+		t.Fatalf("%d bytes after the last chunk", len(rest))
+	}
+
+	var requests struct {
+		Hosts []struct {
+			Requests []struct {
+				Path          string   `json:"path"`
+				TTFTMs        *float64 `json:"ttft_ms"`
+				DurationMs    float64  `json:"duration_ms"`
+				ResponseBytes int64    `json:"response_bytes"`
+			} `json:"requests"`
+		} `json:"hosts"`
+	}
+	get, _ := http.NewRequest(http.MethodGet, front.URL+"/warden/requests", nil)
+	get.Header.Set("Authorization", "Bearer chain-key")
+	r2, err := http.DefaultClient.Do(get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Body.Close()
+	json.NewDecoder(r2.Body).Decode(&requests)
+	rows := requests.Hosts[0].Requests
+	if len(rows) != 1 || rows[0].Path != "/v1/audio/speech" || rows[0].TTFTMs == nil || *rows[0].TTFTMs > rows[0].DurationMs || rows[0].ResponseBytes != chunks*size {
+		t.Fatalf("rows %+v", rows)
 	}
 }
