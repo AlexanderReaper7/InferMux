@@ -247,9 +247,9 @@ func TestOutput(t *testing.T) {
 		`{"status":"active_transcription","lines":[],"buffer_transcription":"he"}`:              true,
 		`{"type":"session.created","session":{}}`:                                               false,
 		`{"type":"Results","channel":{"alternatives":[{"transcript":""}]}}`:                     false,
-		`{"type":"Metadata"}`:                                                                    false,
-		`{"type":"config","useAudioWorklet":true}`:                                               false,
-		`not json`:                                                                               false,
+		`{"type":"Metadata"}`:                      false,
+		`{"type":"config","useAudioWorklet":true}`: false,
+		`not json`: false,
 	} {
 		if got := carriesOutput([]byte(msg)); got != want {
 			t.Errorf("%s: %v", msg, got)
@@ -388,4 +388,6 @@ func TestRoute(t *testing.T) {
 // httpHandler hands the test the path and query a request arrived with.
 type httpHandler func(path, query string)
 
-func (h httpHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) { h(r.URL.Path, r.URL.RawQuery) }
+func (h httpHandler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	h(r.URL.Path, r.URL.RawQuery)
+}
