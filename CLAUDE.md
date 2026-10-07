@@ -26,6 +26,7 @@ This file is rules and navigation only.
 | `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005) |
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build |
 | `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
+| `session.go` and `session_test.go` in `internal/router/`, `internal/router/scheduler/`, `internal/process/` | ours: an idle session holds no slot, blocks no swap and keeps no TTL off in llama-swap (0018, 10), called from the lines marked `InferMux` in `base.go`, `fifo.go` and `process_command.go` |
 | `llama-swap.go` | upstream's `main`, plus one flag and one call |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
@@ -34,8 +35,9 @@ This file is rules and navigation only.
 ```sh
 nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/...  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
-nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c go test -short ./internal/server/ ./internal/router/... .  # upstream's tests where we touch it
+nix develop -c go test -run 'Session' ./internal/process/  # ours in llama-swap's process; the rest of its suite needs build/simple-responder and /bin/bash
+nix develop -c gofmt -l infermux.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream cmd internal/server/warden.go internal/server/warden_test.go internal/router/session.go internal/router/session_test.go internal/router/scheduler/session.go internal/router/scheduler/session_test.go internal/process/session.go internal/process/session_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
@@ -71,7 +73,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **A failed probe leaves the verdict alone, and so does an unreadable ComfyUI queue.** Neither is evidence that the GPU is free.
 - **The models are unloaded once per yield** (0002), owed from the transition and paid when interactive traffic is quiet (0004). Unloading every tick would fight a client the user chose to let through.
 - **Free VRAM is only read while no model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001).
-- **A WebSocket counts toward the warden only while data frames cross** (0018). An open connection and a ping count for nothing. Anything that stops a model under a session closes it first with 1013 or 1012; the backend's death is a 1006 the client cannot tell from a crash.
+- **A WebSocket counts toward the warden, and in llama-swap's scheduler and TTL, only while data frames cross** (0018, 10). An open connection and a ping count for nothing. Anything that stops a model under a session closes it first with 1013 or 1012; the backend's death is a 1006 the client cannot tell from a crash.
 - **A llama-swap config reload waits for quiet** (0005). It stops every model, so it goes through `WhenNoInteractive`, never `-watch-config`.
 - **The UI never pushes, and commits only when the user presses Commit** (0005).
 - **ComfyUI is contention, never ours.** It is not in `our_units` and it is not a consumer. It is a tenant the warden watches and frees (0002). `comfyui_unit` names it so the config loader refuses it in `our_units`.

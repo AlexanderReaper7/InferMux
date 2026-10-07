@@ -111,12 +111,13 @@ in
     cp -r ${ui}/ui_dist internal/server/
   '';
 
-  # The warden's and the UI's tests, and llama-swap's for the two places
-  # InferMux touches. The rest of upstream's suite starts processes and is
-  # upstream's to run.
+  # The warden's and the UI's tests, and llama-swap's for the places InferMux
+  # touches: the server, the router, and in the process only ours, since the
+  # rest of its suite starts processes and is upstream's to run.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/server/ ./internal/router/... .
+    go test -count=1 -run 'Session' ./internal/process/
     runHook postCheck
   '';
 
