@@ -134,6 +134,8 @@ type ProcessCommand struct {
 	// It is initialized when the process becomes Ready and updated after ServeHTTP completes.
 	lastUse  atomic.Int64
 	inflight atomic.Int64 // current in-flight ServeHTTP calls
+	// InferMux: the WebSocket sessions among inflight (0018, 10).
+	sessions sessionSet
 }
 
 var _ Process = (*ProcessCommand)(nil)
@@ -367,11 +369,13 @@ func (p *ProcessCommand) run() {
 								if p.State() != StateReady {
 									return
 								}
-								if p.inflight.Load() != 0 {
+								// InferMux: an idle session is not in flight (0018, 10).
+								if p.busy() {
 									continue
 								}
-								if time.Since(time.Unix(0, p.lastUse.Load())) > ttlDuration {
+								if time.Since(p.idleSince()) > ttlDuration {
 									p.proxyLogger.Infof("<%s> Unloading model, TTL of %ds reached", p.id, p.config.UnloadAfter)
+									p.closeSessionsForTTL() // InferMux (0018, 10)
 									p.Stop(time.Duration(p.config.UnloadTimeout) * time.Second)
 									return
 								}
@@ -834,6 +838,9 @@ func (p *ProcessCommand) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.config.Compat.IgnoreWebsockets && swaputil.IsWebSocketUpgrade(r) {
 		(*fn)(w, r)
+		return
+	}
+	if p.serveSession(*fn, w, r) { // InferMux (0018, 10)
 		return
 	}
 	p.inflight.Add(1)

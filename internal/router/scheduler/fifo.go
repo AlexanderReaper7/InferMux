@@ -129,7 +129,7 @@ func (s *FIFO) OnRequest(req HandlerReq) {
 	}
 
 	// (5) Would evict a busy process — queue until it drains.
-	if conflictsWithInFlight(evict, s.inFlight) {
+	if conflictsWithInFlight(evict, s.busyInFlight()) { // InferMux: idle sessions are not busy (0018, 10)
 		s.logger.Debugf("%s: queuing request for model %s (would evict in-flight process)", s.name, req.Model)
 		s.enqueue(req)
 		return
@@ -212,6 +212,9 @@ func (s *FIFO) OnServeDone(ev ServeDoneEvent) {
 	s.release(ev.ModelID)
 	if s.inFlight[ev.ModelID] <= 0 {
 		delete(s.inFlight, ev.ModelID)
+		s.drainQueue()
+	} else if s.inFlight[ev.ModelID] <= s.idle(ev.ModelID) {
+		// InferMux: only idle sessions are left on it (0018, 10).
 		s.drainQueue()
 	}
 }
@@ -306,7 +309,7 @@ func (s *FIFO) grantError(req HandlerReq, err error) {
 // one future serving slot until they serve, cancel while waiting, or receive a
 // post-admission error.
 func (s *FIFO) admit(req HandlerReq) bool {
-	if s.reserved[req.Model] >= s.limit(req.Model) {
+	if s.reserved[req.Model]-s.idle(req.Model) >= s.limit(req.Model) { // InferMux: an idle session holds no slot (0018, 10)
 		s.rejectAdmission(req, swaputil.ConcurrencyLimitError{})
 		return false
 	}
@@ -429,7 +432,7 @@ func (s *FIFO) drainQueue() {
 			remaining = append(remaining, req)
 			continue
 		}
-		if conflictsWithInFlight(evict, s.inFlight) {
+		if conflictsWithInFlight(evict, s.busyInFlight()) { // InferMux (0018, 10)
 			remaining = append(remaining, req)
 			continue
 		}

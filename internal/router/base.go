@@ -59,6 +59,8 @@ type baseRouter struct {
 	unloadCh    chan unloadReq
 	swapDoneCh  chan scheduler.SwapDone
 	serveDoneCh chan scheduler.ServeDoneEvent
+	// InferMux: a session on this model stopped moving data (0018, 10).
+	sessionIdleCh chan string
 
 	runDone chan struct{}
 
@@ -95,6 +97,8 @@ func newBaseRouter(
 		swapDoneCh:  make(chan scheduler.SwapDone),
 		serveDoneCh: make(chan scheduler.ServeDoneEvent),
 		runDone:     make(chan struct{}),
+		// InferMux (0018, 10)
+		sessionIdleCh: make(chan string),
 	}
 	sched, err := scheduler.New(conf, name, logger, planner, b)
 	if err != nil {
@@ -138,6 +142,9 @@ func (b *baseRouter) run() {
 
 		case ev := <-b.serveDoneCh:
 			b.schedule.OnServeDone(ev)
+
+		case modelID := <-b.sessionIdleCh: // InferMux (0018, 10)
+			b.onSessionIdle(modelID)
 		}
 	}
 }
@@ -236,6 +243,7 @@ func (b *baseRouter) trackedServe(modelID string, p process.Process) http.Handle
 			case <-b.shutdownCtx.Done():
 			}
 		}()
+		defer b.watchSession(modelID, r)() // InferMux (0018, 10)
 		p.ServeHTTP(w, r)
 	}
 }
@@ -248,6 +256,7 @@ func (b *baseRouter) doSwap(modelID string, toStop []string) {
 		wg.Add(1)
 		go func(p process.Process, id string) {
 			defer wg.Done()
+			closeSessions(p, id, modelID) // InferMux (0018, 7)
 			if err := p.Stop(timeout); err != nil {
 				b.logger.Warnf("%s: stopping %s failed: %v", b.name, id, err)
 			}

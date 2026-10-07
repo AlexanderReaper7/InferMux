@@ -112,6 +112,17 @@ func (s *Session) Moving(now time.Time) (moving, upgraded bool) {
 	return now.Sub(last) < ActiveWindow, true
 }
 
+// Idle is whether the session is upgraded and moved no data within
+// ActiveWindow, on the session's own clock, and when its last data crossed.
+// llama-swap's scheduler and TTL read it (0018, 10).
+func (s *Session) Idle() (idle bool, last time.Time) {
+	last, ok := s.LastData()
+	if !ok {
+		return false, time.Time{}
+	}
+	return s.now().Sub(last) >= ActiveWindow, last
+}
+
 // touch stamps a data frame. Both directions call it, so the stamp only
 // moves forward, and each gap between two stamps is split into active and
 // idle time once.
