@@ -1,6 +1,7 @@
 package stream
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"strings"
@@ -157,6 +158,10 @@ func (s *Session) payload(d *side, p []byte) {
 			d.peek[start+i] = d.unmask(p[i], d.at+uint64(i))
 		}
 	}
+	// A message whose start has no mark is passed on unread from there.
+	if start < markWindow && len(d.peek) >= markWindow && !marked(d.peek) {
+		d.peeking, d.watch, d.peek = false, false, d.peek[:0]
+	}
 }
 
 func (d *side) unmask(b byte, at uint64) byte {
@@ -196,11 +201,33 @@ func (s *Session) output() {
 	}
 }
 
+// outputMarks are the bytes a message that carries output has, one of them
+// at least, within its first markWindow bytes: OpenAI's events start with
+// their type, Deepgram's transcript comes before its words, WhisperLiveKit's
+// lines near the start. A message with none is not parsed, so a backend's
+// large text frame costs a search of 1 KB, not of the frame.
+var outputMarks = [][]byte{[]byte(`.delta"`), []byte(`input_audio_transcription.completed"`), []byte(`"transcript"`), []byte(`"lines"`), []byte(`"buffer_transcription"`)}
+
+const markWindow = 1 << 10
+
+func marked(msg []byte) bool {
+	head := msg[:min(len(msg), markWindow)]
+	for _, m := range outputMarks {
+		if bytes.Contains(head, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // carriesOutput is whether one of the backend's JSON messages carries
 // output (0018, 8): an OpenAI realtime delta, of a transcript, text or
 // audio, or a finished input transcription; a Deepgram Results with a
 // transcript; a WhisperLiveKit update with text.
 func carriesOutput(msg []byte) bool {
+	if !marked(msg) {
+		return false
+	}
 	var e struct {
 		Type    string `json:"type"`
 		Channel *struct {

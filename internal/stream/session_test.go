@@ -257,6 +257,29 @@ func TestOutput(t *testing.T) {
 	}
 }
 
+// A text message is searched for output in its first 1 KB only, however the
+// writes cut it, and parsed whole when it has a mark there.
+func TestOutputIsLookedForAtAMessagesStart(t *testing.T) {
+	late := frame(1, true, false, []byte(`{"pad":"`+strings.Repeat("a", 2000)+`","type":"response.output_text.delta"}`))
+	audio := []byte(`{"type":"response.output_audio.delta","delta":"` + strings.Repeat("A", 40000) + `"}`)
+	for seed := range 20 {
+		c := &clock{t: t0}
+		s := New(t0, c.now)
+		s.Attach(sink{})
+		rng := rand.New(rand.NewPCG(uint64(seed), 1))
+		c.add(time.Second)
+		feed(s, &s.toClient, late, rng)
+		c.add(time.Second)
+		// One message in two frames, with a ping between them.
+		feed(s, &s.toClient, frame(1, false, false, audio[:30000]), rng)
+		feed(s, &s.toClient, frame(9, true, false, nil), rng)
+		feed(s, &s.toClient, frame(0, true, false, audio[30000:]), rng)
+		if r := s.Report(c.now()); r.Output == nil || *r.Output != 2*time.Second {
+			t.Fatalf("seed %d: output %v, want the audio delta at 2s", seed, r.Output)
+		}
+	}
+}
+
 func TestABinaryFrameFromTheBackendIsOutput(t *testing.T) {
 	c := &clock{t: t0}
 	s := New(t0, c.now)
