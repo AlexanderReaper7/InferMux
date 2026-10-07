@@ -131,7 +131,7 @@ func TestProcessCommand_StopForkingWrapper(t *testing.T) {
 	// keeps the inherited pipe fds open. This is the scenario reported in
 	// the v219 regression.
 	wrapper := filepath.Join(dir, "wrapper.sh")
-	script := fmt.Sprintf("#!/bin/bash\n%q -port %d -silent &\necho $! > %q\nwait\n",
+	script := fmt.Sprintf("#!/usr/bin/env bash\n%q -port %d -silent &\necho $! > %q\nwait\n",
 		simpleResponderPath, port, pidFile)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -203,7 +203,7 @@ func TestProcessCommand_StopHonorsGracefulTimeout(t *testing.T) {
 	// SIGTERM ahead of it (CheckEndpoint:none marks ready before bash runs).
 	script := filepath.Join(dir, "graceful.sh")
 	body := fmt.Sprintf(
-		"#!/bin/bash\ncleanup() { sleep 0.6; echo done > %q; exit 0; }\ntrap cleanup SIGTERM\necho ready > %q\nwhile true; do sleep 0.1; done\n",
+		"#!/usr/bin/env bash\ncleanup() { sleep 0.6; echo done > %q; exit 0; }\ntrap cleanup SIGTERM\necho ready > %q\nwhile true; do sleep 0.1; done\n",
 		marker, ready,
 	)
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
@@ -273,7 +273,7 @@ func TestProcessCommand_StopReapsForkedGrandchild(t *testing.T) {
 	pidFile := filepath.Join(dir, "child.pid")
 
 	wrapper := filepath.Join(dir, "wrapper.sh")
-	script := fmt.Sprintf("#!/bin/bash\n%q -port %d -silent &\necho $! > %q\nwait\n",
+	script := fmt.Sprintf("#!/usr/bin/env bash\n%q -port %d -silent &\necho $! > %q\nwait\n",
 		simpleResponderPath, port, pidFile)
 	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
 		t.Fatalf("WriteFile: %v", err)

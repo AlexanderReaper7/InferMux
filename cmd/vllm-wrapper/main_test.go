@@ -108,7 +108,7 @@ func TestStartDaemonArgv(t *testing.T) {
 
 	script := filepath.Join(tmpDir, "write-argv.sh")
 	if err := os.WriteFile(script, []byte(
-		"#!/bin/bash\nprintf '%s\n' \"$@\" > \""+argvFile+"\"\nexit 0\n",
+		"#!/usr/bin/env bash\nprintf '%s\n' \"$@\" > \""+argvFile+"\"\nexit 0\n",
 	), 0755); err != nil {
 		t.Fatalf("write helper script: %v", err)
 	}
