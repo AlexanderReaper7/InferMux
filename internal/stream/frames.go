@@ -151,16 +151,32 @@ func (s *Session) payload(d *side, p []byte) {
 		d.peeking, d.watch, d.peek = false, false, nil
 		return
 	}
+	at := d.at
+	if len(d.peek) < markWindow {
+		// The start first: a message without a mark there is passed on
+		// unread from then on.
+		head := min(len(p), markWindow-len(d.peek))
+		d.keep(p[:head], at)
+		if len(d.peek) < markWindow {
+			return
+		}
+		if !marked(d.peek) {
+			d.peeking, d.watch, d.peek = false, false, d.peek[:0]
+			return
+		}
+		p, at = p[head:], at+uint64(head)
+	}
+	d.keep(p, at)
+}
+
+// keep adds p, which starts at the frame's payload byte at, to the peek.
+func (d *side) keep(p []byte, at uint64) {
 	start := len(d.peek)
 	d.peek = append(d.peek, p...)
 	if d.masked {
 		for i := range p {
-			d.peek[start+i] = d.unmask(p[i], d.at+uint64(i))
+			d.peek[start+i] = d.unmask(p[i], at+uint64(i))
 		}
-	}
-	// A message whose start has no mark is passed on unread from there.
-	if start < markWindow && len(d.peek) >= markWindow && !marked(d.peek) {
-		d.peeking, d.watch, d.peek = false, false, d.peek[:0]
 	}
 }
 
