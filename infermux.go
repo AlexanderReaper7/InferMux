@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/catalog"
 	"github.com/mostlygeek/llama-swap/internal/failover"
@@ -147,6 +148,13 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			return name, ok
 		},
 		Client: warden.Client,
+		Ready: func(model string) (time.Time, string, bool) {
+			id, local := strings.CutPrefix(model, cfg.Host+"/")
+			if !local {
+				return time.Time{}, "", false
+			}
+			return active().ModelReady(id)
+		},
 	}
 	w.Handle("GET /warden/requests", stats.Handler(recorder, cfg.Host, func(ctx context.Context) []stats.Host {
 		var hosts []stats.Host

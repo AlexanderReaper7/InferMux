@@ -257,3 +257,38 @@ func TestACloudResponsesReplyReadsTheUsageInsideTheResponse(t *testing.T) {
 		t.Errorf("prompt %v cached %v output %v decode %v", val(r.PromptTokens), val(r.CachedTokens), val(r.OutputTokens), val(r.DecodePerSecond))
 	}
 }
+
+// A request that waited for its model's load gets the time to READY=1; one
+// for a model that was already ready gets nothing (0019).
+func TestARequestThatWaitedForTheLoadHasItsReadyTime(t *testing.T) {
+	c := &clock{t: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)}
+	rec := recorder(c)
+	var readyAt time.Time
+	rec.Ready = func(model string) (time.Time, string, bool) {
+		if model != "reaperboi/qwen" {
+			t.Errorf("Ready asked for %q", model)
+		}
+		return readyAt, "notify", true
+	}
+	load := 812
+	h := rec.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if load > 0 {
+			c.wait(load)
+			readyAt = c.t
+			load = 0
+		}
+		c.wait(3)
+		io.WriteString(rw, `{}`)
+	}))
+	for range 2 {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/audio/transcriptions", strings.NewReader(`{}`)))
+	}
+
+	got := rec.Recent()
+	if r := got[1]; val(r.ReadyMs) != 812.0 || r.ReadyBy != "notify" {
+		t.Fatalf("the request that waited: ready_ms %v, ready_by %q", val(r.ReadyMs), r.ReadyBy)
+	}
+	if r := got[0]; r.ReadyMs != nil || r.ReadyBy != "" {
+		t.Fatalf("a request to a ready model: ready_ms %v, ready_by %q", val(r.ReadyMs), r.ReadyBy)
+	}
+}

@@ -65,6 +65,13 @@ type Request struct {
 	ResponseBytes int64 `json:"response_bytes"`
 	// Session is set for a WebSocket that was upgraded, whose status is 101.
 	Session *Session `json:"session,omitempty"`
+	// ReadyMs is from the arrival to the model becoming ready, for a request
+	// that waited for its model to load (0019). ReadyBy is how InferMux
+	// learnt it: "notify" when the backend sent READY=1, the moment it did;
+	// "health" when a poll of its health endpoint saw 200, up to 1.25 s
+	// after it was; "start" when nothing was checked.
+	ReadyMs *float64 `json:"ready_ms,omitempty"`
+	ReadyBy string   `json:"ready_by,omitempty"`
 }
 
 // Session is what a WebSocket session did after its upgrade (0018, 8).
@@ -93,6 +100,9 @@ type Recorder struct {
 	Model func(r *http.Request) (model string, here bool)
 	// Client names the key the request came with.
 	Client func(r *http.Request) string
+	// Ready is when a model Model named last became ready, and how that was
+	// learnt; false for one that is not ready here (0019).
+	Ready func(model string) (at time.Time, by string, ok bool)
 
 	mu       sync.Mutex
 	next     uint64
@@ -157,8 +167,25 @@ func (rec *Recorder) Wrap(next http.Handler) http.Handler {
 		}
 		out := w.request(model, client, r.URL.Path)
 		out.RequestBytes = body.n
+		rec.ready(&out)
 		rec.add(out)
 	})
+}
+
+// ready gives a request that arrived before its model was ready the time it
+// waited for it. Read when the request ends, since a model is not unloaded
+// under a request in flight.
+func (rec *Recorder) ready(out *Request) {
+	if rec.Ready == nil {
+		return
+	}
+	at, by, ok := rec.Ready(out.Model)
+	if !ok || !at.After(out.Time) {
+		return
+	}
+	waited := ms(at.Sub(out.Time))
+	out.ReadyMs = &waited
+	out.ReadyBy = by
 }
 
 // session records a WebSocket when it ends. Until the upgrade it is a
@@ -176,6 +203,7 @@ func (rec *Recorder) session(next http.Handler, rw http.ResponseWriter, r *http.
 		client = rec.Client(r)
 	}
 	out := w.request(model, client, r.URL.Path)
+	rec.ready(&out)
 	end := rec.clock()
 	report := s.Report(end)
 	if !report.Upgraded {
