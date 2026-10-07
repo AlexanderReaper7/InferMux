@@ -37,7 +37,7 @@ How it is built, the agent's choices:
 8. **A session is one row in the stats** (0014), added when it ends:
    - `ttft_ms` is from the request's arrival to the first output, a model load included, as for a request.
    - `session.upgrade_ms` is from arrival to the 101.
-   - `session.first_output_ms` is from the client's first data frame after the upgrade to the backend's first output. Output is a binary frame from the backend, which is audio, or a text frame whose JSON carries text: an event whose `type` ends in `.delta` (OpenAI's realtime transcript, text and audio deltas), an `input_audio_transcription.completed` event, a Deepgram `Results` with a transcript, or a WhisperLiveKit message with text in `lines` or `buffer_transcription`. This is the first transcript delta for speech to text and the first audio chunk for text to speech. Text frames are read for it only until the first output, and only up to 64 KB each.
+   - `session.first_output_ms` is from the client's first data frame after the upgrade to the backend's first output. Output is a binary frame from the backend, which is audio, or a text frame whose JSON carries text: an event whose `type` ends in `.delta` (OpenAI's realtime transcript, text and audio deltas), an `input_audio_transcription.completed` event, a Deepgram `Results` with a transcript, or a WhisperLiveKit message with text in `lines` or `buffer_transcription`. This is the first transcript delta for speech to text and the first audio chunk for text to speech. Text messages are read for it only until the first output: a message is parsed only when its first 1 KB holds one of the marks those formats start with (`.delta"`, `input_audio_transcription.completed"`, `"transcript"`, `"lines"`, `"buffer_transcription"`), and only up to 64 KB. Without the 1 KB bound a 32 KB text frame cost 37 µs to search; with it, 1.4 µs.
    - `request_bytes` and `response_bytes` are every byte after the upgrade, client to backend and back, frame headers included.
    - `duration_ms` is from arrival to the end. `session.active_ms` and `session.idle_ms` split the time after the upgrade by 6's rule: the 10 s after each data frame are active, and the rest is idle.
    - `session.close_code` and `session.closed_by` (`client`, `backend` or `infermux`) come from the first close frame either way.
@@ -50,6 +50,25 @@ How it is built, the agent's choices:
 - **Translation between protocols** (1).
 - **WebRTC.** Its media goes over UDP between peers that negotiate through a signalling server, so it does not pass through an HTTP proxy, and no backend here speaks it.
 - **The Responses API over WebSocket.** `streaming-measure` put what it could save at the InferMux hop, 4.6 ms of a 48k-token turn, against 61.6 ms of llama-server's own handling that stays, because InferMux would still send the whole history to llama-server over HTTP.
+
+## Measured
+
+2026-10-07, on this machine (Ryzen 9 9900X), loopback, at a load average of 32 to 35 from other builds. Raw results and scripts are in `~/Projects/scratch/streaming-measure/latency/`.
+
+End to end: a stub backend (`latency stub`) on CPUs 0-1; InferMux before this change (`a8c309c`) on :5102 and after it (`6e5d46b`) on :5103, both on CPUs 6-11; the client on CPUs 2-3. Each of 5 repetitions measured direct, through before and through after in turn, so load that drifted hit all three alike: 5 000 WebSocket round trips (one binary frame sent and echoed), 1 000 SSE events and 1 000 chunks of 4 096 B of `audio/pcm`, the last two one way from a send stamp. The numbers are the median over the repetitions of each one's p50, in µs, and the median of the paired difference after minus before, with its range:
+
+| | direct | before | after | after - before |
+|---|---|---|---|---|
+| WebSocket 16 B, `/upstream/stub/ws` | 10.5 | 47.2 | 45.3 | -2.7 [-3.1, +10.5] |
+| WebSocket 16 B, `/v1/realtime?model=stub` | | answered 404 | 46.4 | -1.6 [-3.2, +3.2], against `/upstream/` before |
+| WebSocket 32 KB, `/upstream/stub/ws` | 63.4 | 128.7 | 135.4 | +2.9 [-76.3, +36.3] |
+| WebSocket 32 KB, `/v1/realtime?model=stub` | | answered 404 | 144.3 | +11.1 [-86.1, +15.7], against `/upstream/` before |
+| SSE event | 115.0 | 215.9 | 234.3 | -0.0 [-8.4, +138.7] |
+| speech chunk, 4 KB | 104.8 | 216.6 | 221.4 | +4.8 [-34.7, +58.7] |
+
+The p99s, 1.9 to 4.5 ms, moved by milliseconds between repetitions of the same binary, so at that load they resolve nothing under a millisecond.
+
+The session alone: `BenchmarkFrame` calls Read and Write on the client's connection with and without the session around a connection that does nothing, 8 runs of 1 000 000 calls on two pinned cores. The session adds 67 ns to a write of a 16 B frame and 74 ns to one of 32 KB, 69 ns and 107 ns to a read, and 114 ns and 1.1 µs to a backend text frame before the first output, which is searched for a mark. A round trip passes one read and one write, about 140 ns, 0.5% of the 29 µs that InferMux's hop adds at p50 for a 16 B frame, and a fraction of the end-to-end spread above. The clock read per data frame is the largest part. The per-frame cost is therefore not measurable end to end at this load; a quiet machine has not been tried.
 
 ## Consequences
 
