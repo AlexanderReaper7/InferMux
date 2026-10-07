@@ -180,7 +180,13 @@
             <li class="flex justify-between border-t border-neutral-900 py-1">
               <span class={f.class === "batch" ? "text-amber-300" : "text-sky-300"}>{f.class}</span>
               <span class="text-neutral-400">{f.path}</span>
-              <span>{f.age_seconds} s</span>
+              {#if f.session}
+                <span class={f.session.moving ? "" : "text-neutral-500"} title="a session counts while data moves (0018)"
+                  >session, {f.session.moving ? "moving data" : `idle ${f.session.idle_seconds} s`}, open {f.age_seconds} s</span
+                >
+              {:else}
+                <span>{f.age_seconds} s</span>
+              {/if}
             </li>
           {/each}
         </ul>

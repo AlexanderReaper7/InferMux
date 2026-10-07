@@ -61,6 +61,8 @@ export interface Flight {
   class: "interactive" | "batch";
   path: string;
   age_seconds: number;
+  // an upgraded WebSocket (0018): in flight while data moves
+  session?: { moving: boolean; idle_seconds: number };
 }
 
 export interface VerdictState {
@@ -250,6 +252,17 @@ export interface RequestStat {
   // absent from a host older than 2026-10-06
   request_bytes?: number;
   response_bytes?: number;
+  // a WebSocket session, status 101 (0018, 8)
+  session?: SessionStat;
+}
+
+export interface SessionStat {
+  upgrade_ms: number;
+  first_output_ms: number | null;
+  active_ms: number;
+  idle_ms: number;
+  close_code?: number;
+  closed_by?: "client" | "backend" | "infermux";
 }
 
 export interface ModelStat {
@@ -263,6 +276,9 @@ export interface ModelStat {
   decode_per_second: Spread | null;
   cache_share: number | null;
   draft_acceptance: number | null;
+  // absent from a host older than 2026-10-07
+  sessions?: number;
+  first_output_ms?: Spread | null;
 }
 
 export interface HostStats {
