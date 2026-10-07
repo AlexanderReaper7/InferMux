@@ -43,7 +43,8 @@ type Session struct {
 	start time.Time
 	now   func() time.Time
 
-	// Offsets from start, in nanoseconds. 0 is not yet.
+	// Offsets from start in nanoseconds, plus one, so 0 is not yet and the
+	// gap between two is exact.
 	upgraded atomic.Int64
 	last     atomic.Int64 // the last data frame, or the upgrade before one
 	firstIn  atomic.Int64 // the client's first data frame
@@ -77,7 +78,7 @@ func New(start time.Time, now func() time.Time) *Session {
 	return s
 }
 
-func (s *Session) offset() int64 { return max(int64(s.now().Sub(s.start)), 1) }
+func (s *Session) offset() int64 { return max(int64(s.now().Sub(s.start)), 0) + 1 }
 
 // Attach is the client's connection as the upgrade hands it over. Every byte
 // after the upgrade goes through the returned connection unchanged.
@@ -98,7 +99,7 @@ func (s *Session) LastData() (time.Time, bool) {
 	if last == 0 {
 		return time.Time{}, false
 	}
-	return s.start.Add(time.Duration(last)), true
+	return s.start.Add(time.Duration(last - 1)), true
 }
 
 // Moving is whether data crossed within ActiveWindow of now. False before the
@@ -248,16 +249,16 @@ func (s *Session) Report(end time.Time) Report {
 	if up == 0 {
 		return r
 	}
-	r.Upgraded, r.Upgrade = true, time.Duration(up)
+	r.Upgraded, r.Upgrade = true, time.Duration(up-1)
 	active, idle := s.active.Load(), s.idle.Load()
-	if tail := int64(end.Sub(s.start)) - s.last.Load(); tail > 0 {
+	if tail := int64(end.Sub(s.start)) - (s.last.Load() - 1); tail > 0 {
 		w := int64(ActiveWindow)
 		active += min(tail, w)
 		idle += max(tail-w, 0)
 	}
 	r.Active, r.Idle = time.Duration(active), time.Duration(idle)
 	if out := s.firstOut.Load(); out != 0 {
-		d := time.Duration(out)
+		d := time.Duration(out - 1)
 		r.Output = &d
 		if in := s.firstIn.Load(); in != 0 && in <= out {
 			first := time.Duration(out - in)

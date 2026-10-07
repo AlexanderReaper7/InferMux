@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -53,8 +54,8 @@ func streamChain(t *testing.T) (front *httptest.Server, local, zbox *seen) {
 	local, zbox = &seen{}, &seen{}
 	echo := wstest.Echo()
 	backend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
-			return
+		if r.Header.Get("Upgrade") == "" {
+			return // the health check, and the catalog reading /v1/models
 		}
 		local.add(r)
 		echo.ServeHTTP(rw, r)
@@ -232,5 +233,93 @@ func TestAWebSocketFailsOverBeforeTheUpgrade(t *testing.T) {
 	}
 	if got := local.last(t); got.URL.Path != "/v1/realtime" || got.URL.Query().Get("model") != "stub" {
 		t.Fatalf("the fallback got %s", got.URL)
+	}
+}
+
+// A session through the whole chain is followed by the warden while it is
+// open and leaves one stats row when it ends (0018, 6 and 8).
+func TestASessionThroughTheChainIsOneStatsRow(t *testing.T) {
+	front, _, _ := streamChain(t)
+	get := func(path string, into any) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, front.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer chain-key")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if err := json.NewDecoder(resp.Body).Decode(into); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+	}
+	c, resp := wstest.Open(t, front.URL, "/v1/realtime?model=stub", chainKey)
+	if c == nil {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("upgrade: %s %s", resp.Status, body)
+	}
+	echoes(t, c)
+
+	var verdict struct {
+		Traffic struct {
+			InFlight []struct {
+				Path    string `json:"path"`
+				Session *struct {
+					Moving bool `json:"moving"`
+				} `json:"session"`
+			} `json:"in_flight"`
+		} `json:"traffic"`
+	}
+	get("/warden/verdict", &verdict)
+	if f := verdict.Traffic.InFlight; len(f) != 1 || f[0].Session == nil || !f[0].Session.Moving {
+		t.Fatalf("in flight %+v", f)
+	}
+
+	if op, _ := c.RoundTrip(wstest.Close, []byte{0x03, 0xe8}); op != wstest.Close {
+		t.Fatal("the close did not come back")
+	}
+	c.Conn.Close()
+	var requests struct {
+		Hosts []struct {
+			Requests []struct {
+				Model         string `json:"model"`
+				Status        int    `json:"status"`
+				RequestBytes  int64  `json:"request_bytes"`
+				ResponseBytes int64  `json:"response_bytes"`
+				Session       *struct {
+					ClosedBy  string `json:"closed_by"`
+					CloseCode int    `json:"close_code"`
+				} `json:"session"`
+			} `json:"requests"`
+			Models []struct {
+				Model    string `json:"model"`
+				Sessions int    `json:"sessions"`
+			} `json:"models"`
+		} `json:"hosts"`
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		get("/warden/requests", &requests)
+		if len(requests.Hosts) == 1 && len(requests.Hosts[0].Requests) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no row")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h := requests.Hosts[0]
+	r := h.Requests[0]
+	// Each frame with its header: 25 bytes of text, 40000 of binary, and the
+	// close's code, the client's masked.
+	in, out := int64(6+25+8+40000+6+2), int64(2+25+4+40000+2+2)
+	if len(h.Requests) != 1 || r.Model != "test/stub" || r.Status != 101 || r.Session == nil || r.RequestBytes != in || r.ResponseBytes != out {
+		t.Fatalf("rows %+v, want one session of %d bytes in and %d out", h.Requests, in, out)
+	}
+	if r.Session.ClosedBy != "client" || r.Session.CloseCode != 1000 {
+		t.Errorf("closed %+v", *r.Session)
+	}
+	if len(h.Models) != 1 || h.Models[0].Sessions != 1 {
+		t.Errorf("summary %+v", h.Models)
 	}
 }

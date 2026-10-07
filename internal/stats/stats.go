@@ -1,8 +1,8 @@
 // Package stats times each request this host serves a model for, as the
 // client sees it, beside what llama-server says about it: time to the first
 // generated token, prefill and decode rates, the prompt cache and the
-// drafts accepted. The last requests are kept in memory and summarised per
-// model.
+// drafts accepted. A WebSocket session is one row, timed by internal/stream
+// (0018, 8). The last requests are kept in memory and summarised per model.
 //
 // llama-swap keeps an activity log of its own, but it records no time to the
 // first token and drops llama-server's prompt_ms, and its entries are built
@@ -11,14 +11,18 @@
 package stats
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/stream"
 )
 
 // Request is one request, as recorded. A nil number was not reported: a
@@ -34,8 +38,9 @@ type Request struct {
 	Stream     bool      `json:"stream"`
 	DurationMs float64   `json:"duration_ms"`
 	// TTFTMs is from the request's arrival to the first event that carries
-	// generated text, reasoning or a tool call: model load, a swap and the
-	// queue included.
+	// generated text, reasoning or a tool call, or a session's first output,
+	// or an audio reply's first chunk: model load, a swap and the queue
+	// included.
 	TTFTMs *float64 `json:"ttft_ms"`
 	// PrefillMs is llama-server's prompt_ms, the prompt alone. TTFT minus
 	// prefill is the time spent before it: loading, swapping, waiting.
@@ -54,8 +59,29 @@ type Request struct {
 	// RequestBytes and ResponseBytes are the bodies as this handler sees
 	// them: uncompressed, without headers or TLS. What crosses between
 	// hosts is the same body, so they say what compressing it could save.
+	// For a session they are every byte after the upgrade, frame headers
+	// included.
 	RequestBytes  int64 `json:"request_bytes"`
 	ResponseBytes int64 `json:"response_bytes"`
+	// Session is set for a WebSocket that was upgraded, whose status is 101.
+	Session *Session `json:"session,omitempty"`
+}
+
+// Session is what a WebSocket session did after its upgrade (0018, 8).
+type Session struct {
+	// UpgradeMs is from the arrival to the 101.
+	UpgradeMs float64 `json:"upgrade_ms"`
+	// FirstOutputMs is from the client's first data frame to the backend's
+	// first output: the first transcript delta, or the first audio.
+	FirstOutputMs *float64 `json:"first_output_ms"`
+	// ActiveMs is the 10 s after each data frame, and IdleMs the rest of the
+	// time after the upgrade.
+	ActiveMs float64 `json:"active_ms"`
+	IdleMs   float64 `json:"idle_ms"`
+	// CloseCode is the first close frame's, either way, 0 for none, and
+	// ClosedBy who sent it: client, backend or infermux.
+	CloseCode int    `json:"close_code,omitempty"`
+	ClosedBy  string `json:"closed_by,omitempty"`
 }
 
 // Recorder keeps the last Capacity requests.
@@ -101,9 +127,15 @@ func (rec *Recorder) add(r Request) {
 	}
 }
 
-// Wrap records every POST for a model this host serves.
+// Wrap records every POST for a model this host serves, and every
+// WebSocket the warden follows as a session.
 func (rec *Recorder) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		session := stream.From(r.Context())
+		if r.Method == http.MethodGet && session != nil {
+			rec.session(next, rw, r, session)
+			return
+		}
 		if r.Method != http.MethodPost || strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/warden/") {
 			next.ServeHTTP(rw, r)
 			return
@@ -127,6 +159,49 @@ func (rec *Recorder) Wrap(next http.Handler) http.Handler {
 		out.RequestBytes = body.n
 		rec.add(out)
 	})
+}
+
+// session records a WebSocket when it ends. Until the upgrade it is a
+// request; one that was refused is recorded as one, with its status.
+func (rec *Recorder) session(next http.Handler, rw http.ResponseWriter, r *http.Request, s *stream.Session) {
+	model, here := rec.Model(r)
+	if !here {
+		next.ServeHTTP(rw, r)
+		return
+	}
+	w := &watcher{ResponseWriter: rw, start: rec.clock(), now: rec.clock}
+	next.ServeHTTP(w, r)
+	client := ""
+	if rec.Client != nil {
+		client = rec.Client(r)
+	}
+	out := w.request(model, client, r.URL.Path)
+	end := rec.clock()
+	report := s.Report(end)
+	if !report.Upgraded {
+		rec.add(out)
+		return
+	}
+	out.Status = http.StatusSwitchingProtocols
+	out.DurationMs = ms(end.Sub(w.start))
+	out.RequestBytes, out.ResponseBytes = report.In, report.Out
+	out.TTFTMs = nil
+	if report.Output != nil {
+		ttft := ms(*report.Output)
+		out.TTFTMs = &ttft
+	}
+	out.Session = &Session{
+		UpgradeMs: ms(report.Upgrade),
+		ActiveMs:  ms(report.Active),
+		IdleMs:    ms(report.Idle),
+		CloseCode: report.CloseCode,
+		ClosedBy:  report.ClosedBy,
+	}
+	if report.FirstOutput != nil {
+		first := ms(*report.FirstOutput)
+		out.Session.FirstOutputMs = &first
+	}
+	rec.add(out)
 }
 
 // counter counts the bytes read through it.
@@ -153,6 +228,7 @@ type watcher struct {
 	now               func() time.Time
 	status            int
 	stream            bool
+	audio             bool // its first chunk is the first output, and none is kept
 	started           bool
 	line              []byte // a stream's unfinished line
 	body              bytes.Buffer
@@ -175,10 +251,16 @@ func (w *watcher) Write(b []byte) (int, error) {
 		if w.status == 0 {
 			w.status = http.StatusOK
 		}
-		w.stream = strings.HasPrefix(w.Header().Get("Content-Type"), "text/event-stream")
+		contentType := w.Header().Get("Content-Type")
+		w.stream = strings.HasPrefix(contentType, "text/event-stream")
+		w.audio = strings.HasPrefix(contentType, "audio/")
 	}
 	w.written += int64(len(b))
-	if w.stream {
+	if w.audio {
+		if w.firstToken.IsZero() && len(b) > 0 {
+			w.firstToken = w.now()
+		}
+	} else if w.stream {
 		w.read(b)
 	} else if !w.overflow {
 		if w.body.Len()+len(b) > bodyLimit {
@@ -195,6 +277,12 @@ func (w *watcher) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack hands a WebSocket's connection on. The handlers inside, llama-swap's
+// among them, ask for an http.Hijacker rather than unwrapping.
+func (w *watcher) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(w.ResponseWriter).Hijack()
 }
 
 // Unwrap lets http.ResponseController reach the connection beneath.

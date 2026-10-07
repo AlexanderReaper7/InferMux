@@ -16,11 +16,15 @@ type Spread struct {
 
 // Summary is one model's requests. Only successful ones count towards the
 // numbers: a refused or cancelled request says nothing about the model's
-// speed.
+// speed. Sessions are counted apart (0018, 8): a session's TTFT includes
+// the time the user took to start, so it stays out of the TTFT median, and
+// FirstOutputMs is theirs.
 type Summary struct {
 	Model            string  `json:"model"`
 	Requests         int     `json:"requests"`
 	Failed           int     `json:"failed"`
+	Sessions         int     `json:"sessions"`
+	FirstOutputMs    *Spread `json:"first_output_ms"`
 	TTFTMs           *Spread `json:"ttft_ms"`
 	PrefillMs        *Spread `json:"prefill_ms"`
 	WaitMs           *Spread `json:"wait_ms"`
@@ -41,10 +45,16 @@ func Summarize(requests []Request) []Summary {
 	}
 	out := []Summary{}
 	for model, rs := range by {
-		s := Summary{Model: model, Requests: len(rs)}
-		var ttft, prefill, wait, prefillRate, decode []float64
+		s := Summary{Model: model}
+		var ttft, prefill, wait, prefillRate, decode, firstOutput []float64
 		var prompt, cached, drafted, accepted int
 		for _, r := range rs {
+			if r.Session != nil {
+				s.Sessions++
+				add(&firstOutput, r.Session.FirstOutputMs)
+				continue
+			}
+			s.Requests++
 			if r.Status != 200 {
 				s.Failed++
 				continue
@@ -69,6 +79,7 @@ func Summarize(requests []Request) []Summary {
 		s.TTFTMs, s.PrefillMs, s.WaitMs = spread(ttft), spread(prefill), spread(wait)
 		s.PrefillPerSecond, s.DecodePerSecond = spread(prefillRate), spread(decode)
 		s.CacheShare, s.DraftAcceptance = ratio(cached, prompt), ratio(accepted, drafted)
+		s.FirstOutputMs = spread(firstOutput)
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Model < out[j].Model })
