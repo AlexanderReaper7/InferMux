@@ -117,9 +117,18 @@ func TestNotify_ReadyAfterTheLoad(t *testing.T) {
 	if d := since.Sub(sent); d < 0 || d > 50*time.Millisecond {
 		t.Fatalf("ReadySince is %v after READY=1 was sent", d)
 	}
-	// The socket and its directory go once the start is over.
-	if _, err := os.Stat(filepath.Dir(socket)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the notify directory is still there: %v", err)
+	// The socket and its directory go once the start is over, in a
+	// goroutine of their own.
+	gone := false
+	for range 100 {
+		if _, err := os.Stat(filepath.Dir(socket)); errors.Is(err, os.ErrNotExist) {
+			gone = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !gone {
+		t.Fatalf("the notify directory %s is still there", filepath.Dir(socket))
 	}
 	rr := httptest.NewRecorder()
 	p.ServeHTTP(rr, httptest.NewRequest("GET", "/v1/models", nil))

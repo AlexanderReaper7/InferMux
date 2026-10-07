@@ -72,14 +72,20 @@ func setPassCred(conn *net.UnixConn) error {
 // close stops the reader and removes the socket. Safe on nil and twice. A
 // backend's later sd_notify calls then fail with ENOENT, which sd_notify
 // clients are expected to ignore.
+//
+// The socket goes in a goroutine of its own: Close waits for the reader
+// blocked on it to wake, 0.12-0.2 ms measured, and doStart defers this, so it
+// would otherwise sit between READY=1 and the process being marked ready.
 func (n *notifySocket) close() {
 	if n == nil {
 		return
 	}
 	n.once.Do(func() {
 		close(n.done)
-		n.conn.Close()
-		os.RemoveAll(n.dir)
+		go func() {
+			n.conn.Close()
+			os.RemoveAll(n.dir)
+		}()
 	})
 }
 
