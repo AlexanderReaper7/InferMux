@@ -20,6 +20,7 @@ This file is rules and navigation only.
 | `internal/failover/` | ours: a model listed in failover.yaml tried at each of its places in turn, in front of the warden (0016) |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
 | `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
+| `internal/stream/` | ours: a WebSocket followed frame by frame for the warden and the stats, closed with a code of ours, and routed by `?model=` (0018); `wstest/` is the tests' frame client and echo backend |
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
 | `internal/adapter/`, `cmd/infermux-adapter/` | ours: puts a client's key on the requests of a client that cannot send one, such as Immich (0013) |
 | `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005) |
@@ -31,10 +32,11 @@ This file is rules and navigation only.
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/...  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c gofmt -l infermux.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
 
@@ -69,6 +71,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **A failed probe leaves the verdict alone, and so does an unreadable ComfyUI queue.** Neither is evidence that the GPU is free.
 - **The models are unloaded once per yield** (0002), owed from the transition and paid when interactive traffic is quiet (0004). Unloading every tick would fight a client the user chose to let through.
 - **Free VRAM is only read while no model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001).
+- **A WebSocket counts toward the warden only while data frames cross** (0018). An open connection and a ping count for nothing. Anything that stops a model under a session closes it first with 1013 or 1012; the backend's death is a 1006 the client cannot tell from a crash.
 - **A llama-swap config reload waits for quiet** (0005). It stops every model, so it goes through `WhenNoInteractive`, never `-watch-config`.
 - **The UI never pushes, and commits only when the user presses Commit** (0005).
 - **ComfyUI is contention, never ours.** It is not in `our_units` and it is not a consumer. It is a tenant the warden watches and frees (0002). `comfyui_unit` names it so the config loader refuses it in `our_units`.

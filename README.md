@@ -104,6 +104,12 @@ Retry-After: 300
 {"error":{"type":"gpu_yielded","message":"batch requests wait while the GPU is yielded: ComfyUI has 1 job queued"}}
 ```
 
+## Streams
+
+A WebSocket that names its model in the query reaches that model's server at the path and query it was sent with: `/v1/realtime?model=x` (OpenAI's realtime), `/v1/listen?model=x` (Deepgram's), `/asr?model=x` (WhisperLiveKit's). `/upstream/<model>/<path>` reaches any path of the model's server as before. Every frame passes through unchanged, binary ones included; InferMux does not translate between protocols. A chunked reply, such as `/v1/audio/speech`, and SSE pass through chunk by chunk.
+
+A session counts as an interactive request in flight while text or binary frames cross, and for 10 s after the last one. After that it counts only through its last data frame, as a finished request does, so a tab left open does not keep the models on the card. A ping counts for nothing. Before the warden unloads the models, or cancels a batch session, it closes each session with 1013 (Try Again Later) and the reason; a config reload closes them with 1012 (Service Restart). A client should reconnect when it has something to send: a new session loads its model. `/warden/verdict` shows an open session in `in_flight` with `session.moving` and `session.idle_seconds`, and `/warden/requests` has one row per session once it ends ([0018](docs/decisions/0018-streams-pass-through-and-a-session-is-interactive-while-data-moves.md)).
+
 ## What a client learns about a model
 
 Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_modalities`, `reasoning_efforts` and `default_effort`, derived from its command and its GGUF's chat template, never declared. Codex's own request, which carries `client_version`, gets the same models as a Codex catalog when the module's `codexPrompt` is set. [0007](docs/decisions/0007-model-settings-derived.md). A cloud peer's models get the same fields from the peer's own `/v1/models` in OpenRouter's format, read at most once an hour ([0010](docs/decisions/0010-a-peers-facts-from-its-own-list.md)).
@@ -118,8 +124,8 @@ Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_m
 
 ## What it does on a yield
 
-1. Cancels every batch request in flight.
-2. Unloads every model, once. If an interactive request is in flight or ended less than `interactive_recent_seconds` ago, the unload waits until it has been quiet that long. A resume forgives an unload still owed.
+1. Cancels every batch request in flight, and closes every batch session with 1013.
+2. Unloads every model, once. If an interactive request is in flight or ended less than `interactive_recent_seconds` ago, the unload waits until it has been quiet that long; a session is in flight while it moves data. The sessions still open are closed with 1013 first. A resume forgives an unload still owed.
 3. Sends one POST to every configured consumer, repeated every five minutes until it lands:
 
 ```json
