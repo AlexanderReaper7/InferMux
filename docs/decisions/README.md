@@ -25,5 +25,6 @@ Nothing here is edited to reflect later changes. A decision that was replaced ge
 | [0015](0015-a-stuck-agent-is-noted-escalated-then-refused.md) | A stuck agent is noted, sent to a stronger model, then refused; the presets get Qwen's sampling | 2026-10-05 |
 | [0016](0016-a-model-fails-over-between-places.md) | A model fails over between places, listed in failover.yaml, on 502, 503 or 504 | 2026-10-06 |
 | [0017](0017-a-priority-process-takes-the-card.md) | A priority process with a CUDA context takes the card: contention at any load, unloaded at once but never under a request | 2026-10-06 |
+| [0018](0018-streams-pass-through-and-a-session-is-interactive-while-data-moves.md) | Streams pass through unchanged, routed by model; a WebSocket session is interactive only while data moves, and is closed with a code before an unload | 2026-10-07 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.
