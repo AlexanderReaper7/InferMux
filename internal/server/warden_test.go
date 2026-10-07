@@ -1,10 +1,13 @@
 package server
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/config"
+	"github.com/mostlygeek/llama-swap/internal/process"
 )
 
 // The warden gates only this host's models (InferMux 0009), so a peer's model
@@ -60,5 +63,85 @@ peers:
 	}
 	if _, _, ok := s.PeerModel("local"); ok {
 		t.Error("a local model was taken for a peer's")
+	}
+}
+
+// The stats read a request's ready_ms through ModelReady (0019): when the
+// model last became ready, and whether READY=1, a health poll or nothing
+// said so. A model that is not ready, or not local, has no answer.
+func TestModelReadyIsTheReadySinceAndHowItWasLearnt(t *testing.T) {
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(`
+models:
+  notified:
+    cmd: echo ${PORT}
+    metadata: {readiness: notify}
+  polled:
+    cmd: echo ${PORT}
+  started:
+    cmd: echo ${PORT}
+    checkEndpoint: none
+  loading:
+    cmd: echo ${PORT}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 10, 8, 1, 2, 3, 0, time.UTC)
+	local := &stubRouter{
+		running: map[string]process.ProcessState{
+			"notified": process.StateReady,
+			"polled":   process.StateReady,
+			"started":  process.StateReady,
+			"loading":  process.StateStarting,
+		},
+		readySince: map[string]time.Time{
+			"notified": t0,
+			"polled":   t0.Add(time.Second),
+			"started":  t0.Add(2 * time.Second),
+		},
+	}
+	s := &Server{cfg: cfg, local: local}
+	type answer struct {
+		at time.Time
+		by string
+		ok bool
+	}
+	want := map[string]answer{
+		"notified": {t0, "notify", true},
+		"polled":   {t0.Add(time.Second), "health", true},
+		"started":  {t0.Add(2 * time.Second), "start", true},
+		"loading":  {},
+		"nobody":   {},
+	}
+	for id, w := range want {
+		at, by, ok := s.ModelReady(id)
+		if got := (answer{at, by, ok}); got != w {
+			t.Errorf("ModelReady(%q) = %v, want %v", id, got, w)
+		}
+	}
+}
+
+// What ModelReady costs a request, which the stats pay on every one (0019),
+// over as many models as strix has, one of them loaded. The stub's
+// RunningStatus builds its map as the router's does, less the router's one
+// atomic load per process.
+func BenchmarkModelReady(b *testing.B) {
+	var yaml strings.Builder
+	yaml.WriteString("models:\n")
+	local := &stubRouter{running: map[string]process.ProcessState{}, readySince: map[string]time.Time{}}
+	for i := range 11 {
+		fmt.Fprintf(&yaml, "  m%d:\n    cmd: echo ${PORT}\n    metadata: {readiness: notify}\n", i)
+	}
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(yaml.String()))
+	if err != nil {
+		b.Fatal(err)
+	}
+	local.running["m0"] = process.StateReady
+	local.readySince["m0"] = time.Now()
+	s := &Server{cfg: cfg, local: local}
+	for b.Loop() {
+		if _, _, ok := s.ModelReady("m0"); !ok {
+			b.Fatal("m0 is not ready")
+		}
 	}
 }
