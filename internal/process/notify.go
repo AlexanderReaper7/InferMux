@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"strings"
 	"time"
 
@@ -107,15 +108,28 @@ func (l lastWords) String() string {
 // that says READY=1 before it can answer has broken the contract, and the
 // start fails with that said rather than falling back to polling, which would
 // bring back the delay notify exists to remove.
-func (p *ProcessCommand) checkOnce(ctx context.Context, proxy http.Handler) error {
+//
+// The request goes through a copy of the model's proxy whose ErrorHandler
+// keeps the error, which the proxy's own logs only at debug for a health
+// check, so a check that never got an answer says why.
+func (p *ProcessCommand) checkOnce(ctx context.Context, proxy *httputil.ReverseProxy) error {
 	endpoint := strings.TrimSpace(p.config.CheckEndpoint)
 	checkCtx := context.WithValue(ctx, healthCheckKey{}, true)
 	req, err := http.NewRequestWithContext(checkCtx, "GET", endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("READY=1, but checkEndpoint %q: %w", endpoint, err)
 	}
+	var failed error
+	check := *proxy
+	check.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+		failed = err
+		w.WriteHeader(http.StatusBadGateway)
+	}
 	rr := httptest.NewRecorder()
-	proxy.ServeHTTP(rr, req)
+	check.ServeHTTP(rr, req)
+	if failed != nil {
+		return fmt.Errorf("READY=1, but GET %s%s failed: %w", p.config.Proxy, endpoint, failed)
+	}
 	if rr.Code != http.StatusOK {
 		return fmt.Errorf("READY=1, but %s%s answered %d", p.config.Proxy, endpoint, rr.Code)
 	}
@@ -125,7 +139,7 @@ func (p *ProcessCommand) checkOnce(ctx context.Context, proxy http.Handler) erro
 // awaitNotify waits for READY=1 from the process or one of its descendants,
 // then, unless checkEndpoint is none, checks the endpoint once. It returns
 // when READY=1 arrived. The timeout is the health check's.
-func (p *ProcessCommand) awaitNotify(ctx context.Context, n *notifySocket, pid int, cmdDone <-chan struct{}, timeout time.Duration, proxy http.Handler) (time.Time, error) {
+func (p *ProcessCommand) awaitNotify(ctx context.Context, n *notifySocket, pid int, cmdDone <-chan struct{}, timeout time.Duration, proxy *httputil.ReverseProxy) (time.Time, error) {
 	deadline := time.Now().Add(timeout)
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()

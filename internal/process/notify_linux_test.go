@@ -262,6 +262,18 @@ func TestNotify_ReadyButTheHealthCheckFails(t *testing.T) {
 	}
 }
 
+// A check that got no answer at all says why, not only the proxy's 502.
+func TestNotify_ReadyButNothingListens(t *testing.T) {
+	h := newHelper(t, "ready-closed", 0)
+	p, _ := startNotifyProcess(t, h.config("notify"))
+
+	err := p.EnsureReady(context.Background(), 5*time.Second)
+	want := fmt.Sprintf("READY=1, but GET http://127.0.0.1:%d/health failed: ", h.port)
+	if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("got %v, want %q and the dial's error", err, want)
+	}
+}
+
 func TestNotify_CheckEndpointNoneTakesReadyAlone(t *testing.T) {
 	h := newHelper(t, "ready-unhealthy", 0)
 	conf := h.config("notify")
@@ -437,6 +449,9 @@ func TestNotifyHelperProcess(t *testing.T) {
 	case "poll":
 		healthy.Store(true)
 	case "ready-unhealthy":
+		send("READY=1", nil)
+	case "ready-closed":
+		ln.Close()
 		send("READY=1", nil)
 	case "ready-fd":
 		healthy.Store(true)
