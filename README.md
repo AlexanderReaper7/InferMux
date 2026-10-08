@@ -6,6 +6,12 @@ InferMux is [llama-swap](https://github.com/mostlygeek/llama-swap) with a GPU wa
 
 It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-warden-decides-and-says-so.md)), a Windows program until 2026-09-28 ([0002](docs/decisions/0002-linux-nvml-router-unload-comfyui.md)), and llama-warden, a Python sidecar to llama.cpp's router, until 2026-10-03 ([0004](docs/decisions/0004-infermux-request-priority.md)).
 
+## What is InferMux's and what is llama-swap's
+
+InferMux is a fork of llama-swap that merges each upstream release rather than vendoring it, so most of the tree and most of the history are upstream's. InferMux's own code is `infermux.go`, `internal/warden/`, `internal/remote/`, `internal/failover/`, `internal/catalog/`, `internal/stats/`, `internal/stream/`, `internal/adapter/`, `internal/muxui/`, `internal/server/warden.go`, `cmd/infermux-ui/`, `cmd/infermux-adapter/`, `webui/`, `nix/`, `e2e/` and `docs/decisions/`. [CLAUDE.md](CLAUDE.md) has the full map.
+
+The Go module path is still `github.com/mostlygeek/llama-swap` for the same reason. Renaming it would rewrite every upstream import, and every later merge would conflict on all of them.
+
 ## Run it
 
 On NixOS, through the flake's module:
@@ -145,7 +151,7 @@ nix develop -c go test -short ./internal/server/ .
 nix build                              # runs the tests as part of the build
 ```
 
-The warden is `internal/warden/` and `infermux.go`, the routing to the other host `internal/remote/`, the UI is `internal/muxui/`, `cmd/infermux-ui/` and `webui/`; the rest is upstream llama-swap, merged rather than vendored. [CLAUDE.md](CLAUDE.md) has the map and how to merge a new llama-swap release.
+[CLAUDE.md](CLAUDE.md) has the map of the code and how to merge a new llama-swap release.
 
 ## License
 
