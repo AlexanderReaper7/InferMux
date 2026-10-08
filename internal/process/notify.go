@@ -1,7 +1,7 @@
 package process
 
 // InferMux: a backend that speaks systemd's sd_notify protocol says when it is
-// ready, instead of InferMux polling its health endpoint (0019). This file is
+// ready, instead of InferMux polling its health endpoint (0020). This file is
 // the part every platform builds; the socket is in notify_linux.go.
 
 import (

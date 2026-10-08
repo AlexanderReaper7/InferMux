@@ -66,7 +66,7 @@ peers:
 	}
 }
 
-// The stats read a request's ready_ms through ModelReady (0019): when the
+// The stats read a request's ready_ms through ModelReady (0020): when the
 // model last became ready, and whether READY=1, a health poll or nothing
 // said so. A model that is not ready, or not local, has no answer.
 func TestModelReadyIsTheReadySinceAndHowItWasLearnt(t *testing.T) {
@@ -121,7 +121,7 @@ models:
 	}
 }
 
-// What ModelReady costs a request, which the stats pay on every one (0019),
+// What ModelReady costs a request, which the stats pay on every one (0020),
 // over as many models as strix has, one of them loaded. The stub's
 // RunningStatus builds its map as the router's does, less the router's one
 // atomic load per process.

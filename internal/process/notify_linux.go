@@ -1,6 +1,6 @@
 package process
 
-// InferMux: the notify socket (0019). One per start, in a directory of its
+// InferMux: the notify socket (0020). One per start, in a directory of its
 // own that only InferMux's user can enter, bound before the process starts so
 // no datagram is lost, and removed when the start ends.
 

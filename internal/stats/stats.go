@@ -66,7 +66,7 @@ type Request struct {
 	// Session is set for a WebSocket that was upgraded, whose status is 101.
 	Session *Session `json:"session,omitempty"`
 	// ReadyMs is from the arrival to the model becoming ready, for a request
-	// that waited for its model to load (0019). ReadyBy is how InferMux
+	// that waited for its model to load (0020). ReadyBy is how InferMux
 	// learnt it: "notify" when the backend sent READY=1, the moment it did;
 	// "health" when a poll of its health endpoint saw 200, up to 1.25 s
 	// after it was; "start" when nothing was checked.
@@ -101,7 +101,7 @@ type Recorder struct {
 	// Client names the key the request came with.
 	Client func(r *http.Request) string
 	// Ready is when a model Model named last became ready, and how that was
-	// learnt; false for one that is not ready here (0019).
+	// learnt; false for one that is not ready here (0020).
 	Ready func(model string) (at time.Time, by string, ok bool)
 
 	mu       sync.Mutex

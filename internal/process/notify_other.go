@@ -2,7 +2,7 @@
 
 package process
 
-// InferMux: the notify socket needs SO_PASSCRED, which is Linux's (0019).
+// InferMux: the notify socket needs SO_PASSCRED, which is Linux's (0020).
 // Elsewhere a model that opts in fails to start, and every other model is
 // polled as before.
 

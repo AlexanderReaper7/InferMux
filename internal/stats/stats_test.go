@@ -259,7 +259,7 @@ func TestACloudResponsesReplyReadsTheUsageInsideTheResponse(t *testing.T) {
 }
 
 // A request that waited for its model's load gets the time to READY=1; one
-// for a model that was already ready gets nothing (0019).
+// for a model that was already ready gets nothing (0020).
 func TestARequestThatWaitedForTheLoadHasItsReadyTime(t *testing.T) {
 	c := &clock{t: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)}
 	rec := recorder(c)

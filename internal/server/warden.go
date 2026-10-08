@@ -81,7 +81,7 @@ func (s *Server) PeerModel(name string) (proxy, model string, ok bool) {
 
 // ModelReady is when a local model last became ready, the moment READY=1
 // arrived for one that sends it, and how that was learnt (process.Readiness).
-// False for a model that is not local or not ready (0019).
+// False for a model that is not local or not ready (0020).
 func (s *Server) ModelReady(id string) (time.Time, string, bool) {
 	mc, ok := s.cfg.Models[id]
 	if !ok {

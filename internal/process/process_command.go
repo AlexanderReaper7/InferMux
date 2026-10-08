@@ -103,7 +103,7 @@ type startResult struct {
 	cancel    context.CancelFunc
 	handlerFn http.HandlerFunc
 	err       error
-	// InferMux: when READY=1 arrived (0019); zero when polled.
+	// InferMux: when READY=1 arrived (0020); zero when polled.
 	readyAt time.Time
 }
 
@@ -180,7 +180,7 @@ func (p *ProcessCommand) run() {
 	// p.status mirrors `state` so State() can observe transitions; setState
 	// writes both.
 	state := StateStopped
-	// InferMux: the last start's startResult.readyAt, for ReadySince (0019).
+	// InferMux: the last start's startResult.readyAt, for ReadySince (0020).
 	var readyAt time.Time
 	setState := func(s ProcessState) {
 		old := state
@@ -190,7 +190,7 @@ func (p *ProcessCommand) run() {
 			if old == StateReady {
 				next.ReadySince = p.status.Load().ReadySince
 			} else if !readyAt.IsZero() {
-				// InferMux: the moment READY=1 arrived (0019).
+				// InferMux: the moment READY=1 arrived (0020).
 				next.ReadySince = readyAt
 			} else {
 				next.ReadySince = time.Now()
@@ -540,7 +540,7 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 
 	p.proxyLogger.Debugf("<%s> Executing start command: %s, env: %s", p.id, strings.Join(args, " "), strings.Join(p.config.Env, ", "))
 
-	// InferMux: a backend that opted in says READY=1 on this socket (0019).
+	// InferMux: a backend that opted in says READY=1 on this socket (0020).
 	notify, err := p.listenNotify(cmd)
 	if err != nil {
 		cmdCancel()
@@ -587,7 +587,7 @@ func (p *ProcessCommand) doStart(startCtx context.Context, healthCheckTimeout ti
 		return abort(ErrStartAborted)
 	}
 
-	// InferMux: READY=1 in place of the polling below (0019).
+	// InferMux: READY=1 in place of the polling below (0020).
 	if notify != nil {
 		readyAt, err := p.awaitNotify(startCtx, notify, cmd.Process.Pid, cmdDone, healthCheckTimeout, reverseProxy)
 		if errors.Is(err, errExitedBeforeReady) {
