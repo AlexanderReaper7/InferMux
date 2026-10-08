@@ -70,12 +70,19 @@ jobs:
           path: ./build
           key: ${{ runner.os }}-simple-responder-${{ hashFiles('cmd/simple-responder/simple-responder.go') }}
 
+      # internal/muxui writes and reads the keys' sops file through the sops
+      # binary. The version is nixpkgs', which the dev shell and the package use.
+      - name: Install sops
+        run: |
+          curl -fsSLo sops https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.amd64
+          echo "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b  sops" | sha256sum -c -
+          sudo install -m 755 sops /usr/local/bin/sops
+          rm sops
+
       - name: Test all
         run: make test-all
 
-      # The cmd utility suites are unix-only (vllm-wrapper uses
-      # syscall.Kill), so they run here (Linux) and not in the Windows
-      # CI, which only runs make test-all (internal).
+      # The cmd utility suites are unix-only (vllm-wrapper uses syscall.Kill).
       - name: Test cmd utilities
         run: make test-cmd
 
