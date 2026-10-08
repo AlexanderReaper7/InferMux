@@ -43,7 +43,7 @@ The warden's configuration is its own YAML file (`-warden-config`), not a sectio
 
 Live on 2026-10-03, after the NixOS switch:
 
-- The probe ran under the service sandbox (`DynamicUser`, no `ProtectProc`): NVML listed every process and their cgroups were readable. Before this, the sandboxed probe had never been watched running (CLAUDE-TODO).
+- The probe ran under the service sandbox (`DynamicUser`, no `ProtectProc`): NVML listed every process and their cgroups were readable. Before this, the sandboxed probe had never been watched running ([verification.md](../verification.md)).
 - A 9B model started by InferMux appeared as `llama-server` in `infermux.service` and was counted as ours (33%, 6178 MB). T3's Electron GPU process and cosmic-comp were reported as desktop.
 - Foreign load from `glmark2-gbm` on the RTX 3080 (67%) paused the verdict and logged `Unload deferred: interactive request in flight or 19s ago`. The model stayed loaded, a batch request got 503 with `Retry-After: 300`, an interactive request during the pause got 200, and Episteme took the pause.
 - A ComfyUI job in the queue paused the verdict with no interactive request in the last ten minutes. The models unloaded on that tick, and two batch requests in flight were cancelled.

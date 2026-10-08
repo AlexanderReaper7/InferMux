@@ -6,7 +6,7 @@ This file is rules and navigation only.
 
 - [README.md](README.md) is how to run and configure it.
 - [docs/decisions/](docs/decisions/README.md) is why anything is the way it is. **`(0001)` means `docs/decisions/0001-*.md`.** Grep it before changing something that looks arbitrary; add to it when we decide something new. [0004](docs/decisions/0004-infermux-request-priority.md) is the merge with llama-swap and the request priority.
-- [CLAUDE-TODO.md](CLAUDE-TODO.md) is what is built but not yet watched running. Read it before claiming a path works.
+- [docs/verification.md](docs/verification.md) is what is built but not yet watched running. Read it before claiming a path works.
 - [AGENTS.md](AGENTS.md) is llama-swap's own guide to its code. Follow it when touching anything outside `internal/warden/` and `infermux.go`.
 - [graphics/README.md](graphics/README.md) is what the mark means.
 - The NixOS configuration that deploys this is `~/Projects/nixcfg` (`modules/nixos/llm.nix` for InferMux and the model presets, `packages/comfyui` for ComfyUI).

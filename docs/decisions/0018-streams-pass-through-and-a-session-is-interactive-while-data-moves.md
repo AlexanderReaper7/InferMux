@@ -15,7 +15,7 @@ What was there:
 - A WebSocket reached a model only as `/upstream/<model>/...`. `/v1/realtime` is not a llama-swap route, so `/v1/realtime?model=x` answered 404, although the warden and the remote router already read the model from `?model=`.
 - The warden counted an open WebSocket as an interactive request in flight for as long as it stayed open (0006, 6). A session left open in a browser tab would keep the models on the card through a game, with no end. When a model was unloaded anyway, its server died under the session, and the client saw the TCP connection drop without a close frame: code 1006, the same as a crash.
 - The stats recorded POSTs only, so a session left no row. A text-to-speech reply on `/v1/audio/speech`, audio in chunks of unknown length, was recorded without the time of its first chunk, and had never been checked to arrive chunk by chunk.
-- No real realtime client had ever connected (CLAUDE-TODO).
+- No real realtime client had ever connected ([verification.md](../verification.md)).
 
 ## Decision
 
