@@ -26,6 +26,7 @@ This file is rules and navigation only.
 | `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005) |
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build |
 | `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
+| `internal/process/notify*.go` | ours: the `NOTIFY_SOCKET` a model with `metadata.readiness: notify` gets, and the wait for its `READY=1` in place of the polling (0020); hooked into `process_command.go`'s `doStart` and `run` |
 | `llama-swap.go` | upstream's `main`, plus one flag and one call |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
@@ -35,7 +36,8 @@ This file is rules and navigation only.
 nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/...  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c gofmt -l infermux.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream cmd internal/server/warden.go internal/server/warden_test.go internal/process/notify.go internal/process/notify_linux.go internal/process/notify_other.go internal/process/notify_linux_test.go
+nix develop -c go test -race -count=1 -run TestNotify ./internal/process/   # READY=1, the pid check, polling unchanged without the opt-in (0020)
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
@@ -72,6 +74,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **The models are unloaded once per yield** (0002), owed from the transition and paid when interactive traffic is quiet (0004). Unloading every tick would fight a client the user chose to let through.
 - **Free VRAM is only read while no model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001).
 - **A WebSocket counts toward the warden only while data frames cross** (0018). An open connection and a ping count for nothing. Anything that stops a model under a session closes it first with 1013 or 1012; the backend's death is a 1006 the client cannot tell from a crash.
+- **`READY=1` is the backend's promise that its model is loaded** (0020). Only a model with `metadata.readiness: notify` gets `NOTIFY_SOCKET`, since another backend's `READY=1` may come before its model is loaded, and only the process InferMux started or its descendants may send it.
 - **A llama-swap config reload waits for quiet** (0005). It stops every model, so it goes through `WhenNoInteractive`, never `-watch-config`.
 - **The UI never pushes, and commits only when the user presses Commit** (0005).
 - **ComfyUI is contention, never ours.** It is not in `our_units` and it is not a consumer. It is a tenant the warden watches and frees (0002). `comfyui_unit` names it so the config loader refuses it in `our_units`.

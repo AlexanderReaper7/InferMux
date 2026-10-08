@@ -117,6 +117,7 @@ in
   checkPhase = ''
     runHook preCheck
     go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/server/ .
+    go test -count=1 -run TestNotify ./internal/process/
     runHook postCheck
   '';
 
