@@ -42,7 +42,7 @@ What a backend has to do to be started with `metadata: {readiness: notify}`:
 - Exit on a failed load. The start then fails at the exit, not at `healthCheckTimeout`.
 - After the start the socket is gone: a later send fails with `ENOENT`, which must not stop the backend. Without the opt-in `NOTIFY_SOCKET` is not InferMux's, and is whatever InferMux inherited, usually unset.
 
-dikt-server sends `READY=1` from a thread of its main process after `/health` turns 200 (`~/Projects/dikt-server`, `crates/dikt-server/src/notify.rs`, contract in its `docs/server-api.md`, "Readiness: `READY=1`"). It measured 656 to 1018 ms from its start to `READY=1` with its two models in the page cache (1732 ms once), with `/health` at 200 at every `READY=1`.
+dikt-server sends `READY=1` from a thread of its main process after `/health` turns 200 (`~/Projects/dikt`, `crates/dikt-server/src/notify.rs`, contract in its `docs/server-api.md`, "Readiness: `READY=1`"). It measured 656 to 1018 ms from its start to `READY=1` with its two models in the page cache (1732 ms once), with `/health` at 200 at every `READY=1`.
 
 ## Out
 
