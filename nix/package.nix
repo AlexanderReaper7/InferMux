@@ -132,7 +132,11 @@ in
   meta = {
     description = "llama-swap with a GPU warden: model routing that yields the card to other work and never kills the user's own prompt";
     homepage = "https://github.com/AlexanderReaper7/InferMux";
-    license = lib.licenses.mit;
+    # InferMux's own code is AGPL-3.0-only; the llama-swap code it merges is MIT.
+    license = with lib.licenses; [
+      agpl3Only
+      mit
+    ];
     mainProgram = "infermux";
     platforms = lib.platforms.linux;
   };

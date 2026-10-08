@@ -155,4 +155,6 @@ nix build                              # runs the tests as part of the build
 
 ## License
 
-MIT, as llama-swap ([LICENSE.md](LICENSE.md)).
+InferMux is licensed under the GNU Affero General Public License, version 3 only ([LICENSE](LICENSE)). Copyright (c) 2026 Alexander Öberg.
+
+It includes llama-swap, Copyright (c) 2024 Benson Wong, under the MIT license ([LICENSE.md](LICENSE.md)). The upstream code stays available under MIT.
