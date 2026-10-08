@@ -47,7 +47,7 @@ The announcement must be **idempotent at the other end**. Re-announcing `pause` 
 ## What the split also moved
 
 - **The launcher and `models-preset.ini`** live in `llama/` here, under version control, and reach the llama.cpp binaries through `LLAMA_CPP_DIR`. One source of truth, no junction. The binaries are an unpacked upstream release and stay where they are; they are not ours and they are not in a repository.
-- **The mark.** The obelisk-in-a-network was Episteme's mark with one word changed, and `graphics/build_svg.py` here is a copy of the generator. Nothing keeps the two in step now, deliberately. See `graphics/README.md`.
+- **The mark.** The obelisk-in-a-network was Episteme's mark with one word changed, and `graphics/build_svg.py` here is a copy of the generator. Nothing keeps the two in step now, deliberately. See `graphics/README.md`. (2026-10-08: the obelisk went back to Episteme's `graphics/obelisk-net/`, generator included, and InferMux has a mark of its own.)
 - **Every threshold.** `warden.toml`, read once at import through stdlib `tomllib`. TOML rather than environment variables because the consumer list is a list of tables and a list of tables does not survive `KEY=value`.
 
 ## One probe per tick

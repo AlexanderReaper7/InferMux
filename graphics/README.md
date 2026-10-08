@@ -1,75 +1,32 @@
-# InferMux — the mark
+# InferMux's mark
 
-An obelisk standing in a neural network.
+A multiplexer's body, white, with one cut through it and two that stop.
 
-Split from Episteme's mark in 2026-09, where it began as the host agent's icon
-and was a sibling of the primary mark: same solid, same camera, same position in
-the frame, with the field of plain strands replaced by a network. It is its own
-mark now. `build_svg.py` here is a copy of the generator, and nothing keeps the
-two in step, which is the point. The obelisk may drift; if it does, that is a
-decision somebody made here and not a copy that went stale.
+The body is the circuit symbol for a multiplexer: a trapezoid, tall on the input side, short on the output side. InferMux is that for the GPU. Many models, one card, one at a time. The cut that runs from the left edge to the right is the model on the card now. The two short cuts from the left are the models waiting, which reach the card and stop.
 
-## What it claims
+## Decided 2026-10-08
 
-Two elements, and the relationship between them is the whole logo.
+- **The obelisk in a network is Episteme's, not InferMux's.** It came from Episteme with the warden and went back the same day, with its generator and what was written about it, to Episteme's `graphics/obelisk-net/`. It is in this repository's history up to `7803a13`.
+- **The multiplexer, as a knockout, body only, with dead ends**, chosen by the user from the candidates in `compare.html`. Nothing is drawn outside the body: no input lines, no nodes, no output.
+- **White, `#E8ECF0`.** The web UI's colours already mean things: emerald is the verdict "running", amber is yielded, pause and batch, red is an error, and sky is the accent for buttons, focus and "ours". White is none of them.
+- **The cut runs parallel to the body's top edge**, so the strip of body above it is the same width all the way along. That holds because the cut enters 36 units under the left corner and leaves 36 under the right one; `check` in `build_mux.py` fails the build if the two slopes differ.
 
-| Element | Stands for | Reads as |
-| --- | --- | --- |
-| **The network** | the machine underneath | The thing the warden actually runs. Nodes and edges, not an abstract field. |
-| **The obelisk** (vertically elongated octahedron) | what the machine is for | Structure. Mass. The thing with enough weight to reorganise what is around it. |
+## Sized for 16 px
 
-Inherited, and still load-bearing:
+At 16 px one pixel is a sixteenth of the viewBox. `build_mux.py` refuses to write a mark that breaks any of these, and each was seen to fail on a bad input:
 
-1. **The obelisk is embedded in the network, not placed on top of it.** Its lower
-   half lands inside the band and hides part of it. Standing clear would say the
-   two are adjacent; the occlusion is what makes "embedded" a claim the picture
-   makes rather than one the README asserts.
-2. **The structure bends what it stands in.** The upper rank sags toward the
-   lower tip. Gravity, not drape.
-3. **The deformation is local.** A well, not a flood.
+- No stroke or cut under a pixel.
+- At least a pixel of body between a cut and the edge. The strip above the through cut is 31.1 units, 2.3 px.
+- At least a pixel between two cuts. The dead ends run 20 units past the left edge for that reason: 36 brings the middle one within 7.7 units of the through cut.
+- Nothing outside the frame.
 
-Vibe words, in priority order: **scientific, honest, humble.** No glow, no accent
-colour, no frame, no decoration that is not doing semantic work.
-
-## The three constraints, all from the 16 px tray tile
-
-Not from taste. Each was measured at the size the icon is actually seen at.
-
-- **Two ranks of nodes, not three.** Three vertical ranks fused into a smear
-  below 32 px. Twelve edges, not twenty-four.
-- **Nothing can leave the frame.** The band is inset by the node radius on all
-  four sides *before* any node is placed, so no arrangement can clip.
-- **The sag is clamped, not chosen.** The dip is clamped so the deepest node of
-  the upper rank stays `NET_CLEARANCE` radii clear of the rank below. Tuning
-  `NET_DIP` cannot reintroduce the overlap.
-
-The last two are unit tests in `tests/test_console.py`, over the pure
-`net_layout`, which is why they are arithmetic and not screenshots.
-
-## The tray icon is also a status light
-
-The mapping is semantic rather than arbitrary. The **nodes carry the decode
-server** (:5001, the units that produce, and what survives the downsample to
-16 px). The **edges carry the embedder** (:5002, since an embedding is the
-relation between things rather than a thing). Down is grey, never red: a stopped
-backend is the normal overnight state, not a fault, and an icon that shows an
-error every night is an icon nobody reads by the second week.
+The mark's viewBox is `22 18 220 220`, not `0 0 256 256`: cropped to the body, centred on it, 10 units clear (`fit`, decided 2026-10-08). In the full frame, which was laid out for the variants with inputs and an output, the body sat 4 units right of centre and was 16% smaller.
 
 ## Files
 
-Since the Linux port (0002) there is no tray icon and no console, so the status
-light below and `warden.ico`'s generator are gone. `tools/build_ico.py` and
-`console.py` are in git history at `b87f39b`, and so are the `net_layout` tests
-the constraints above refer to. The `.ico` stays as the last one generated.
-
 | File | What it is |
 | --- | --- |
-| `build_svg.py` | The generator. `uv run graphics/build_svg.py` rewrites `warden-icon.svg`; `--list` says what it would write. A port of Episteme's canvas prototype, which stays the authority on the geometry it was copied from. |
-| `warden-icon.svg` | Generated. |
-| `warden.ico` | Generated by `uv run tools/build_ico.py`, which renders `warden/console.py:icon_image` at seven sizes and is *not* a conversion of the SVG. The shortcut, the taskbar and the tray are therefore one picture by construction rather than two implementations agreeing. |
-
-`console.py` redraws the solid in Pillow rather than rasterising the SVG, so its
-`MARK_*` constants are the generator's own emitted coordinates over the 256
-viewBox. The SVG is the authority on where the obelisk sits, and the two
-renderers cannot drift without someone editing a number that says where it came
-from.
+| `build_mux.py` | The generator. `uv run graphics/build_mux.py` checks every variant, writes the mark, and writes `candidates/index.js`. `MARK` names the chosen variant and colour. |
+| `infermux.svg` | The mark. Generated. |
+| `../webui/public/favicon.svg` | The same file, as the web UI's favicon. Generated, because `webui/` is all the web UI's nix build sees. |
+| `compare.html`, `candidates/index.js` | The candidates, viewed at real pixel sizes, in any colour. Open the HTML file directly. |

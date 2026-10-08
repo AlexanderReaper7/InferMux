@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<title>InferMux icon candidates</title>
+<link id="favicon" rel="icon" href="data:,">
+<style>
+  :root { --bg: #000; --fg: #d4d4d4; --dim: #8a8a8a; --line: #262626; --accent: #38bdf8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #000; color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+  body > header { position: sticky; top: 0; z-index: 1; background: #0a0a0a; border-bottom: 1px solid var(--line); padding: 12px 24px; display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; }
+  h1 { font-size: 17px; margin: 0 16px 0 0; font-weight: 600; }
+  .ctl { display: flex; gap: 6px; align-items: center; color: var(--dim); }
+  .ctl button { background: #161616; color: var(--fg); border: 1px solid #333; border-radius: 6px; padding: 4px 10px; cursor: pointer; font: inherit; display: inline-flex; gap: 6px; align-items: center; }
+  .ctl button[aria-pressed="true"] { background: #2a2a2a; border-color: var(--accent); }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  input[type=color] { width: 34px; height: 28px; border: 1px solid #333; border-radius: 6px; background: #161616; padding: 2px; cursor: pointer; }
+  main { padding: 24px; }
+  .note { color: var(--dim); margin: 0 0 20px; max-width: 120ch; }
+  section h2 { font-size: 15px; font-weight: 600; margin: 28px 0 10px; color: var(--dim); }
+
+  /* every preview sits on the chosen background */
+  .stage { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  figure { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  figure span { font-size: 12px; color: var(--dim); text-align: center; }
+
+  #compare { display: flex; flex-wrap: wrap; gap: 20px; padding: 20px; align-items: flex-end; min-height: 80px; }
+  #compare:empty::before { content: "Tick candidates below to put them side by side here."; color: var(--dim); }
+
+  #matrix { padding: 16px; overflow-x: auto; }
+  #matrix table { border-collapse: collapse; }
+  #matrix th { font-weight: normal; font-size: 12px; color: var(--dim); padding: 4px 14px; text-align: center; white-space: nowrap; }
+  #matrix th[scope=row] { text-align: right; }
+  #matrix td { padding: 10px 14px; text-align: center; }
+
+  #tabs { display: flex; gap: 2px; padding: 8px 8px 0; overflow-x: auto; }
+  .tab { display: flex; align-items: center; gap: 8px; padding: 8px 14px; min-width: 190px; border-radius: 8px 8px 0 0; background: rgba(128,128,128,.12); font-size: 13px; white-space: nowrap; }
+  .tab.light { color: #222; }
+
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); gap: 20px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 16px; background: #070707; }
+  .card.favicon { border-color: var(--accent); }
+  .card header { display: flex; gap: 10px; align-items: baseline; }
+  .card h3 { margin: 0; font-size: 16px; }
+  .card .claim { color: var(--dim); margin: 6px 0 12px; min-height: 3em; }
+  .card .fails { color: #fca5a5; }
+  .card label { margin-left: auto; color: var(--dim); cursor: pointer; white-space: nowrap; }
+  .card .act { background: none; border: 1px solid #333; color: var(--fg); border-radius: 6px; padding: 2px 8px; cursor: pointer; font: inherit; font-size: 13px; }
+  .sizes { display: flex; gap: 18px; align-items: flex-end; padding: 16px; }
+  .zoomed { display: flex; gap: 18px; padding: 16px; align-items: flex-end; margin-top: 12px; }
+  canvas.px { image-rendering: pixelated; }
+</style>
+<script src="candidates/index.js"></script>
+</head>
+<body>
+<header>
+  <h1>InferMux icon candidates</h1>
+  <div class="ctl" id="palette">Colour</div>
+  <div class="ctl" id="bg">Background
+    <button data-v="#000" aria-pressed="true">black</button>
+    <button data-v="#1c1b22">tab bar</button>
+    <button data-v="#3a3a3a">grey</button>
+    <button data-v="#f4f4f4">white</button>
+  </div>
+  <div class="ctl" id="tile">Tile
+    <button data-v="none" aria-pressed="true">none</button>
+    <button data-v="square">rounded square</button>
+    <button data-v="circle">circle</button>
+  </div>
+  <div class="ctl" id="unit">Sizes in
+    <button data-v="device" aria-pressed="true">device px</button>
+    <button data-v="css">CSS px</button>
+  </div>
+  <div class="ctl" id="cmpsize">Compare at
+    <button data-v="16">16</button>
+    <button data-v="32">32</button>
+    <button data-v="48" aria-pressed="true">48</button>
+    <button data-v="64">64</button>
+    <button data-v="128">128</button>
+  </div>
+</header>
+<main>
+  <p class="note">
+    "Device px" draws each size at that many physical pixels, whatever the zoom (<span id="dpr"></span>), so 16 is the real 16 px tray or tab tile. The pixelated rows are the same rasterisation blown up, which is where two features fuse. "Use as favicon" puts the candidate, in the chosen colour, in this page's real browser tab. Variants come from <code>build_mux.py</code>; rerun it and reload.
+  </p>
+
+  <section>
+    <h2>Side by side, in the chosen colour</h2>
+    <div class="stage" id="compare"></div>
+  </section>
+
+  <section>
+    <h2>Every colour, for the ticked candidates</h2>
+    <div class="stage" id="matrix"></div>
+  </section>
+
+  <section>
+    <h2>In a tab strip (16 CSS px, as the browser draws a favicon)</h2>
+    <div class="stage" id="tabs"></div>
+  </section>
+
+  <section>
+    <h2>Candidates</h2>
+    <div id="grid"></div>
+  </section>
+</main>
+
+<script>
+const { variants: VARIANTS, palettes: PALETTES } = window.ICONS;
+const ROW_SIZES = [256, 128, 64, 48, 32, 24, 16];
+const state = {
+  bg: "#000", tile: "none", unit: "device", cmp: 48,
+  palette: PALETTES[0],
+  picked: new Set(["knockout", "k-notches", "k-bare", "k-inlay", "k-mono", "k-tonal", "engraved"]),
+  favicon: null,
+};
+const cache = new Map();
+
+const dpr = () => window.devicePixelRatio || 1;
+const isLight = c => c === "#f4f4f4";
+
+function paint(v, p) {
+  return v.svg.replaceAll("%ACTIVE%", p.active).replaceAll("%IDLE%", p.idle)
+    .replaceAll("%EDGE%", p.edge).replaceAll("%FILL%", p.fill);
+}
+const dataUrl = svg => "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+
+function image(v, p) {
+  const key = v.id + p.active;
+  if (!cache.has(key)) {
+    cache.set(key, new Promise(res => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = () => { console.error("could not load", key); res(null); };
+      img.src = dataUrl(paint(v, p));
+    }));
+  }
+  return cache.get(key);
+}
+
+// Rasterise at `px` physical pixels, the way an OS or browser would, tile included.
+function raster(img, px) {
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = px;
+  const ctx = cv.getContext("2d");
+  let inset = 0;
+  if (state.tile !== "none") {
+    ctx.fillStyle = isLight(state.bg) ? "#14171a" : "#1b1f23";
+    ctx.beginPath();
+    if (state.tile === "circle") ctx.arc(px / 2, px / 2, px / 2, 0, Math.PI * 2);
+    else ctx.roundRect(0, 0, px, px, px * 0.22);
+    ctx.fill();
+    inset = px * (state.tile === "circle" ? 0.2 : 0.14);
+  }
+  if (img) ctx.drawImage(img, inset, inset, px - 2 * inset, px - 2 * inset);
+  return cv;
+}
+
+// `n` is the nominal size; in device mode it is physical pixels, in CSS mode CSS pixels.
+function sized(img, n) {
+  const physical = state.unit === "device" ? n : Math.round(n * dpr());
+  const cv = raster(img, physical);
+  cv.style.width = cv.style.height = (physical / dpr()) + "px";
+  return cv;
+}
+
+// One rasterisation at `n` physical pixels, blown up `k` times without smoothing.
+function magnified(img, n, k) {
+  const cv = raster(img, n);
+  cv.className = "px";
+  cv.style.width = cv.style.height = (n * k / dpr()) + "px";
+  return cv;
+}
+
+function el(tag, props = {}, ...children) {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...children);
+  return e;
+}
+const fig = (child, caption) => el("figure", {}, child, el("span", { textContent: caption }));
+
+function setFavicon(v) {
+  state.favicon = v.id;
+  document.getElementById("favicon").href = dataUrl(paint(v, state.palette));
+  document.querySelectorAll(".card").forEach(c => c.classList.toggle("favicon", c.dataset.id === v.id));
+}
+
+function download(v) {
+  const p = state.palette;
+  const a = el("a", { href: dataUrl(paint(v, p)), download: `infermux-${v.id}-${p.id}.svg` });
+  a.click();
+}
+
+function buildPaletteControls() {
+  const box = document.getElementById("palette");
+  for (const p of PALETTES) {
+    const b = el("button", { title: p.active }, el("span", { className: "swatch", style: `background:${p.active}` }), p.title);
+    b.setAttribute("aria-pressed", p === state.palette);
+    b.onclick = () => choosePalette(p, b);
+    box.append(b);
+  }
+  const pick = el("input", { type: "color", value: state.palette.active, title: "any colour" });
+  pick.oninput = () => choosePalette({ ...PALETTES[0], id: "custom", title: pick.value, active: pick.value }, null);
+  box.append(pick);
+}
+
+function choosePalette(p, button) {
+  state.palette = p;
+  document.querySelectorAll("#palette button").forEach(x => x.setAttribute("aria-pressed", x === button));
+  document.documentElement.style.setProperty("--accent", p.active);
+  if (state.favicon) setFavicon(VARIANTS.find(v => v.id === state.favicon));
+  render();
+}
+
+let generation = 0;
+async function render() {
+  const mine = ++generation;
+  const p = state.palette;
+  const picked = VARIANTS.filter(v => state.picked.has(v.id));
+  const imgs = Object.fromEntries(await Promise.all(VARIANTS.map(async v => [v.id, await image(v, p)])));
+  const all = new Map(await Promise.all(picked.flatMap(v => PALETTES.map(async q => [v.id + q.active, await image(v, q)]))));
+  if (mine !== generation) return; // a newer render started while this one waited
+
+  document.documentElement.style.setProperty("--bg", state.bg);
+  document.getElementById("dpr").textContent = `devicePixelRatio is ${dpr().toFixed(2)} right now`;
+
+  document.getElementById("compare").replaceChildren(...picked.map(v => fig(sized(imgs[v.id], state.cmp), v.title)));
+
+  const table = el("table");
+  table.append(el("tr", {}, el("th"), ...PALETTES.map(q => el("th", { textContent: q.title }))));
+  for (const v of picked) {
+    table.append(el("tr", {}, el("th", { scope: "row", textContent: v.title }),
+      ...PALETTES.map(q => el("td", {}, sized(all.get(v.id + q.active), state.cmp)))));
+  }
+  document.getElementById("matrix").replaceChildren(picked.length ? table : "Tick candidates below.");
+
+  document.getElementById("tabs").replaceChildren(...VARIANTS.map(v => {
+    const cv = raster(imgs[v.id], Math.round(16 * dpr()));
+    cv.style.width = cv.style.height = "16px";
+    return el("div", { className: "tab" + (isLight(state.bg) ? " light" : "") }, cv, `InferMux · ${v.title}`);
+  }));
+
+  document.getElementById("grid").replaceChildren(...VARIANTS.map(v => {
+    const img = imgs[v.id];
+    const box = el("input", { type: "checkbox", checked: state.picked.has(v.id) });
+    box.onchange = () => { box.checked ? state.picked.add(v.id) : state.picked.delete(v.id); render(); };
+    const head = el("header", {},
+      el("h3", { textContent: v.title }),
+      el("button", { className: "act", textContent: "Use as favicon", onclick: () => setFavicon(v) }),
+      el("button", { className: "act", textContent: "Download SVG", onclick: () => download(v) }),
+      el("label", {}, box, " compare"));
+    const claim = el("p", { className: "claim", textContent: v.claim });
+    if (v.check.length) claim.append(el("br"), el("span", { className: "fails", textContent: "Fails at 16 px: " + v.check.join("; ") }));
+    const sizes = el("div", { className: "sizes stage" }, ...ROW_SIZES.map(n => fig(sized(img, n), n)));
+    const zoomed = el("div", { className: "zoomed stage" },
+      fig(magnified(img, 16, 8), "16 px, 8×"), fig(magnified(img, 24, 4), "24 px, 4×"), fig(magnified(img, 32, 4), "32 px, 4×"));
+    const card = el("div", { className: "card" + (state.favicon === v.id ? " favicon" : "") }, head, claim, sizes, zoomed);
+    card.dataset.id = v.id;
+    return card;
+  }));
+}
+
+function toggle(groupId, key, parse = v => v) {
+  const group = document.getElementById(groupId);
+  group.addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    group.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    state[key] = parse(b.dataset.v);
+    render();
+  });
+}
+toggle("bg", "bg");
+toggle("tile", "tile");
+toggle("unit", "unit");
+toggle("cmpsize", "cmp", Number);
+buildPaletteControls();
+document.documentElement.style.setProperty("--accent", state.palette.active);
+
+// Zooming changes devicePixelRatio, and device-px sizes have to follow it.
+let lastDpr = dpr();
+window.addEventListener("resize", () => { if (dpr() !== lastDpr) { lastDpr = dpr(); render(); } });
+
+render();
+</script>
+</body>
+</html>

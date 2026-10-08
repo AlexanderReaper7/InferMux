@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="22 18 220 220" width="256" height="256">
+<title>InferMux</title>
+<mask id="cut"><rect width="256" height="256" fill="#fff"/><path d="M60 72 L84 72 L180 128 L204 128" fill="none" stroke="#000" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/><path d="M60 128 L104 128" fill="none" stroke="#000" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/><path d="M60 184 L104 184" fill="none" stroke="#000" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/></mask>
+<path d="M84 36 L180 92 L180 164 L84 220 Z" fill="#E8ECF0" stroke="#E8ECF0" stroke-width="16" stroke-linejoin="round" mask="url(#cut)"/>
+</svg>
