@@ -456,6 +456,13 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 
 var errYielded = errors.New("the GPU was yielded")
 
+// IsBatch classifies the client's key for routing. It grants no access;
+// Wrap authenticates and checks the allow list on every routing attempt.
+func (w *Warden) IsBatch(r *http.Request) bool {
+	key, required, known := w.traffic.identify(r)
+	return (!required || known) && key.Class == Batch
+}
+
 func (w *Warden) refuse(rw http.ResponseWriter, why string) {
 	w.mu.Lock()
 	reason := w.verdict.Reason

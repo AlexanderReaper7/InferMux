@@ -7,6 +7,21 @@
 # start), 503 (its warden refused, or the model is busy) or 504. Any other
 # answer, and the last place's, goes to the client.
 
-# The embedder runs on the zbox's card, and on this host's when the zbox
-# cannot serve it.
-Octen-Embedding-4B.Q8_0: [zbox, reaperboi]
+# Bare strings keep failure-only routing: another-model: [zbox, reaperboi].
+# Mappings add overflow policy for any model. max_inflight counts requests
+# on the destination, including direct clients and aliases. 0 or omitted
+# queues without a limit. only_if_idle skips this GPU while a different
+# model request is active; an idle loaded model may be swapped out.
+# batch_only uses the client's key class, never a client-supplied class header.
+# Both GPU hosts must run a version with overflow admission support.
+# CPU is a peer on this host, served by its own CPU-only unit on :5002.
+# Without a CPU-eligible place, interactive work queues at the first
+# saturated place instead of displacing another GPU model's active request.
+Octen-Embedding-4B.Q8_0:
+  - place: zbox
+    max_inflight: 1
+  - place: reaperboi
+    max_inflight: 1
+    only_if_idle: true
+  - place: reaperboi/embed-cpu/Octen-Embedding-4B.Q8_0
+    batch_only: true

@@ -128,6 +128,8 @@ Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_m
 
 `remotes` in warden.yaml lists the other InferMux hosts, each with the file holding this host's key for it. That key's `allow` decides which of the other host's models this one learns. InferMux reads each one's `/v1/models` every 30 s and lists its models as `<host>/<model>`. A request for one is forwarded with the client's own key, so the other host applies that key's class and allow list. A host that stops answering keeps its models listed and fails a request for them at once with 502. Off the machine, traffic goes over HTTPS with `tailscale serve`.
 
+`failover_file` names a reloadable YAML file mapping any model to destinations in preference order. Bare names such as `[zbox, strix]` switch only on 502, 503 or 504. A destination can set `max_inflight` to send excess concurrent requests to the next host, `only_if_idle` to skip a GPU running a different model request, and `batch_only` to restrict a destination to batch keys. The destination counts and reserves requests atomically, including direct traffic and aliases. An idle loaded model may be swapped. Both hosts need overflow support. See [failover.example.yaml](failover.example.yaml) and [routing capacity](docs/kb/guides/routing/capacity-and-queues.md). CPU models should be peers of independent CPU-only services so the GPU warden never unloads or gates them ([0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md)).
+
 ## What it does on a yield
 
 1. Cancels every batch request in flight, and closes every batch session with 1013.

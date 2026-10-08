@@ -46,7 +46,9 @@ remotes:
 
 # For a model, the places to try in order, relative to this file (0016). A
 # request for it goes to the first; a 502, 503 or 504 there sends it on to
-# the next, and the last one's answer is the client's. Reloads at once.
+# the next. Destinations can also set request limits, require no other active
+# GPU model work, or accept only batch keys. See failover.example.yaml.
+# Reloads at once without unloading models.
 failover_file: failover.example.yaml
 
 # Host names besides localhost, 127.0.0.1 and [::1] that a browser may write

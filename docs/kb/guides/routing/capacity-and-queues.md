@@ -4,7 +4,7 @@ summary: Configure concurrencyLimit and globalConcurrencyLimit, and understand q
 category: guides
 tags: [routing, queue, capacity, concurrency, concurrency-limit, max-concurrent-requests, global-concurrency-limit, rate-limit]
 config_keys: [routing, models.*.concurrencyLimit, globalConcurrencyLimit]
-updated: 2026-09-10
+updated: 2026-10-08
 ---
 
 # Routing capacity and request queues
@@ -42,3 +42,28 @@ Use this to protect shared hardware (CPU, disk, network) from being
 overwhelmed by traffic spread across many different models, which a per-model
 `concurrencyLimit` cannot do since it only counts requests to one model at a
 time.
+
+## InferMux overflow between hosts
+
+In InferMux, `failover_file: failover.yaml` in the separate warden configuration enables routing between hosts. This is distinct from llama-swap's `concurrencyLimit`. In `failover.yaml`, any model may list destinations with optional overflow limits:
+
+```yaml
+Octen-Embedding-4B.Q8_0:
+  - place: zbox
+    max_inflight: 1
+  - place: strix
+    max_inflight: 1
+    only_if_idle: true
+  - place: strix/embed-cpu/Octen-Embedding-4B.Q8_0
+    batch_only: true
+```
+
+Each host must exist in the warden's `host` or `remotes`. `host/model` can select a different model name, including a peer on that host. The CPU example requires a peer named `embed-cpu` pointing at an independent CPU-only embedding server. GPU model groups must not manage that service.
+
+`max_inflight` counts active requests at the destination, including direct clients and aliases. Loading and queued requests also count. At the limit, the destination returns 503 before sending the request to the model; InferMux tries the next place. Set each GPU's limit to its useful request concurrency. `0` or omitted imposes no overflow limit. Both hosts must run a version with overflow support; an older host ignores the limit and keeps queueing.
+
+`only_if_idle: true` skips a GPU while a different model request is active. It allows swapping a different model that is loaded but has no active request. `batch_only: true` uses the client's authenticated key class. A client cannot enable CPU fallback by adding a class header. Without a keys file, requests are interactive.
+
+In this example the second concurrent embedding request uses strix. A batch request uses the CPU if both GPUs are occupied. An interactive request skips the CPU and queues on the first saturated GPU. No fallback bypasses authentication, model allow lists or the GPU warden. An unbounded final destination accepts queued overflow; if every destination is unavailable, the final failure reaches the client.
+
+Bare lists such as `embed: [zbox, strix]` retain failure-only routing. Changes to the routing file apply without unloading models. Requests balance as whole requests; one embedding batch is not divided between hosts.

@@ -166,8 +166,24 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		}
 		return hosts
 	}))
-	failovers := failover.New(w.Wrap(recorder.Wrap(codex)), cfg.Host, log)
-	failovers.Set(cfg.Failover)
+	admission := &failover.Admission{Model: func(r *http.Request) (string, bool, bool) {
+		if _, ok := remotes.get().Qualify(r); ok {
+			return "", false, false
+		}
+		return models.Qualify(r)
+	}}
+	failovers := failover.New(w.Wrap(recorder.Wrap(admission.Wrap(codex))), cfg.Host, log)
+	failovers.Batch = w.IsBatch
+	setFailover := func(routes warden.Failover) {
+		places := make(map[string][]failover.Place, len(routes))
+		for model, route := range routes {
+			for _, p := range route {
+				places[model] = append(places[model], failover.Place{Place: p.Place, MaxInflight: p.MaxInflight, OnlyIfIdle: p.OnlyIfIdle, BatchOnly: p.BatchOnly})
+			}
+		}
+		failovers.Set(places)
+	}
+	setFailover(cfg.Failover)
 	httpServer.Handler = failovers
 	w.Start()
 
@@ -180,7 +196,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		if err := remotes.set(ctx, cfg.Remotes); err != nil {
 			log.Warnf("Remote hosts not reloaded: %v", err)
 		}
-		failovers.Set(cfg.Failover)
+		setFailover(cfg.Failover)
 		w.Reload(cfg)
 	}
 	go (&configwatcher.Watcher{Path: absolute(path), OnChange: reloadWarden}).Run(ctx)

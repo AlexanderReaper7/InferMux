@@ -14,8 +14,12 @@ func TestTheExampleFileLoadsWithEveryKeyRead(t *testing.T) {
 	}
 	if cfg.ComfyUIURL == "" || len(cfg.OurUnits) != 1 || len(cfg.DesktopProcesses) != 2 ||
 		cfg.Host != "reaperboi" || cfg.Keys == nil || len(cfg.Keys.Keys) != 2 || len(cfg.Remotes) != 1 || len(cfg.Consumers) != 1 ||
-		len(cfg.Failover["Octen-Embedding-4B.Q8_0"]) != 2 {
+		len(cfg.Failover["Octen-Embedding-4B.Q8_0"]) != 3 {
 		t.Fatalf("a key was not read: %+v", cfg)
+	}
+	places := cfg.Failover["Octen-Embedding-4B.Q8_0"]
+	if places[0].MaxInflight != 1 || !places[1].OnlyIfIdle || !places[2].BatchOnly {
+		t.Fatalf("overflow policy was not read: %+v", places)
 	}
 	if cfg.Policy != DefaultConfig().Policy {
 		t.Fatalf("the example's policy is not the defaults: %+v", cfg.Policy)
@@ -128,6 +132,15 @@ func TestAFailoverFileIsCheckedAgainstTheHosts(t *testing.T) {
 		{"a peer is not a place", "m: [openrouter/m, reaperboi]\n", `"openrouter/m" is not this host or a remote`},
 		{"one place", "m: [zbox]\n", "at least two places"},
 		{"twice", "m: [zbox, reaperboi, zbox]\n", `"zbox" is listed twice`},
+		{"overflow", "m: [{place: zbox, max_inflight: 2}, {place: reaperboi, max_inflight: 1, only_if_idle: true}, {place: reaperboi/cpu/m, batch_only: true}]\n", ""},
+		{"negative capacity", "m: [{place: zbox, max_inflight: -1}, reaperboi]\n", "must not be negative"},
+		{"misspelled setting", "m: [{place: zbox, max_infligt: 1}, reaperboi]\n", "unknown place setting"},
+		{"missing place", "m: [{max_inflight: 1}, reaperboi]\n", "must not be empty"},
+		{"empty model suffix", "m: [zbox/, reaperboi]\n", "must not be empty"},
+		{"duplicate structured place", "m: [zbox, {place: zbox, max_inflight: 1}]\n", "listed twice"},
+		{"fractional capacity", "m: [{place: zbox, max_inflight: 1.5}, reaperboi]\n", "must be an integer"},
+		{"string boolean", "m: [{place: zbox, batch_only: 'true'}, reaperboi]\n", "must be a boolean"},
+		{"duplicate setting", "m: [{place: zbox, place: reaperboi}, reaperboi]\n", "duplicate place setting"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

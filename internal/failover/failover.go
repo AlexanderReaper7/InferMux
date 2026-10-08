@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -34,9 +35,20 @@ type Handler struct {
 	next http.Handler
 	host string
 	log  Logger
+	// Batch classifies the original client's key. Every attempt still passes
+	// the destination's authentication, allow list and request gate.
+	Batch func(*http.Request) bool
 
 	mu     sync.Mutex
-	places map[string][]string
+	places map[string][]Place
+}
+
+// Place is a destination and its optional overflow policy.
+type Place struct {
+	Place       string
+	MaxInflight int
+	OnlyIfIdle  bool
+	BatchOnly   bool
 }
 
 // New fails over in front of next. host is this host's name, which in a
@@ -46,7 +58,7 @@ func New(next http.Handler, host string, log Logger) *Handler {
 }
 
 // Set replaces the table, as failover.yaml is reloaded.
-func (h *Handler) Set(places map[string][]string) {
+func (h *Handler) Set(places map[string][]Place) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.places = places
@@ -67,34 +79,79 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		h.next.ServeHTTP(rw, r)
 		return
 	}
+	if !inference(r) {
+		h.next.ServeHTTP(rw, r)
+		return
+	}
+	batch := h.Batch != nil && h.Batch(r)
+	eligible := make([]Place, 0, len(places))
+	for _, place := range places {
+		if !place.BatchOnly || batch {
+			eligible = append(eligible, place)
+		}
+	}
+	if len(eligible) == 0 {
+		h.next.ServeHTTP(rw, r)
+		return
+	}
 	// Every attempt reads the body from the start.
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		swaputil.SendResponse(rw, r, http.StatusBadRequest, "could not read the request body")
 		return
 	}
-	for i, place := range places {
-		name := h.name(place, model)
+	attemptFor := func(place Place) (*http.Request, error) {
+		name := h.name(place.Place, model)
 		attempt := r.Clone(r.Context())
+		attempt.Header.Del(MaxInflightHeader)
+		attempt.Header.Del(OnlyIfIdleHeader)
+		if place.MaxInflight > 0 {
+			attempt.Header.Set(MaxInflightHeader, strconv.Itoa(place.MaxInflight))
+		}
+		if place.OnlyIfIdle {
+			attempt.Header.Set(OnlyIfIdleHeader, "true")
+		}
 		attempt.Body = io.NopCloser(bytes.NewReader(body))
 		attempt.ContentLength = int64(len(body))
 		if name != model {
-			if attempt, err = swaputil.ReplaceRequestModel(attempt, model, name); err != nil {
-				swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
-				return
-			}
+			return swaputil.ReplaceRequestModel(attempt, model, name)
 		}
-		if i == len(places)-1 {
-			h.next.ServeHTTP(rw, attempt)
+		return attempt, nil
+	}
+	var queue *Place
+	for i, place := range eligible {
+		attempt, err := attemptFor(place)
+		if err != nil {
+			swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
 			return
 		}
-		held := &heldWriter{rw: rw, header: http.Header{}}
+		held := &heldWriter{rw: rw, header: http.Header{}, final: i == len(eligible)-1}
 		h.next.ServeHTTP(held, attempt)
 		if !held.failed {
 			return
 		}
-		h.log.Warnf("Failover: %s answered %d, trying %s", name, held.status, h.name(places[i+1], model))
+		if queue == nil && held.header.Get(BusyHeader) == "capacity" && !place.OnlyIfIdle {
+			copy := place
+			queue = &copy
+		}
+		if i+1 < len(eligible) {
+			h.log.Warnf("Failover: %s answered %d, trying %s", h.name(place.Place, model), held.status, h.name(eligible[i+1].Place, model))
+		}
 	}
+	// With no batch CPU destination, interactive work queues at the first
+	// saturated place. A destination occupied by another model stays skipped.
+	if queue != nil && r.Context().Err() == nil {
+		queue.MaxInflight = 0
+		attempt, err := attemptFor(*queue)
+		if err != nil {
+			swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
+			return
+		}
+		h.next.ServeHTTP(rw, attempt)
+		return
+	}
+	rw.Header().Set("Retry-After", "1")
+	swaputil.SendResponse(rw, r, http.StatusServiceUnavailable, "all destinations are busy")
 }
 
 // name is what a place calls the model: zbox/<model> on another host, the
@@ -125,6 +182,7 @@ type heldWriter struct {
 	status    int
 	failed    bool
 	committed bool
+	final     bool
 }
 
 func (w *heldWriter) Header() http.Header {
@@ -139,7 +197,7 @@ func (w *heldWriter) WriteHeader(status int) {
 		return
 	}
 	w.status = status
-	if failsOver(status) {
+	if (!w.final && failsOver(status)) || (status == http.StatusServiceUnavailable && w.header.Get(BusyHeader) != "") {
 		w.failed = true
 		return
 	}

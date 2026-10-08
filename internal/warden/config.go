@@ -66,8 +66,8 @@ type Config struct {
 	Remotes []Remote `yaml:"remotes" json:"remotes"`
 
 	// FailoverFile is failover.yaml, relative to this file (0016): for a
-	// model, the places to try in order. Empty, a model is served where its
-	// name resolves.
+	// model, the places to try in order, with optional overflow limits and
+	// batch-only destinations (0019). Empty, its name decides where it runs.
 	FailoverFile string `yaml:"failover_file,omitempty" json:"failover_file,omitempty"`
 	// Failover is FailoverFile, read with this file. Nil without one.
 	Failover Failover `yaml:"-" json:"-"`

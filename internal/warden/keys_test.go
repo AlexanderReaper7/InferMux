@@ -65,6 +65,27 @@ func TestWithoutAKeysFileNoKeyIsNeeded(t *testing.T) {
 	}
 }
 
+func TestWarden_BatchRoutingUsesTheAuthenticatedKey(t *testing.T) {
+	h := newHarness(t, nil)
+	for _, tc := range []struct {
+		key   string
+		batch bool
+	}{
+		{"my-key", false}, {"batch-key", true}, {"unknown", false}, {"", false},
+	} {
+		req := httptest.NewRequest("POST", "/v1/embeddings", nil)
+		req.Header.Set("Authorization", "Bearer "+tc.key)
+		req.Header.Set("X-InferMux-Class", "batch")
+		if got := h.w.IsBatch(req); got != tc.batch {
+			t.Fatalf("key %q batch=%v, want %v", tc.key, got, tc.batch)
+		}
+	}
+	h.w.Reload(Config{})
+	if h.w.IsBatch(httptest.NewRequest("POST", "/v1/embeddings", nil)) {
+		t.Fatal("keyless request became batch")
+	}
+}
+
 func TestAKeyMayUseOnlyWhatItsAllowListMatches(t *testing.T) {
 	h := newHarness(t, func(c *Config) {
 		c.Keys.Keys["narrow"] = Key{SHA256: HashKey("narrow-key"), Class: Interactive, Allow: []string{"this/*", "openrouter/cheap-*"}}

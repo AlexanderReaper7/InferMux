@@ -15,7 +15,8 @@ import (
 const DataEventID = 0x04
 
 type DataEvent struct {
-	Data []byte
+	Data     []byte
+	sequence uint64
 }
 
 func (e DataEvent) Type() uint32 {
@@ -111,8 +112,11 @@ type Monitor struct {
 	// broadcastCh hands log data to a dedicated goroutine that owns the
 	// (backpressuring) event bus. Write performs a non-blocking send so that
 	// slow subscribers can never stall the upstream process's stdout drain.
-	broadcastCh chan []byte
+	broadcastCh chan DataEvent
 	dropped     atomic.Uint64
+	// sequence is protected by bufferMu. Subscription and queueing a write
+	// share that lock so delayed broadcasts cannot become new live logs.
+	sequence uint64
 
 	level      Level
 	prefix     string
@@ -128,7 +132,7 @@ func NewWriter(stdout io.Writer) *Monitor {
 		eventbus:    event.NewDispatcherConfig(1000),
 		buffer:      nil,
 		stdout:      stdout,
-		broadcastCh: make(chan []byte, 1024),
+		broadcastCh: make(chan DataEvent, 1024),
 		level:       LevelInfo,
 		prefix:      "",
 		timeFormat:  "",
@@ -148,16 +152,17 @@ func (w *Monitor) Write(p []byte) (n int, err error) {
 	}
 
 	w.bufferMu.Lock()
+	defer w.bufferMu.Unlock()
 	if w.buffer == nil {
 		w.buffer = newCircularBuffer(BufferSize)
 	}
 	w.buffer.Write(p)
-	w.bufferMu.Unlock()
+	w.sequence++
 
 	bufferCopy := make([]byte, len(p))
 	copy(bufferCopy, p)
 	select {
-	case w.broadcastCh <- bufferCopy:
+	case w.broadcastCh <- DataEvent{Data: bufferCopy, sequence: w.sequence}:
 	default:
 		// Subscribers (e.g. the web UI log stream) can't keep up. Drop the
 		// live broadcast rather than block: for the upstream monitor Write
@@ -188,8 +193,13 @@ func (w *Monitor) Clear() {
 }
 
 func (w *Monitor) OnLogData(callback func(data []byte)) context.CancelFunc {
+	w.bufferMu.Lock()
+	defer w.bufferMu.Unlock()
+	after := w.sequence
 	return event.Subscribe(w.eventbus, func(e DataEvent) {
-		callback(e.Data)
+		if e.sequence > after {
+			callback(e.Data)
+		}
 	})
 }
 
@@ -201,9 +211,9 @@ func (w *Monitor) broadcastLoop() {
 	for msg := range w.broadcastCh {
 		if dropped := w.dropped.Swap(0); dropped > 0 {
 			notice := fmt.Appendf(nil, "\n— %d bytes dropped —\n", dropped)
-			event.Publish(w.eventbus, DataEvent{Data: notice})
+			event.Publish(w.eventbus, DataEvent{Data: notice, sequence: msg.sequence})
 		}
-		event.Publish(w.eventbus, DataEvent{Data: msg})
+		event.Publish(w.eventbus, msg)
 	}
 }
 

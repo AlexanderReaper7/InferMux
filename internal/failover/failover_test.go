@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mostlygeek/llama-swap/internal/remote"
+	"github.com/mostlygeek/llama-swap/internal/swaputil"
 )
 
 type nopLog struct{}
@@ -62,9 +63,9 @@ func post(t *testing.T, h http.Handler, model string, header http.Header) *httpt
 
 func newHandler(next http.Handler) *Handler {
 	h := New(next, "reaperboi", nopLog{})
-	h.Set(map[string][]string{
-		"embed": {"zbox", "reaperboi"},
-		"three": {"zbox", "reaperboi/three-gpu", "reaperboi/three-cpu"},
+	h.Set(map[string][]Place{
+		"embed": {{Place: "zbox"}, {Place: "reaperboi"}},
+		"three": {{Place: "zbox"}, {Place: "reaperboi/three-gpu"}, {Place: "reaperboi/three-cpu"}},
 	})
 	return h
 }
@@ -180,3 +181,68 @@ type remoteLog struct{}
 
 func (remoteLog) Infof(string, ...any) {}
 func (remoteLog) Warnf(string, ...any) {}
+
+func TestProxy_LoadBalanceAcrossServingHosts(t *testing.T) {
+	// Traffic arriving directly on zbox must count against requests forwarded
+	// from this front door. The real remote router carries the reservation hints.
+	zboxAdmission, localAdmission := testAdmission(), testAdmission()
+	started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	zboxModel := zboxAdmission.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Hold") == "true" {
+			close(started)
+			<-release
+		}
+		w.Header().Set("X-Answered-By", "zbox")
+		w.Write([]byte("zbox"))
+	}))
+	zbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Write([]byte(`{"data":[{"id":"embed","meta":{"llamaswap":{"type":"model"}}}]}`))
+			return
+		}
+		zboxModel.ServeHTTP(w, r)
+	}))
+	defer zbox.Close()
+	go func() { defer close(done); post(t, zboxModel, "embed", http.Header{"X-Hold": {"true"}}) }()
+	<-started
+	defer func() { close(release); <-done }()
+	local := localAdmission.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		model, _ := swaputil.ExtractModel(r)
+		w.Header().Set("X-Answered-By", model)
+		w.Write([]byte(model))
+	}))
+	router, err := remote.New([]remote.Host{{Name: "zbox", URL: zbox.URL}}, local, func(string) bool { return true }, "", remoteLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Poll("zbox")
+	h := New(router, "strix", nopLog{})
+	h.Batch = func(r *http.Request) bool { return r.Header.Get("X-Test-Batch") == "true" }
+	h.Set(map[string][]Place{"embed": {
+		{Place: "zbox", MaxInflight: 1},
+		{Place: "strix", MaxInflight: 1, OnlyIfIdle: true},
+		{Place: "strix/cpu", BatchOnly: true},
+	}})
+	if rw := post(t, h, "embed", nil); rw.Code != 200 || rw.Body.String() != "embed" || rw.Header().Get(BusyHeader) != "" {
+		t.Fatalf("zbox overflow did not reach local GPU cleanly: %d %v %q", rw.Code, rw.Header(), rw.Body.String())
+	}
+	for _, active := range []string{"chat", "embed"} {
+		if busy := localAdmission.begin(active, true, 0, false); busy != "" {
+			t.Fatal(busy)
+		}
+		if rw := post(t, h, "embed", http.Header{"X-Test-Batch": {"true"}}); rw.Code != 200 || rw.Body.String() != "cpu" {
+			t.Fatalf("batch overflow while %s active: %d %q", active, rw.Code, rw.Body.String())
+		}
+		// The primary is still processing the direct request. The unbounded
+		// retry reaches it, while the model backend owns its actual queue.
+		if rw := post(t, h, "embed", nil); rw.Code != 200 || rw.Body.String() != "zbox" {
+			t.Fatalf("interactive used CPU or displaced %s: %d %q", active, rw.Code, rw.Body.String())
+		}
+		localAdmission.end(active, true)
+	}
+	// Reloading the route applies immediately and keeps occupancy intact.
+	h.Set(map[string][]Place{"embed": {{Place: "zbox", MaxInflight: 2}, {Place: "strix"}}})
+	if rw := post(t, h, "embed", nil); rw.Code != 200 || rw.Body.String() != "zbox" {
+		t.Fatalf("new limit not applied: %d %q", rw.Code, rw.Body.String())
+	}
+}

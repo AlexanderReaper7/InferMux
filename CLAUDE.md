@@ -17,7 +17,7 @@ This file is rules and navigation only.
 |---|---|
 | `internal/warden/` | ours: config, policy, probe, ComfyUI, consumers, request classes, stuck agents, the loop and `/warden/*` |
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
-| `internal/failover/` | ours: a model listed in failover.yaml tried at each of its places in turn, in front of the warden (0016) |
+| `internal/failover/` | ours: failure and capacity overflow between model destinations (0016, [0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md)); admission counts each serving host's requests after authentication |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
 | `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
 | `internal/stream/` | ours: a WebSocket followed frame by frame for the warden and the stats, closed with a code of ours, and routed by `?model=` (0018); `wstest/` is the tests' frame client and echo backend |
