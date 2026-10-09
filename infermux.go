@@ -171,7 +171,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			return "", false, false
 		}
 		return models.Qualify(r)
-	}}
+	}, Yielded: w.Yielded}
 	failovers := failover.New(w.Wrap(recorder.Wrap(admission.Wrap(codex))), cfg.Host, log)
 	failovers.Batch = w.IsBatch
 	setFailover := func(routes warden.Failover) {

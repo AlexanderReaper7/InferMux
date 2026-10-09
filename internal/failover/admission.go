@@ -20,8 +20,11 @@ const (
 // Admission counts requests on the host that serves them, including direct
 // clients and aliases. Model returns a canonical name, whether it uses this
 // host's GPU, and whether this host serves it. Remote forwarding is excluded.
+// Yielded, when set, reports the warden's pause: an only-if-idle request is
+// then refused for this host's GPU whatever its key (0021).
 type Admission struct {
 	Model     func(*http.Request) (name string, gpu, served bool)
+	Yielded   func() bool
 	mu        sync.Mutex
 	active    map[string]int
 	gpuActive map[string]int
@@ -67,6 +70,9 @@ func (a *Admission) Wrap(next http.Handler) http.Handler {
 }
 
 func (a *Admission) begin(name string, gpu bool, limit int, idle bool) string {
+	if gpu && idle && a.Yielded != nil && a.Yielded() {
+		return "yielded"
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if gpu && idle {

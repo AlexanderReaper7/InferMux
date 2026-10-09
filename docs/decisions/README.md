@@ -27,5 +27,6 @@ Nothing here is edited to reflect later changes. A decision that was replaced ge
 | [0017](0017-a-priority-process-takes-the-card.md) | A priority process with a CUDA context takes the card: contention at any load, unloaded at once but never under a request | 2026-10-06 |
 | [0018](0018-streams-pass-through-and-a-session-is-interactive-while-data-moves.md) | Streams pass through unchanged, routed by model; a WebSocket session is interactive only while data moves, and is closed with a code before an unload | 2026-10-07 |
 | [0019](0019-model-overflow-uses-destination-capacity.md) | Any model can overflow at a destination request limit; embedding work tries zbox, an idle 3080, then CPU for batch keys | 2026-10-08 |
+| [0021](0021-overflow-never-takes-a-yielded-card.md) | Overflow never takes a yielded card, whatever the key; bulk indexing gets a batch key | 2026-10-09 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.

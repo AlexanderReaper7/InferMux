@@ -456,6 +456,14 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 
 var errYielded = errors.New("the GPU was yielded")
 
+// Yielded says whether the GPU is yielded to someone else's work. Overflow
+// asks it before it puts a model on this card (0021).
+func (w *Warden) Yielded() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.verdict.Yielded
+}
+
 // IsBatch classifies the client's key for routing. It grants no access;
 // Wrap authenticates and checks the allow list on every routing attempt.
 func (w *Warden) IsBatch(r *http.Request) bool {
