@@ -30,7 +30,10 @@ let
       ../llama-swap.go
       ../llama-swap_test.go
       ../infermux.go
+      ../infermux_config.go
+      ../infermux_config_test.go
       ../infermux_loadbalance_test.go
+      ../infermux_stream_test.go
       ../config-schema.json
       ../config.example.yaml
       ../warden.example.yaml
@@ -80,6 +83,7 @@ in
     "."
     "cmd/infermux-ui"
     "cmd/infermux-adapter"
+    "cmd/infermux-config"
   ];
   tags = lib.optionals withUI [ "embed_ui" ];
   # go-nvml's header declares deprecated vGPU calls, one warning each.
@@ -117,7 +121,7 @@ in
   # upstream's to run.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/server/ .
     runHook postCheck
   '';
 

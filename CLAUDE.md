@@ -17,6 +17,9 @@ This file is rules and navigation only.
 |---|---|
 | `internal/warden/` | ours: config, policy, probe, ComfyUI, consumers, request classes, stuck agents, the loop and `/warden/*` |
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
+| `internal/placement/` | ours: the one config (0022): hosts, devices, groups, the `balance` and `failover` lanes, and each host's part derived from it, llama-swap's file included |
+| `internal/configstore/`, `cmd/infermux-config/` | ours: the config's signature, the daemon's kept versions and conflicts, and the terminal tool that makes the key and signs (0022) |
+| `infermux_config.go` | ours: the daemon's side of the one config: start, `/warden/config*`, push and poll between hosts |
 | `internal/failover/` | ours: failure and capacity overflow between model destinations (0016, [0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md), 0021); admission counts each serving host's requests after authentication |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
 | `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
@@ -32,10 +35,10 @@ This file is rules and navigation only.
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/...  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_loadbalance_test.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore cmd internal/server/warden.go internal/server/warden_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
@@ -60,6 +63,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 ## The rules that have to fire without being looked up
 
 - **Every client has a key once `keys_file` is set, and keys.yaml holds only hashes** (0006). The plaintext lives in the hosts' sops file and nowhere else, and never on a command line.
+- **A config is trusted by its signature and by nothing else** (0022, 10). The trusted keys come from Nix's command line, never from the config or a file the UI writes. A daemon never runs a config that fails the check, and the host key carries a signed config without being able to write one.
 - **Between hosts the client's own key travels; a host's own key is for discovery and never replaces it** (0006). A llama-swap peer `apiKey` would replace the client's key and with it its class, so the hosts are `remotes`, not `peers`.
 - **The user's own request is never killed** (0004). Unmarked is interactive. Do not add a path that cancels, refuses or unloads under an interactive request; the unload waits for `interactive_recent_seconds` of quiet. The one exception is a stuck agent's request, refused before it reaches the model, by the user's choice (0015).
 - **The gate is for this host's card** (0009). Only a request for a local model is refused, cancelled or counted as interactive; another host's and a peer's pass after the key and allow check.

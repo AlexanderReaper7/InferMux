@@ -5,6 +5,11 @@
 # reloads without a rebuild (0005). Without it, `warden` is the warden's file.
 # The model servers run as children of this unit, so they share its sandbox and
 # its cgroup, which is what makes their GPU work ours.
+#
+# With `signedConfig.trustedKeys` set, the one config (0022) decides the
+# models, their places and the other hosts instead: the daemon keeps it under
+# its state directory, takes it from the other hosts, and derives its own
+# part into /var/lib/infermux/derived. `configDir`'s `models/` is then unused.
 self:
 {
   config,
@@ -18,6 +23,13 @@ let
   yaml = pkgs.formats.yaml { };
   baseConfig = yaml.generate "infermux.yaml" cfg.settings;
   modelsDir = "${cfg.configDir}/models";
+  signed = cfg.signedConfig.trustedKeys != [ ];
+  trustedKeys = pkgs.writeText "infermux-trusted-keys" (lib.concatLines cfg.signedConfig.trustedKeys);
+  # The signing tool alone on PATH, not the daemon's binaries.
+  configTool = pkgs.runCommand "infermux-config" { meta.mainProgram = "infermux-config"; } ''
+    mkdir -p $out/bin
+    ln -s ${lib.getExe' cfg.package "infermux-config"} $out/bin/infermux-config
+  '';
   wardenFile =
     if cfg.configDir != null then
       "${cfg.configDir}/warden.yaml"
@@ -73,6 +85,33 @@ in
         remote's key_file in warden.yaml points at. Passed with LoadCredential,
         so the files may be root's.
       '';
+    };
+
+    signedConfig = {
+      trustedKeys = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "q6NnXhYc3E5gq0n2m8l0Z8m0g6Yy3eJmWm4mVq3Zr2Q= the user's config key" ];
+        description = ''
+          The public keys a config must be signed with, as `infermux-config
+          keygen` prints them, each optionally followed by a comment. Set, the
+          one config runs this host (0022): `warden.yaml` must then name
+          `host` and `remote_key_file`, and may not have `remotes` or
+          `failover_file`. Kept in Nix, never in the config, since a config
+          that names its own trusted key proves nothing.
+        '';
+      };
+      seed = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/home/alice/nixcfg/infermux/config";
+        description = ''
+          A signed config directory to start from, nixcfg's copy: used when
+          it is newer than the one the daemon keeps, and ignored when older.
+          Bound in read-only. A string, not a path, so Nix never copies it
+          into the store.
+        '';
+      };
     };
 
     codexPrompt = lib.mkOption {
@@ -264,7 +303,13 @@ in
           assertion = cfg.ui.enable -> cfg.configDir != null;
           message = "services.infermux.ui needs services.infermux.configDir: the UI edits those files.";
         }
+        {
+          assertion = cfg.signedConfig.seed != null -> signed;
+          message = "services.infermux.signedConfig.seed needs signedConfig.trustedKeys to check it against.";
+        }
       ];
+
+      environment.systemPackages = lib.optional signed configTool;
 
       # Browsers may read only InferMux's own origin. Writes from other origins
       # are refused by the warden whatever this says (0005).
@@ -287,9 +332,20 @@ in
               "-warden-config"
               wardenFile
             ]
-            ++ lib.optionals (cfg.configDir != null) [
+            ++ lib.optionals (cfg.configDir != null && !signed) [
               "-config-dir"
               modelsDir
+            ]
+            ++ lib.optionals signed [
+              "-config-trusted-keys"
+              trustedKeys
+              # Written by the daemon from its part of the signed config.
+              "-config-dir"
+              "/var/lib/infermux/derived"
+            ]
+            ++ lib.optionals (cfg.signedConfig.seed != null) [
+              "-config-seed"
+              cfg.signedConfig.seed
             ]
             ++ lib.optionals (cfg.codexPrompt != null) [
               "-codex-prompt"
@@ -322,10 +378,12 @@ in
           # nixpkgs llama-cpp and llama-swap units set, would blind it, and so
           # would ProcSubset=pid. PrivateUsers is left off for the same reason.
           ProtectSystem = "strict";
-          # tmpfs rather than true, so the config directory can be bound in
-          # when it lives under /home.
-          ProtectHome = if cfg.configDir != null then "tmpfs" else true;
-          BindReadOnlyPaths = lib.optional (cfg.configDir != null) cfg.configDir;
+          # tmpfs rather than true, so the config directory and the seed can
+          # be bound in when they live under /home.
+          ProtectHome = if cfg.configDir != null || cfg.signedConfig.seed != null then "tmpfs" else true;
+          BindReadOnlyPaths =
+            lib.optional (cfg.configDir != null) cfg.configDir
+            ++ lib.optional (cfg.signedConfig.seed != null) cfg.signedConfig.seed;
           PrivateTmp = true;
           NoNewPrivileges = true;
           CapabilityBoundingSet = "";
