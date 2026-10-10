@@ -26,6 +26,9 @@ type Part struct {
 	Devices map[string]Device
 	// Remotes are the other hosts' URLs.
 	Remotes map[string]string
+	// Files are every model's files, on any host, by path: what this host
+	// may serve another (internal/fetch).
+	Files map[string]File
 }
 
 // Route is one place of a model's lanes.
@@ -43,10 +46,11 @@ type Route struct {
 }
 
 // Local is a llama-swap model of this host: the config's model it runs,
-// and the devices it occupies, its place's first.
+// the devices it occupies, its place's first, and the paths of its files.
 type Local struct {
 	Model   string
 	Devices []string
+	Files   []string
 }
 
 // Instance is the name a model has on one device of a host. Its first place
@@ -93,6 +97,7 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 		Local:   map[string]Local{},
 		Devices: c.Hosts[host].Devices,
 		Remotes: map[string]string{},
+		Files:   map[string]File{},
 	}
 	for name, h := range c.Hosts {
 		if name != host {
@@ -103,6 +108,12 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 	members := map[string][]string{}
 	for _, name := range c.ModelNames() {
 		m := c.Models[name]
+		var files []string
+		for p, f := range m.Files {
+			part.Files[p] = f
+			files = append(files, p)
+		}
+		sort.Strings(files)
 		balance, failover, err := c.Lanes(name)
 		if err != nil {
 			return nil, err
@@ -132,7 +143,7 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 			}
 			models.Content = append(models.Content, scalar(instance), entry)
 			members[p.Device()] = append(members[p.Device()], instance)
-			part.Local[instance] = Local{Model: name, Devices: append([]string{p.Device()}, p.Occupies...)}
+			part.Local[instance] = Local{Model: name, Devices: append([]string{p.Device()}, p.Occupies...), Files: files}
 		}
 	}
 	doc := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -266,18 +267,36 @@ func TestOneConfigBetweenTwoHosts(t *testing.T) {
 // routes come from it, the derived file is written, and llama-swap reloads
 // once it can hear the signal.
 func TestProxy_OneConfigRuns(t *testing.T) {
-	var discovery atomic.Value
+	var discovery, fileKey atomic.Value
+	var zboxDown atomic.Bool
+	weights := bytes.Repeat([]byte("weights."), 1000)
+	release := make(chan struct{})
 	zbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
+		switch {
+		case r.URL.Path == "/v1/models":
 			discovery.Store(r.Header.Get("Authorization"))
 			// Unlisted: only the config's route can send embed here.
 			w.Write([]byte(`{"data":[]}`))
-			return
+		case strings.HasPrefix(r.URL.Path, "/warden/files/"):
+			fileKey.Store(r.Header.Get("Authorization"))
+			<-release
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(weights))
+		case zboxDown.Load():
+			w.WriteHeader(http.StatusServiceUnavailable)
+		default:
+			w.Write([]byte("zbox"))
 		}
-		w.Write([]byte("zbox"))
 	}))
 	defer zbox.Close()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
 	dir := t.TempDir()
+	modelFile := filepath.Join(dir, "models", "e.gguf")
 	t.Setenv("STATE_DIRECTORY", dir)
 	write := func(name, body string) string {
 		p := filepath.Join(dir, name)
@@ -293,7 +312,7 @@ func TestProxy_OneConfigRuns(t *testing.T) {
 	seed := filepath.Join(dir, "seed")
 	bundle, err := configstore.Sign(map[string][]byte{
 		"infermux.yaml":     []byte(fmt.Sprintf("hosts:\n  test:\n    url: http://127.0.0.1:1\n    devices:\n      gpu: {kind: gpu}\n  zbox:\n    url: %s\n    devices:\n      gpu: {kind: gpu}\nbalance:\n  embed: [zbox/gpu]\nfailover:\n  embed: [test/gpu]\n", zbox.URL)),
-		"models/embed.yaml": []byte("cmd: llama-server --model /e.gguf --port ${PORT}\n"),
+		"models/embed.yaml": []byte(fmt.Sprintf("cmd: llama-server --model %s --port ${PORT}\nfiles:\n  %s: {sha256: %x}\n", modelFile, modelFile, sha256.Sum256(weights))),
 	}, priv, "test", nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -304,13 +323,14 @@ func TestProxy_OneConfigRuns(t *testing.T) {
 	keys := write("trusted", configstore.PublicKeyString(pub)+"\n")
 	hostKey := write("hostkey", "host-secret\n")
 	wfile := write("warden.yaml", fmt.Sprintf("host: test\nremote_key_file: %s\npolicy:\n  enabled: false\n", hostKey))
-	*flagConfigTrustedKeys, *flagConfigSeed = keys, seed
-	t.Cleanup(func() { *flagConfigTrustedKeys, *flagConfigSeed = "", "" })
+	*flagConfigTrustedKeys, *flagConfigSeed, *flagFetchDirs = keys, seed, filepath.Dir(modelFile)
+	t.Cleanup(func() { *flagConfigTrustedKeys, *flagConfigSeed, *flagFetchDirs = "", "", "" })
 	var reloads atomic.Int32
 	reloadSignal = func() { reloads.Add(1) }
 	t.Cleanup(func() { reloadSignal = func() { syscall.Kill(os.Getpid(), syscall.SIGHUP) } })
 
-	cfg, err := config.LoadConfigFromReader(strings.NewReader("healthCheckTimeout: 15\nperformance:\n  disabled: true\n"))
+	// embed as the derived file has it, which the reload above only counts.
+	cfg, err := config.LoadConfigFromReader(strings.NewReader("healthCheckTimeout: 15\nperformance:\n  disabled: true\nmodels:\n  embed:\n    cmd: llama-server --model " + modelFile + " --port ${PORT}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,6 +387,51 @@ func TestProxy_OneConfigRuns(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || string(body) != "zbox" {
 		t.Errorf("embed went to %d %q, want zbox, the config's balance lane", resp.StatusCode, body)
+	}
+
+	// The model's file is not here, so it comes from zbox, asked with this
+	// host's key, and until it is here a request that fails over to this
+	// host is refused before llama-swap starts anything.
+	get := func(path string) (int, string) {
+		t.Helper()
+		resp, err := http.Get(front.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(raw)
+	}
+	eventually(t, "the file asked of zbox with this host's key", func() bool { return fileKey.Load() == "Bearer host-secret" })
+	if _, state := get("/warden/config/state"); !strings.Contains(state, `"state": "fetching"`) || !strings.Contains(state, modelFile) {
+		t.Errorf("state while fetching:\n%s", state)
+	}
+	zboxDown.Store(true)
+	resp, err = http.Post(front.URL+"/v1/embeddings", "application/json", strings.NewReader(`{"model":"embed","input":["hello"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "embed is not here yet: "+modelFile+" fetching") {
+		t.Errorf("embed with its file missing: %d %q", resp.StatusCode, body)
+	}
+	for _, path := range []string{modelFile, hostKey} {
+		if status, _ := get("/warden/files" + path); status != http.StatusNotFound {
+			t.Errorf("%s served: %d", path, status)
+		}
+	}
+	close(release)
+	eventually(t, "the file arrives", func() bool {
+		got, _ := os.ReadFile(modelFile)
+		return bytes.Equal(got, weights)
+	})
+	eventually(t, "the file counts as here", func() bool {
+		_, state := get("/warden/config/state")
+		return strings.Contains(state, `"state": "present"`)
+	})
+	if status, served := get("/warden/files" + modelFile); status != http.StatusOK || served != string(weights) {
+		t.Errorf("serving the file: %d, %d bytes", status, len(served))
 	}
 }
 

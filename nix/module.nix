@@ -170,6 +170,28 @@ in
           into the store.
         '';
       };
+      fetchDirs = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "/srv/models" ];
+        description = ''
+          Where the daemon may create a model's file that is missing here,
+          fetched from another host or else from Hugging Face and checked
+          against the config's SHA-256 (0022, 8). The daemon's dynamic user
+          must be able to write each, through `fetchGroup`; this module does
+          not change who owns them. Empty, a model with a missing file is
+          refused here, and its requests go to its next place.
+        '';
+      };
+      fetchGroup = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "models";
+        description = ''
+          A group the daemon joins to write `fetchDirs`, such as the setgid
+          group of the directory. Declared here if nothing else declares it.
+        '';
+      };
     };
 
     codexPrompt = lib.mkOption {
@@ -365,9 +387,16 @@ in
           assertion = cfg.signedConfig.seed != null -> signed;
           message = "services.infermux.signedConfig.seed needs signedConfig.trustedKeys to check it against.";
         }
+        {
+          assertion = cfg.signedConfig.fetchDirs != [ ] -> signed;
+          message = "services.infermux.signedConfig.fetchDirs needs signedConfig.trustedKeys: the files and their SHA-256 come from the signed config.";
+        }
       ];
 
       environment.systemPackages = lib.optional signed configTool;
+      users.groups = lib.optionalAttrs (cfg.signedConfig.fetchGroup != null) {
+        ${cfg.signedConfig.fetchGroup} = { };
+      };
 
       # Browsers may read only InferMux's own origin. Writes from other origins
       # are refused by the warden whatever this says (0005).
@@ -407,6 +436,10 @@ in
               "-config-seed"
               cfg.signedConfig.seed
             ]
+            ++ lib.optionals (cfg.signedConfig.fetchDirs != [ ]) [
+              "-fetch-dirs"
+              (lib.concatStringsSep "," cfg.signedConfig.fetchDirs)
+            ]
             ++ lib.optionals (cfg.codexPrompt != null) [
               "-codex-prompt"
               cfg.codexPrompt
@@ -416,7 +449,15 @@ in
           RestartSec = 5;
           LoadCredential = lib.mapAttrsToList (name: path: "${name}:${path}") cfg.credentials;
         }
-        // sandbox;
+        // sandbox
+        // lib.optionalAttrs (cfg.signedConfig.fetchDirs != [ ]) {
+          # "-": a directory that is not there yet fails the fetch, which
+          # the config's state shows, rather than the unit.
+          ReadWritePaths = map (dir: "-" + dir) cfg.signedConfig.fetchDirs;
+        }
+        // lib.optionalAttrs (cfg.signedConfig.fetchGroup != null) {
+          SupplementaryGroups = [ cfg.signedConfig.fetchGroup ];
+        };
       }
       // lib.optionalAttrs signed {
         wants = [ "infermux-cpu.service" ];

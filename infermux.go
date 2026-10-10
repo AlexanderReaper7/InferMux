@@ -14,9 +14,11 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/catalog"
 	"github.com/mostlygeek/llama-swap/internal/failover"
+	"github.com/mostlygeek/llama-swap/internal/fetch"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/placement"
 	"github.com/mostlygeek/llama-swap/internal/remote"
@@ -103,7 +105,9 @@ func (a activeModels) qualifyHere(requested string) (string, bool, bool) {
 // settings.
 //
 // The request goes warden (key, class, never-kill), then the timing of each
-// request for a model this host serves (internal/stats), then Codex's catalog,
+// request for a model this host serves (internal/stats), then admission
+// (0019), then, under the one config, a 503 for a local model whose files are
+// still being fetched (internal/fetch), then Codex's catalog,
 // then the list cut to the key's allow list, then remote (another host's
 // model goes there), then the derived settings on the local models, then a
 // WebSocket that names its model in ?model= sent to that model's /upstream/
@@ -131,6 +135,15 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		}
 		if err == nil {
 			one.options.CPURunner, err = cpuRunner(*flagCPUSocket)
+		}
+		var dirs []string
+		if err == nil {
+			dirs, err = fetchDirs(*flagFetchDirs)
+		}
+		if err == nil {
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.ResponseHeaderTimeout = 30 * time.Second
+			one.fetcher = &fetch.Fetcher{Dirs: dirs, Hosts: one.fetchHosts, Client: &http.Client{Transport: transport}, Logf: log.Infof}
 		}
 		if err != nil {
 			slog.Error("failed to open the signed config", "error", err)
@@ -198,7 +211,19 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	if one != nil {
 		one.handle(w.Handle)
 	}
-	failovers := failover.New(w.Wrap(recorder.Wrap(admission.Wrap(codex))), cfg.Host, log)
+	var served http.Handler = codex
+	if one != nil {
+		// A local model whose files are still coming is a place that is
+		// down, so the failover handler moves on (0022, 8).
+		served = (&fetch.Gate{Model: func(r *http.Request) (string, bool) {
+			if _, ok := remotes.get().Qualify(r); ok {
+				return "", false
+			}
+			name, local, ok := models.Qualify(r)
+			return strings.TrimPrefix(name, cfg.Host+"/"), ok && local
+		}, Files: one.localFiles, Fetcher: one.fetcher}).Wrap(codex)
+	}
+	failovers := failover.New(w.Wrap(recorder.Wrap(admission.Wrap(served))), cfg.Host, log)
 	failovers.Batch = w.IsBatch
 	setFailover := func(routes warden.Failover) {
 		places := make(map[string][]failover.Place, len(routes))
@@ -240,6 +265,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			}
 		}
 		go one.sync(ctx)
+		go one.fetcher.Run(ctx)
 	} else {
 		setFailover(cfg.Failover)
 	}

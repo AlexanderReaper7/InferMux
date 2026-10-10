@@ -55,9 +55,9 @@ func TestTodayStrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantLocal := map[string]Local{
-		"Octen-Embedding-4B.Q8_0":                  {Model: "Octen-Embedding-4B.Q8_0", Devices: []string{"gpu"}},
-		"Octen-Embedding-4B.Q8_0@cpu":              {Model: "Octen-Embedding-4B.Q8_0", Devices: []string{"cpu"}},
-		"Qwen3.8-27B-MTP-Q4_K_M":                   {Model: "Qwen3.8-27B-MTP-Q4_K_M", Devices: []string{"gpu", "cpu"}},
+		"Octen-Embedding-4B.Q8_0":                  {Model: "Octen-Embedding-4B.Q8_0", Devices: []string{"gpu"}, Files: []string{"/srv/models/embed/Octen-Embedding-4B.Q8_0.gguf"}},
+		"Octen-Embedding-4B.Q8_0@cpu":              {Model: "Octen-Embedding-4B.Q8_0", Devices: []string{"cpu"}, Files: []string{"/srv/models/embed/Octen-Embedding-4B.Q8_0.gguf"}},
+		"Qwen3.8-27B-MTP-Q4_K_M":                   {Model: "Qwen3.8-27B-MTP-Q4_K_M", Devices: []string{"gpu", "cpu"}, Files: []string{"/srv/models/Qwen3.8-27B-MTP-Q4_K_M.gguf", "/srv/models/mmproj/Qwen3.8-27B-mmproj-BF16.gguf"}},
 		"Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M": {Model: "Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M", Devices: []string{"gpu", "cpu"}},
 		"jina-reranker-v3.5":                       {Model: "jina-reranker-v3.5", Devices: []string{"gpu"}},
 	}
@@ -222,6 +222,7 @@ func TestRefused(t *testing.T) {
 		{"llama-swap file", hosts, map[string]string{"m": "models:\n  m: {cmd: x}\n"}, "this is a llama-swap file"},
 		{"no cmd", hosts, map[string]string{"m": "ttl: 3\n"}, "cmd is missing"},
 		{"bad hash", hosts, map[string]string{"m": "cmd: x\nfiles: {/x.gguf: {sha256: abc}}\n"}, "sha256 must be 64"},
+		{"one path, two files", hosts, map[string]string{"m": "cmd: x\nfiles: {/x.gguf: {sha256: " + strings.Repeat("a", 64) + "}}\n", "n": "cmd: x\nfiles: {/x.gguf: {sha256: " + strings.Repeat("b", 64) + "}}\n"}, "m and n name /x.gguf differently"},
 		{"flag", hosts + "balance: {m: [{place: a/gpu, flags: {ctx: 3}}]}\n", model, `"ctx" is not a flag`},
 		{"place setting", hosts + "balance: {m: [{place: a/gpu, weight: 3}]}\n", model, `unknown place setting "weight"`},
 	} {
@@ -349,5 +350,32 @@ func TestCPURunner(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Errorf("%s:\n got %q\nwant %q", name, got, want)
 		}
+	}
+}
+
+// A host knows the files of the models it runs, to fetch them, and every
+// model's, to serve them.
+func TestFiles(t *testing.T) {
+	sum := strings.Repeat("a", 64)
+	cfg, _, err := Parse(files(hosts+"balance: {m: [a/gpu], n: [b/gpu]}\n", map[string]string{
+		"m": "cmd: run --model /m.gguf\nfiles: {/m.gguf: {sha256: " + sum + ", hf: org/repo/m.gguf}, /m-mmproj.gguf: {sha256: " + sum + "}}\n",
+		"n": "cmd: run --model /m.gguf\nfiles: {/m.gguf: {sha256: " + sum + ", hf: org/repo/m.gguf}}\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := cfg.Derive("b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := part.Local["n"].Files; !slices.Equal(got, []string{"/m.gguf"}) {
+		t.Errorf("n's files: %q", got)
+	}
+	want := map[string]File{"/m.gguf": {SHA256: sum, HF: "org/repo/m.gguf"}, "/m-mmproj.gguf": {SHA256: sum}}
+	if !reflect.DeepEqual(part.Files, want) {
+		t.Errorf("the config's files: %+v", part.Files)
+	}
+	if part, _ := cfg.Derive("a"); !slices.Equal(part.Local["m"].Files, []string{"/m-mmproj.gguf", "/m.gguf"}) {
+		t.Errorf("m's files: %q", part.Local["m"].Files)
 	}
 }

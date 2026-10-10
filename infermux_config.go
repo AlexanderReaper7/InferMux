@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/configstore"
+	"github.com/mostlygeek/llama-swap/internal/fetch"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/placement"
 	"github.com/mostlygeek/llama-swap/internal/remote"
@@ -34,6 +35,7 @@ var (
 	flagConfigState       = flag.String("config-state", "", "InferMux: where the signed config is kept; default $STATE_DIRECTORY/config")
 	flagConfigSeed        = flag.String("config-seed", "", "InferMux: a signed config to start from, nixcfg's copy; used when newer than the one kept")
 	flagCPUSocket         = flag.String("cpu-socket", "", "InferMux: the CPU runner's socket (infermux-cpu serve); set, a CPU device's models run as the runner's children, in its slice (0022)")
+	flagFetchDirs         = flag.String("fetch-dirs", "", "InferMux: the directories a missing model file may be fetched into, comma-separated; unset, this host fetches none (0022, 8)")
 )
 
 // derivedFile is the one file this host's part becomes in -config-dir.
@@ -58,6 +60,8 @@ type oneConfig struct {
 	// hostKey reads this host's key for the other hosts.
 	hostKey func() (string, error)
 	client  *http.Client
+	// fetcher brings the files of this host's models (0022, 8).
+	fetcher *fetch.Fetcher
 
 	// applying keeps two configs arriving at once, a Publish and a pull,
 	// from running in the order opposite to the store's.
@@ -257,9 +261,79 @@ func (c *oneConfig) acceptLocked(b *configstore.Bundle, from string, seed bool) 
 // activateLocked records the part and hands it on; the caller holds c.mu.
 func (c *oneConfig) activateLocked(part *placement.Part, warnings []string) {
 	c.part, c.warnings = part, warnings
+	if c.fetcher != nil {
+		c.fetcher.Want(filesOf(part))
+	}
 	if c.activate != nil {
 		c.activate(part)
 	}
+}
+
+// filesOf is what a part's models need here.
+func filesOf(part *placement.Part) []fetch.File {
+	seen := map[string]bool{}
+	var files []fetch.File
+	for _, local := range part.Local {
+		for _, p := range local.Files {
+			if !seen[p] {
+				seen[p] = true
+				files = append(files, fetch.File{Path: p, SHA256: part.Files[p].SHA256, HF: part.Files[p].HF})
+			}
+		}
+	}
+	return files
+}
+
+// fetchDirs is -fetch-dirs, each absolute.
+func fetchDirs(flag string) ([]string, error) {
+	var dirs []string
+	for _, d := range strings.Split(flag, ",") {
+		if d = strings.TrimSpace(d); d == "" {
+			continue
+		}
+		if !filepath.IsAbs(d) {
+			return nil, fmt.Errorf("-fetch-dirs: %s is not absolute", d)
+		}
+		dirs = append(dirs, filepath.Clean(d))
+	}
+	return dirs, nil
+}
+
+// fetchHosts are the other hosts, asked with this host's key, in name order.
+func (c *oneConfig) fetchHosts() []fetch.Host {
+	part := c.current()
+	if part == nil {
+		return nil
+	}
+	key, err := c.hostKey()
+	if err != nil {
+		c.log.Warnf("Fetch: the other hosts are asked without a key: %v", err)
+	}
+	var hosts []fetch.Host
+	for name, url := range part.Remotes {
+		hosts = append(hosts, fetch.Host{Name: name, URL: url, Key: key})
+	}
+	sort.Slice(hosts, func(i, j int) bool { return hosts[i].Name < hosts[j].Name })
+	return hosts
+}
+
+// listed is whether the config names path, the only files this host serves.
+func (c *oneConfig) listed(path string) bool {
+	part := c.current()
+	if part == nil {
+		return false
+	}
+	_, ok := part.Files[path]
+	return ok
+}
+
+// localFiles are the paths a model of this host needs, by its name here.
+func (c *oneConfig) localFiles(model string) []string {
+	part := c.current()
+	if part == nil {
+		return nil
+	}
+	return part.Local[model].Files
 }
 
 // writeDerived writes llama-swap's file when it changed, and says so.
@@ -331,10 +405,14 @@ type configState struct {
 	Warnings []string                     `json:"warnings"`
 	Routes   map[string][]placement.Route `json:"routes"`
 	Local    map[string]placement.Local   `json:"local"`
+	Files    []fetch.Status               `json:"files"`
 }
 
 func (c *oneConfig) state() configState {
-	s := configState{Host: c.host, Conflict: c.store.Conflict()}
+	s := configState{Host: c.host, Conflict: c.store.Conflict(), Files: []fetch.Status{}}
+	if c.fetcher != nil {
+		s.Files = c.fetcher.Status()
+	}
 	if b := c.store.Current(); b != nil {
 		m := b.Info()
 		s.Current = &configstore.Summary{Hash: b.Hash(), Revision: m.Revision, Time: m.Time, Host: m.Host}
@@ -356,6 +434,8 @@ func (c *oneConfig) state() configState {
 // it trusted, so the host key carries one without being able to write one
 // (0022, 10).
 func (c *oneConfig) handle(handle func(string, http.Handler)) {
+	// Another host fetching a model's file (0022, 8).
+	handle("GET /warden/files/{path...}", fetch.Handler(c.listed))
 	handle("GET /warden/config", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		b := c.store.Current()
 		if b == nil {

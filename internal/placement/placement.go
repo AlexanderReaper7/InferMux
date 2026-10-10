@@ -408,6 +408,16 @@ func (c *Config) check() ([]string, error) {
 			}
 		}
 	}
+	// One path is one file, so a host that has it can serve it for either.
+	named := map[string]string{}
+	for _, name := range c.ModelNames() {
+		for p, f := range c.Models[name].Files {
+			if other, ok := named[p]; ok && c.Models[other].Files[p] != f {
+				return nil, fmt.Errorf("files: %s and %s name %s differently", other, name, p)
+			}
+			named[p] = name
+		}
+	}
 	for _, name := range c.ModelNames() {
 		balance, failover, err := c.Lanes(name)
 		if err != nil {
