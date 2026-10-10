@@ -43,12 +43,15 @@ type Handler struct {
 	places map[string][]Place
 }
 
-// Place is a destination and its optional overflow policy.
+// Place is a destination and its optional overflow policy. A Failover
+// place is tried only when no balance place served the request and none was
+// merely at its limit (0022, 2).
 type Place struct {
 	Place       string
 	MaxInflight int
 	OnlyIfIdle  bool
 	BatchOnly   bool
+	Failover    bool
 }
 
 // New fails over in front of next. host is this host's name, which in a
@@ -118,24 +121,54 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		}
 		return attempt, nil
 	}
-	var queue *Place
-	for i, place := range eligible {
-		attempt, err := attemptFor(place)
-		if err != nil {
-			swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
+	var balance, standby []Place
+	for _, place := range eligible {
+		if place.Failover {
+			standby = append(standby, place)
+		} else {
+			balance = append(balance, place)
+		}
+	}
+	// try attempts each place in order until one serves. The last place of
+	// the request's last lane answers the client even with a failure. It
+	// returns the first place that was only at its limit, where the request
+	// can wait.
+	try := func(lane []Place, last bool, next []Place) (bool, *Place) {
+		var queue *Place
+		for i, place := range lane {
+			attempt, err := attemptFor(place)
+			if err != nil {
+				swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
+				return true, nil
+			}
+			held := &heldWriter{rw: rw, header: http.Header{}, final: last && i == len(lane)-1}
+			h.next.ServeHTTP(held, attempt)
+			if !held.failed {
+				return true, nil
+			}
+			if queue == nil && held.header.Get(BusyHeader) == "capacity" && !place.OnlyIfIdle {
+				copy := place
+				queue = &copy
+			}
+			switch {
+			case i+1 < len(lane):
+				h.log.Warnf("Failover: %s answered %d, trying %s", h.name(place.Place, model), held.status, h.name(lane[i+1].Place, model))
+			case len(next) > 0 && queue == nil:
+				h.log.Warnf("Failover: %s answered %d, the last balance place; trying the failover lane at %s", h.name(place.Place, model), held.status, h.name(next[0].Place, model))
+			}
+		}
+		return false, queue
+	}
+	served, queue := try(balance, len(standby) == 0, standby)
+	if served {
+		return
+	}
+	// A balance place only at its limit is alive: the request waits there
+	// rather than going to the failover lane, which is for places down or
+	// refusing (0022, 2).
+	if queue == nil && len(standby) > 0 {
+		if served, queue = try(standby, true, nil); served {
 			return
-		}
-		held := &heldWriter{rw: rw, header: http.Header{}, final: i == len(eligible)-1}
-		h.next.ServeHTTP(held, attempt)
-		if !held.failed {
-			return
-		}
-		if queue == nil && held.header.Get(BusyHeader) == "capacity" && !place.OnlyIfIdle {
-			copy := place
-			queue = &copy
-		}
-		if i+1 < len(eligible) {
-			h.log.Warnf("Failover: %s answered %d, trying %s", h.name(place.Place, model), held.status, h.name(eligible[i+1].Place, model))
 		}
 	}
 	// With no batch CPU destination, interactive work queues at the first

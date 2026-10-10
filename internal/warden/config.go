@@ -63,7 +63,13 @@ type Config struct {
 	KeysFile string `yaml:"keys_file" json:"keys_file"`
 
 	// Remotes are the other hosts whose models this one routes to (0006, 2).
+	// Under the one config they come from its hosts instead (0022).
 	Remotes []Remote `yaml:"remotes" json:"remotes"`
+
+	// RemoteKeyFile holds this host's own key, for reading the other hosts'
+	// model lists and carrying a signed config to them, under the one
+	// config, where Remotes is not used (0022).
+	RemoteKeyFile string `yaml:"remote_key_file,omitempty" json:"remote_key_file,omitempty"`
 
 	// FailoverFile is failover.yaml, relative to this file (0016): for a
 	// model, the places to try in order, with optional overflow limits and

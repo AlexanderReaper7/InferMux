@@ -169,6 +169,21 @@ func (c *Config) Derive(host string) (*Part, error) {
 	return part, nil
 }
 
+// DeriveAll is every listed host's part. A publisher runs it before signing,
+// so a config that some host cannot run is refused where it is written, not
+// found later on that host.
+func (c *Config) DeriveAll() (map[string]*Part, error) {
+	parts := map[string]*Part{}
+	for _, host := range sortedKeys(c.Hosts) {
+		part, err := c.Derive(host)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", host, err)
+		}
+		parts[host] = part
+	}
+	return parts, nil
+}
+
 // entry is the model's llama-swap entry on one device: the device decides
 // the environment, a CPU also the device flags, and the place's overrides
 // apply before those, so no override reaches a card the model was not

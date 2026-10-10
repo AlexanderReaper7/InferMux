@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/catalog"
 	"github.com/mostlygeek/llama-swap/internal/failover"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
+	"github.com/mostlygeek/llama-swap/internal/placement"
 	"github.com/mostlygeek/llama-swap/internal/remote"
 	"github.com/mostlygeek/llama-swap/internal/server"
 	"github.com/mostlygeek/llama-swap/internal/stats"
@@ -116,6 +119,21 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		slog.Error("failed to load warden config", "warden-config", path, "error", err)
 		os.Exit(1)
 	}
+	var one *oneConfig
+	if *flagConfigTrustedKeys != "" {
+		if err := checkOneConfig(cfg); err != nil {
+			slog.Error("the warden config does not fit the one config", "warden-config", path, "error", err)
+			os.Exit(1)
+		}
+		trusted, state, err := configFlags()
+		if err == nil {
+			one, err = openConfig(cfg.Host, state, configDir, trusted, log)
+		}
+		if err != nil {
+			slog.Error("failed to open the signed config", "error", err)
+			os.Exit(1)
+		}
+	}
 	ctx := context.Background()
 	local := func(model string) bool {
 		_, _, ok := active().QualifyModel(model)
@@ -125,6 +143,8 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	peerModel := func(id string) (string, string, bool) { return active().PeerModel(id) }
 	enriched := catalog.Enrich(stream.Route(httpServer.Handler), &catalog.Deriver{}, command, &catalog.Peers{Lookup: peerModel})
 	remotes := &remoteHolder{next: enriched, local: local, log: log}
+	keyFile := &keyFileHolder{file: cfg.RemoteKeyFile}
+	// Under the one config, the other hosts arrive with its part (one.start).
 	if err := remotes.set(ctx, cfg.Remotes); err != nil {
 		slog.Error("failed to set up the remote hosts", "warden-config", path, "error", err)
 		os.Exit(1)
@@ -172,6 +192,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		}
 		return models.Qualify(r)
 	}, Yielded: w.Yielded}
+	if one != nil {
+		one.handle(w.Handle)
+	}
 	failovers := failover.New(w.Wrap(recorder.Wrap(admission.Wrap(codex))), cfg.Host, log)
 	failovers.Batch = w.IsBatch
 	setFailover := func(routes warden.Failover) {
@@ -183,30 +206,6 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		}
 		failovers.Set(places)
 	}
-	setFailover(cfg.Failover)
-	httpServer.Handler = failovers
-	w.Start()
-
-	reloadWarden := func() {
-		cfg, err := warden.LoadConfig(path)
-		if err != nil {
-			log.Warnf("Warden settings not reloaded: %v", err)
-			return
-		}
-		if err := remotes.set(ctx, cfg.Remotes); err != nil {
-			log.Warnf("Remote hosts not reloaded: %v", err)
-		}
-		setFailover(cfg.Failover)
-		w.Reload(cfg)
-	}
-	go (&configwatcher.Watcher{Path: absolute(path), OnChange: reloadWarden}).Run(ctx)
-	if cfg.KeysPath != "" {
-		go (&configwatcher.Watcher{Path: absolute(cfg.KeysPath), OnChange: reloadWarden}).Run(ctx)
-	}
-	if cfg.FailoverPath != "" {
-		go (&configwatcher.Watcher{Path: absolute(cfg.FailoverPath), OnChange: reloadWarden}).Run(ctx)
-	}
-
 	reload := func() {
 		w.WhenNoInteractive("llama-swap config reload", func() {
 			// The reload stops every model: an idle session gets 1012 rather
@@ -217,12 +216,138 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			reloadSignal()
 		})
 	}
+	if one != nil {
+		one.reload = reload
+		one.hostKey = func() (string, error) { return readKey(keyFile.get()) }
+		// activate runs under one's lock, so it must not call back into one.
+		one.activate = func(part *placement.Part) {
+			if err := remotes.set(ctx, remotesOf(part, keyFile.get())); err != nil {
+				log.Warnf("Remote hosts not set: %v", err)
+			}
+			failovers.Set(routesOf(part))
+		}
+		if one.start(*flagConfigSeed) {
+			// llama-swap loaded -config-dir before the warden started, and
+			// catches SIGHUP only from just before it serves: Serve calls
+			// BaseContext, so the reload waits for that.
+			var once sync.Once
+			httpServer.BaseContext = func(net.Listener) context.Context {
+				once.Do(func() { go reload() })
+				return context.Background()
+			}
+		}
+		go one.sync(ctx)
+	} else {
+		setFailover(cfg.Failover)
+	}
+	httpServer.Handler = failovers
+	w.Start()
+
+	reloadWarden := func() {
+		cfg, err := warden.LoadConfig(path)
+		if err != nil {
+			log.Warnf("Warden settings not reloaded: %v", err)
+			return
+		}
+		if one != nil {
+			if err := checkOneConfig(cfg); err != nil {
+				log.Warnf("Warden settings not reloaded: %v", err)
+				return
+			}
+			keyFile.set(cfg.RemoteKeyFile)
+			err = remotes.set(ctx, remotesOf(one.current(), keyFile.get()))
+		} else {
+			setFailover(cfg.Failover)
+			err = remotes.set(ctx, cfg.Remotes)
+		}
+		if err != nil {
+			log.Warnf("Remote hosts not reloaded: %v", err)
+		}
+		w.Reload(cfg)
+	}
+	go (&configwatcher.Watcher{Path: absolute(path), OnChange: reloadWarden}).Run(ctx)
+	if cfg.KeysPath != "" {
+		go (&configwatcher.Watcher{Path: absolute(cfg.KeysPath), OnChange: reloadWarden}).Run(ctx)
+	}
+	if cfg.FailoverPath != "" {
+		go (&configwatcher.Watcher{Path: absolute(cfg.FailoverPath), OnChange: reloadWarden}).Run(ctx)
+	}
+
 	if configPath != "" {
 		go (&configwatcher.Watcher{Path: absolute(configPath), OnChange: reload}).Run(ctx)
 	}
-	if configDir != "" {
+	// Under the one config, -config-dir is written here and reloaded as it
+	// is written.
+	if configDir != "" && one == nil {
 		go (&configwatcher.DirWatcher{Path: absolute(configDir), OnChange: reload}).Run(ctx)
 	}
+}
+
+// checkOneConfig refuses the warden settings the one config replaced, so a
+// host cannot route by two tables at once (0022).
+func checkOneConfig(cfg warden.Config) error {
+	switch {
+	case cfg.Host == "":
+		return errors.New("host is needed: it names this host's part of the config")
+	case len(cfg.Remotes) > 0:
+		return errors.New("remotes come from the config's hosts; remove them here and set remote_key_file")
+	case cfg.FailoverFile != "":
+		return errors.New("failover_file is replaced by the config's balance and failover lanes")
+	}
+	return nil
+}
+
+// remotesOf is the other hosts of a part, read with this host's key.
+func remotesOf(part *placement.Part, keyFile string) []warden.Remote {
+	if part == nil {
+		return nil
+	}
+	var list []warden.Remote
+	for name, url := range part.Remotes {
+		list = append(list, warden.Remote{Name: name, URL: url, KeyFile: keyFile})
+	}
+	slices.SortFunc(list, func(a, b warden.Remote) int { return strings.Compare(a.Name, b.Name) })
+	return list
+}
+
+// routesOf is the failover handler's table from a part.
+func routesOf(part *placement.Part) map[string][]failover.Place {
+	places := make(map[string][]failover.Place, len(part.Routes))
+	for model, routes := range part.Routes {
+		for _, r := range routes {
+			places[model] = append(places[model], failover.Place{Place: r.Place, MaxInflight: r.MaxInflight, OnlyIfIdle: r.OnlyIfIdle, BatchOnly: r.BatchOnly, Failover: r.Failover})
+		}
+	}
+	return places
+}
+
+// keyFileHolder is remote_key_file, which a warden reload may change.
+type keyFileHolder struct {
+	mu   sync.Mutex
+	file string
+}
+
+func (k *keyFileHolder) get() string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.file
+}
+
+func (k *keyFileHolder) set(file string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.file = file
+}
+
+func readKey(file string) (string, error) {
+	if file == "" {
+		return "", errors.New("remote_key_file is not set")
+	}
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(raw)), nil
 }
 
 // reloadSignal is llama-swap's own reload. A test replaces it.

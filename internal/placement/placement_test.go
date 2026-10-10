@@ -294,6 +294,12 @@ func TestEnvMayNotPickTheCard(t *testing.T) {
 	if _, err := cfg.Derive("a"); err == nil || !strings.Contains(err.Error(), "which the device decides") {
 		t.Errorf("derive: %v", err)
 	}
+	if _, err := cfg.Derive("b"); err != nil {
+		t.Errorf("b runs no copy of m: %v", err)
+	}
+	if _, err := cfg.DeriveAll(); err == nil || !strings.HasPrefix(err.Error(), "a: ") {
+		t.Errorf("derive all: %v", err)
+	}
 }
 
 func TestGPUIndexAndUnknownHost(t *testing.T) {

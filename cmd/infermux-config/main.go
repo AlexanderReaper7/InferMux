@@ -105,8 +105,11 @@ func sign(args []string) error {
 	if err != nil {
 		return err
 	}
-	_, warnings, err := placement.Parse(files)
+	cfg, warnings, err := placement.Parse(files)
 	if err != nil {
+		return fmt.Errorf("not signed: %w", err)
+	}
+	if _, err := cfg.DeriveAll(); err != nil {
 		return fmt.Errorf("not signed: %w", err)
 	}
 	for _, w := range warnings {
@@ -159,7 +162,11 @@ func verify(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, _, err := placement.Parse(b.Files); err != nil {
+	cfg, _, err := placement.Parse(b.Files)
+	if err == nil {
+		_, err = cfg.DeriveAll()
+	}
+	if err != nil {
 		return fmt.Errorf("signed, but does not load: %w", err)
 	}
 	fmt.Printf("revision %d by %s at %s: verified\n", m.Revision, m.Host, m.Time.Format(time.RFC3339))

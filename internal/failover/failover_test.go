@@ -246,3 +246,64 @@ func TestProxy_LoadBalanceAcrossServingHosts(t *testing.T) {
 		t.Fatalf("new limit not applied: %d %q", rw.Code, rw.Body.String())
 	}
 }
+
+// busyPlaces answers like places, except that a model in busy answers 503
+// with the BusyHeader, as Admission does at a place's limit.
+type busyPlaces struct {
+	places
+	busy map[string]string
+}
+
+func (p *busyPlaces) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	model, _ := swaputil.ExtractModel(r)
+	if why := p.busy[model]; why != "" && r.Header.Get(MaxInflightHeader) != "" {
+		p.mu.Lock()
+		p.attempts = append(p.attempts, model+" busy")
+		p.mu.Unlock()
+		rw.Header().Set(BusyHeader, why)
+		rw.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	p.places.ServeHTTP(rw, r)
+}
+
+// The failover lane is tried only when every balance place is down or
+// refusing, never because one is at its limit (0022, 2).
+func TestTheFailoverLane(t *testing.T) {
+	lanes := map[string][]Place{"m": {
+		{Place: "zbox", MaxInflight: 1},
+		{Place: "strix", MaxInflight: 1},
+		{Place: "strix/m@cpu", Failover: true},
+	}}
+	for _, tc := range []struct {
+		name     string
+		status   map[string]int
+		busy     map[string]string
+		attempts []string
+		code     int
+	}{
+		{"balance serves", nil, nil, []string{"zbox/m"}, 200},
+		{"both down", map[string]int{"zbox/m": 502, "m": 503}, nil, []string{"zbox/m", "m", "m@cpu"}, 200},
+		{"one at its limit waits there", map[string]int{"m": 502}, map[string]string{"zbox/m": "capacity"}, []string{"zbox/m busy", "m", "zbox/m"}, 200},
+		{"a yielded card is refusing", map[string]int{"zbox/m": 502}, map[string]string{"m": "yielded"}, []string{"zbox/m", "m busy", "m@cpu"}, 200},
+		{"the failover place's failure is the client's", map[string]int{"zbox/m": 502, "m": 502, "m@cpu": 503}, nil, []string{"zbox/m", "m", "m@cpu"}, 503},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &busyPlaces{places: places{status: tc.status}, busy: tc.busy}
+			h := New(p, "strix", nopLog{})
+			h.Set(lanes)
+			rw := post(t, h, "m", nil)
+			if fmt.Sprint(p.attempts) != fmt.Sprint(tc.attempts) || rw.Code != tc.code {
+				t.Fatalf("attempts %v status %d, want %v and %d", p.attempts, rw.Code, tc.attempts, tc.code)
+			}
+		})
+	}
+	// A batch-only failover place is no place for an interactive request.
+	p := &places{status: map[string]int{"zbox/m": 502, "m": 502}}
+	h := New(p, "strix", nopLog{})
+	h.Batch = func(*http.Request) bool { return false }
+	h.Set(map[string][]Place{"m": {{Place: "zbox"}, {Place: "strix"}, {Place: "strix/m@cpu", Failover: true, BatchOnly: true}}})
+	if rw := post(t, h, "m", nil); rw.Code != 502 || fmt.Sprint(p.attempts) != "[zbox/m m]" {
+		t.Fatalf("attempts %v status %d", p.attempts, rw.Code)
+	}
+}
