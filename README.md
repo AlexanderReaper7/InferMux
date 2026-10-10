@@ -8,7 +8,7 @@ It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-
 
 ## What is InferMux's and what is llama-swap's
 
-InferMux is a fork of llama-swap that merges each upstream release rather than vendoring it, so most of the tree and most of the history are upstream's. InferMux's own code is `infermux.go`, `internal/warden/`, `internal/remote/`, `internal/failover/`, `internal/catalog/`, `internal/stats/`, `internal/stream/`, `internal/adapter/`, `internal/muxui/`, `internal/server/warden.go`, `cmd/infermux-ui/`, `cmd/infermux-adapter/`, `webui/`, `nix/`, `e2e/` and `docs/decisions/`. [CLAUDE.md](CLAUDE.md) has the full map.
+InferMux is a fork of llama-swap that merges each upstream release rather than vendoring it, so most of the tree and most of the history are upstream's. InferMux's own code is `infermux.go`, `internal/warden/`, `internal/remote/`, `internal/failover/`, `internal/catalog/`, `internal/stats/`, `internal/stream/`, `internal/placement/`, `internal/configstore/`, `internal/cpurun/`, `internal/fetch/`, `internal/adapter/`, `internal/muxui/`, `internal/server/warden.go`, `infermux_config.go`, `cmd/infermux-ui/`, `cmd/infermux-adapter/`, `cmd/infermux-config/`, `cmd/infermux-cpu/`, `webui/`, `nix/`, `e2e/` and `docs/decisions/`. [CLAUDE.md](CLAUDE.md) has the full map.
 
 The Go module path is still `github.com/mostlygeek/llama-swap` for the same reason. Renaming it would rewrite every upstream import, and every later merge would conflict on all of them.
 
@@ -145,12 +145,35 @@ What a consumer does about that is the consumer's business. **The endpoint must 
 
 Nothing expires. A warden that dies while a consumer is paused leaves it paused, and that trade is argued in [0001](docs/decisions/0001-the-warden-decides-and-says-so.md#push-not-a-lease).
 
+## One config for every host
+
+With `signedConfig.trustedKeys` set, one signed directory decides every host's models and places, instead of `models/`, `remotes` and `failover_file` ([0022](docs/decisions/0022-one-signed-config-placed-by-device.md)). `infermux.yaml` names the hosts and their devices, the `balance` lane each model runs in, the `failover` lane it falls back to when every balance place is down or refusing, and groups of models. `models/<name>.yaml` is one llama-swap model entry plus `files:`, each weight's SHA-256. Each daemon derives its own part, keeps the versions under its state directory and pushes a new one to the others. warden.yaml then names this host as `host` and its key for the others as `remote_key_file`.
+
+```sh
+infermux-config keygen -out ~/.config/infermux/config-key.age   # prints the public key for trustedKeys
+infermux-config sign -key ~/.config/infermux/config-key.age -host strix ~/nixcfg/infermux/config
+```
+
+```nix
+services.infermux = {
+  signedConfig = {
+    trustedKeys = [ "q6NnXhYc3E5gq0n2m8l0Z8m0g6Yy3eJmWm4mVq3Zr2Q= the user's config key" ];
+    seed = "/home/alice/nixcfg/infermux/config";   # nixcfg's copy, used when newer than the daemon's
+    fetchDirs = [ "/srv/models" ];                  # where a model's missing file may be fetched to
+  };
+  ui.configKey = "/home/alice/.config/infermux/config-key.age";
+};
+```
+
+The UI's Config tab then replaces Models. It edits the YAML with completion and hover from the schema, checks the draft with the daemons' own loader as it is typed, and shows where each model would run. Publish asks for the key's passphrase, signs the draft and hands it to this host's daemon. Once the daemon runs it, the UI writes nixcfg's copy, which Changes commits. A draft made from an older version than the one running gets a side-by-side comparison instead: build on the running version, or publish over it, which every host then shows as a conflict until it is dismissed.
+
 ## Develop
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/
-nix develop -c go test -short ./internal/server/ .
+nix develop -c go test ./internal/... -short
+(cd webui && bun test)
 nix build                              # runs the tests as part of the build
+e2e/run.sh                             # after nix build: both UIs end to end in a headless browser
 ```
 
 [CLAUDE.md](CLAUDE.md) has the map of the code and how to merge a new llama-swap release.

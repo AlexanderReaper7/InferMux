@@ -1,6 +1,8 @@
 // The JSON of the daemon's /warden/* and infermux-ui's /api/*. Field names
 // follow the Go structs' json tags.
 
+export type { Schema } from "./yamlschema";
+
 export interface Verdict {
   yielded: boolean;
   reason: string;
@@ -179,7 +181,9 @@ export interface UIState {
   swap_port: string;
   // Whether a model may name its files on Hugging Face (-hf-dir is set).
   hf: boolean;
-  paths: { models_dir: string; warden_file: string; base_config: string; gguf_dirs: string[] };
+  // The UI edits the one config (0022, 9): the Config tab replaces Models.
+  signed_config: boolean;
+  paths: { models_dir: string; warden_file: string; base_config: string; gguf_dirs: string[]; signed_config: string };
 }
 
 export interface Download {
@@ -286,4 +290,72 @@ export interface HostStats {
   requests: RequestStat[] | null;
   models: ModelStat[] | null;
   error?: string;
+}
+
+// The one config (0022): a version, as the daemon keeps it and signs it.
+export interface Summary {
+  hash: string;
+  revision: number;
+  time: string;
+  host: string;
+}
+
+// A model's place, in order: balance first, then failover.
+export interface Route {
+  place: string;
+  host: string;
+  device: string;
+  max_inflight?: number;
+  only_if_idle?: boolean;
+  batch_only?: boolean;
+  failover?: boolean;
+}
+
+export interface Problem {
+  file: string;
+  line: number;
+  message: string;
+}
+
+// infermux-ui's /api/config/check: a draft as the daemons would run it.
+export interface Check {
+  error: Problem | null;
+  warnings: string[];
+  routes: Record<string, Route[]>;
+  devices: Record<string, Record<string, string>>;
+}
+
+export interface FileStatus {
+  path: string;
+  state: "present" | "queued" | "fetching" | "failed" | "unfetchable";
+  from?: string;
+  done?: number;
+  total?: number;
+  error?: string;
+}
+
+// The daemon's /warden/config/state.
+export interface ConfigState {
+  host: string;
+  current: Summary | null;
+  // The later of two versions edited apart runs; the other is kept.
+  conflict: { at: string; kept: Summary; lost: Summary } | null;
+  rejected: { hash: string; from: string; at: string; error: string } | null;
+  warnings: string[];
+  routes: Record<string, Route[]> | null;
+  local: Record<string, { model: string; devices: string[]; files: string[] | null }> | null;
+  files: FileStatus[];
+}
+
+// A signed version on the wire: the files as text.
+export interface Wire {
+  manifest: string;
+  signature: string;
+  files: Record<string, string>;
+}
+
+export interface Published {
+  result: "same" | "old" | "applied" | "replaced" | "lost";
+  state: ConfigState;
+  published: Summary;
 }

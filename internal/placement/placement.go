@@ -129,32 +129,46 @@ func (p *Place) UnmarshalYAML(n *yaml.Node) error {
 			return fmt.Errorf("line %d: %s is set twice", n.Content[i].Line, key)
 		}
 		seen[key] = true
-		var err error
-		switch key {
-		case "place":
-			err = decodeTagged(value, "!!str", &p.Place)
-		case "max_inflight":
-			err = decodeTagged(value, "!!int", &p.MaxInflight)
-		case "only_if_idle":
-			err = decodeTagged(value, "!!bool", &p.OnlyIfIdle)
-		case "batch_only":
-			err = decodeTagged(value, "!!bool", &p.BatchOnly)
-		case "occupies":
-			err = value.Decode(&p.Occupies)
-		case "ttl":
-			var ttl int
-			err = decodeTagged(value, "!!int", &ttl)
-			p.TTL = &ttl
-		case "flags":
-			p.Flags, err = decodeFlags(value)
-		default:
-			err = fmt.Errorf("line %d: unknown place setting %q", n.Content[i].Line, key)
+		j := slices.IndexFunc(placeSettings, func(s placeSetting) bool { return s.name == key })
+		if j < 0 {
+			return fmt.Errorf("line %d: unknown place setting %q", n.Content[i].Line, key)
 		}
-		if err != nil {
+		if err := placeSettings[j].decode(p, value); err != nil {
 			return fmt.Errorf("%s: %w", key, err)
 		}
 	}
 	return nil
+}
+
+// placeSetting is one key of a place's mapping. The loader and the editor's
+// schema both read this table, so they cannot disagree.
+type placeSetting struct {
+	name, doc string
+	schema    map[string]any
+	decode    func(p *Place, n *yaml.Node) error
+}
+
+var placeSettings = []placeSetting{
+	{"place", "The device, as host/device.", map[string]any{"type": "string", "x-complete": "place"},
+		func(p *Place, n *yaml.Node) error { return decodeTagged(n, "!!str", &p.Place) }},
+	{"max_inflight", "How many requests this place takes at once before the next place gets one (0019). 0 is no limit.", map[string]any{"type": "integer", "minimum": 0},
+		func(p *Place, n *yaml.Node) error { return decodeTagged(n, "!!int", &p.MaxInflight) }},
+	{"only_if_idle", "Use this place only while its GPU is not yielded to other work (0021).", map[string]any{"type": "boolean"},
+		func(p *Place, n *yaml.Node) error { return decodeTagged(n, "!!bool", &p.OnlyIfIdle) }},
+	{"batch_only", "Only batch requests come here; the user's own go elsewhere.", map[string]any{"type": "boolean"},
+		func(p *Place, n *yaml.Node) error { return decodeTagged(n, "!!bool", &p.BatchOnly) }},
+	{"occupies", "Other devices of the host the model uses here, such as the CPU for offloaded layers, so the warden counts it on them too.", map[string]any{"type": "array", "items": map[string]any{"type": "string", "x-complete": "device"}},
+		func(p *Place, n *yaml.Node) error { return n.Decode(&p.Occupies) }},
+	{"ttl", "Seconds idle before the model is stopped here, replacing the model's ttl.", map[string]any{"type": "integer", "minimum": 0},
+		func(p *Place, n *yaml.Node) error {
+			var ttl int
+			err := decodeTagged(n, "!!int", &ttl)
+			p.TTL = &ttl
+			return err
+		}},
+	{"flags", "Overrides of the model's command on this device: a value sets the flag, a list sets several, true keeps it bare, false or null removes it. The exact spelling only: -c does not override --ctx-size.",
+		map[string]any{"type": "object", "propertyNames": map[string]any{"pattern": "^-"}, "additionalProperties": map[string]any{"type": []any{"string", "number", "boolean", "null", "array"}}},
+		func(p *Place, n *yaml.Node) (err error) { p.Flags, err = decodeFlags(n); return err }},
 }
 
 func decodeTagged(n *yaml.Node, tag string, out any) error {

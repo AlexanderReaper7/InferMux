@@ -28,8 +28,8 @@ This file is rules and navigation only.
 | `internal/stream/` | ours: a WebSocket followed frame by frame for the warden and the stats, closed with a code of ours, and routed by `?model=` (0018); `wstest/` is the tests' frame client and echo backend |
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
 | `internal/adapter/`, `cmd/infermux-adapter/` | ours: puts a client's key on the requests of a client that cannot send one, such as Immich (0013) |
-| `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005) |
-| `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build |
+| `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005); under the one config, its check, Publish and nixcfg's copy (`config.go`, 0022) |
+| `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build; the one config's YAML editor is CodeMirror (`src/lib/editor.ts`, `yamlschema.ts`), tested by bun in `test/` |
 | `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
 | `llama-swap.go` | upstream's `main`, plus one flag and one call |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
@@ -38,12 +38,13 @@ This file is rules and navigation only.
 
 ```sh
 nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/  # no GPU or model needed; sops and age come from the shell
-(cd webui && npm run check && npm run build)               # the frontend
+(cd webui && npm run check && npm run build && bun test)   # the frontend; bun runs webui/test
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
 nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_loadbalance_test.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch cmd internal/server/warden.go internal/server/warden_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
-nix build                                                  # the package; runs the three test packages
+nix build                                                  # the package; runs the Go tests above and webui's
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
+e2e/run.sh config.py                                       # only the one config's run (run.py is the models directory's)
 
 # with keys_file set, each of these needs -H "Authorization: Bearer <key>"
 curl 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight

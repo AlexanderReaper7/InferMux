@@ -1,4 +1,22 @@
-import type { BuildState, Download, GGUF, GitState, HostStats, Key, KeysState, Model, UIState, VerdictState, WardenConfig } from "./types";
+import type {
+  BuildState,
+  Check,
+  ConfigState,
+  Download,
+  GGUF,
+  GitState,
+  HostStats,
+  Key,
+  KeysState,
+  Model,
+  Published,
+  Schema,
+  Summary,
+  UIState,
+  VerdictState,
+  WardenConfig,
+  Wire,
+} from "./types";
 
 // Every request carries X-InferMux: infermux-ui refuses a write without it,
 // and a page from another origin cannot add it.
@@ -45,6 +63,21 @@ export const api = {
   startBuild: () => call<BuildState>("POST", "/api/build"),
   commit: (message: string, passphrase: string) =>
     call<{ commit: string }>("POST", "/api/git/commit", { message, passphrase }),
+
+  // The one config (0022, 9).
+  configSchema: () => call<{ main: Schema; model: Schema }>("GET", "/api/config/schema"),
+  checkConfig: (files: Record<string, string>) => call<Check>("POST", "/api/config/check", { files }),
+  publish: (files: Record<string, string>, base: string, passphrase: string, force: boolean) =>
+    call<Published>("POST", "/api/config/publish", { files, base, passphrase, force }),
+  configCopy: () => call<{ dir: string; copy: Summary | null }>("GET", "/api/config/copy"),
+  copyConfig: () => call<{ dir: string; copy: Summary | null }>("POST", "/api/config/copy"),
+  hashGGUF: (path: string) => call<{ sha256: string; bytes: number }>("POST", "/api/config/hash", { path }),
+  hfFile: (source: string) => call<{ sha256: string; bytes: number }>("GET", `/api/config/hf?source=${encodeURIComponent(source)}`),
+  // null: the daemon runs no signed config yet.
+  runningConfig: () => call<Wire>("GET", "/daemon/warden/config").catch((e: Error) => (e.message.startsWith("404:") ? null : Promise.reject(e))),
+  configVersion: (hash: string) => call<Wire>("GET", `/daemon/warden/config/version/${encodeURIComponent(hash)}`),
+  configState: () => call<ConfigState>("GET", "/daemon/warden/config/state"),
+  dismissConflict: () => call("DELETE", "/daemon/warden/config/conflict"),
 
   verdict: () => call<VerdictState>("GET", "/daemon/warden/verdict"),
   manual: (action: "pause" | "resume" | "auto") => call("POST", "/daemon/warden/manual", { action }),

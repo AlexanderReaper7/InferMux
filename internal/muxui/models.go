@@ -6,6 +6,7 @@ package muxui
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -169,7 +170,14 @@ type modelFile struct {
 	doc  *yaml.Node
 }
 
+// errOneConfig is an edit of the models directory, which the one config
+// replaces (0022, 9).
+var errOneConfig = errors.New("the UI edits the one config, which has no models directory")
+
 func readModelFiles(dir string) ([]modelFile, error) {
+	if dir == "" {
+		return nil, errOneConfig
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err

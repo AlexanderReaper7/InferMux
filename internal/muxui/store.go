@@ -44,6 +44,12 @@ type Store struct {
 	// HF downloads a model's files from Hugging Face when it is saved (0012).
 	// Nil: a model cannot name a Hugging Face source.
 	HF *Downloads
+	// SignedConfig is nixcfg's copy of the one config, which the daemons
+	// start from, and ConfigKey the key that signs it, encrypted with a
+	// passphrase (0022). Set, the UI edits the one config, and ModelsDir
+	// may be empty.
+	SignedConfig string
+	ConfigKey    string
 
 	mu sync.Mutex
 }
@@ -52,6 +58,11 @@ type Store struct {
 var ErrNotFound = errors.New("no such model")
 
 func (s *Store) Models() ([]Model, error) {
+	// Under the one config the models are in its files, which the browser
+	// reads from the daemon.
+	if s.ModelsDir == "" {
+		return []Model{}, nil
+	}
 	files, err := readModelFiles(s.ModelsDir)
 	if err != nil {
 		return nil, err
@@ -516,6 +527,9 @@ type GitState struct {
 // from the repository sees them; Nix copies only what git tracks. The files'
 // content stays unstaged, and Commit adds it as before.
 func (s *Store) IntentToAdd() error {
+	if s.ModelsDir == "" {
+		return nil
+	}
 	_, err := s.git("add", "--intent-to-add", "--", s.ModelsDir)
 	return err
 }
@@ -524,7 +538,12 @@ func (s *Store) IntentToAdd() error {
 // they exist: git refuses a path that matches nothing. A models file that is a
 // symlink brings the file it points to, which may sit outside ModelsDir.
 func (s *Store) paths() []string {
-	paths := []string{s.ModelsDir, s.WardenFile}
+	paths := []string{s.WardenFile}
+	for _, dir := range []string{s.ModelsDir, s.SignedConfig} {
+		if _, err := os.Stat(dir); dir != "" && err == nil {
+			paths = append(paths, dir)
+		}
+	}
 	if entries, err := os.ReadDir(s.ModelsDir); err == nil {
 		for _, e := range entries {
 			if e.Type()&fs.ModeSymlink == 0 {
@@ -545,7 +564,15 @@ func (s *Store) paths() []string {
 }
 
 func (s *Store) git(args ...string) (string, error) {
-	return s.run(exec.Command("git", append([]string{"-C", s.ModelsDir}, args...)...), args)
+	return s.run(exec.Command("git", append([]string{"-C", s.repoDir()}, args...)...), args)
+}
+
+// repoDir is a directory inside the repository the UI edits.
+func (s *Store) repoDir() string {
+	if s.ModelsDir != "" {
+		return s.ModelsDir
+	}
+	return filepath.Dir(s.WardenFile)
 }
 
 func (s *Store) run(cmd *exec.Cmd, args []string) (string, error) {
@@ -616,7 +643,7 @@ func (s *Store) Commit(message, passphrase string) (string, error) {
 		return "", err
 	}
 	args := append([]string{"commit", "-m", message, "--"}, s.paths()...)
-	cmd := exec.Command("git", append([]string{"-C", s.ModelsDir}, args...)...)
+	cmd := exec.Command("git", append([]string{"-C", s.repoDir()}, args...)...)
 	if s.CommitPassphrase {
 		done, err := s.signWith(cmd, passphrase)
 		if err != nil {

@@ -12,6 +12,7 @@
   sops,
   age,
   gnupg,
+  bun,
   # llama-swap's web dashboard. Its npm dependencies come from
   # registry.npmjs.org; without it InferMux serves the API only.
   withUI ? true,
@@ -52,7 +53,15 @@ let
     pname = "infermux-webui";
     inherit version src;
     sourceRoot = "${src.name}/webui";
-    npmDepsHash = "sha256-6oDnOHJhVUXcnEpm0kyGr+LkRvByEVPXMoNgAJ2KP5I=";
+    npmDepsHash = "sha256-7XHIRNtcyjQClyco5WcQAqP2Y9I0kFNP2fegjKsiFwk=";
+    # The editor's completion and the add-model commands (webui/test).
+    doCheck = true;
+    nativeCheckInputs = [ bun ];
+    checkPhase = ''
+      runHook preCheck
+      bun test
+      runHook postCheck
+    '';
     installPhase = ''
       runHook preInstall
       cp -r dist $out

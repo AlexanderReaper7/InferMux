@@ -120,6 +120,34 @@ func ReadKeys(file string) ([]ed25519.PublicKey, error) {
 	return keys, nil
 }
 
+// Wire is a bundle as JSON carries it between hosts and from the UI: the
+// config's files as text.
+type Wire struct {
+	Manifest  string            `json:"manifest"`
+	Signature string            `json:"signature"`
+	Files     map[string]string `json:"files"`
+}
+
+func (b *Bundle) Wire() Wire {
+	w := Wire{Manifest: string(b.Manifest), Signature: base64.StdEncoding.EncodeToString(b.Signature), Files: map[string]string{}}
+	for name, content := range b.Files {
+		w.Files[name] = string(content)
+	}
+	return w
+}
+
+func (w Wire) Bundle() (*Bundle, error) {
+	sig, err := base64.StdEncoding.DecodeString(w.Signature)
+	if err != nil {
+		return nil, fmt.Errorf("signature: %w", err)
+	}
+	b := &Bundle{Manifest: []byte(w.Manifest), Signature: sig, Files: map[string][]byte{}}
+	for name, content := range w.Files {
+		b.Files[name] = []byte(content)
+	}
+	return b, nil
+}
+
 // Sign makes a bundle of files, edited from parent (nil for the first).
 func Sign(files map[string][]byte, key ed25519.PrivateKey, host string, parent *Bundle, now time.Time) (*Bundle, error) {
 	m := Manifest{Revision: 1, Time: now.UTC().Truncate(time.Second), Host: host, Files: map[string]string{}}

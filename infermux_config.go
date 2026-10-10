@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -368,33 +367,6 @@ func (c *oneConfig) writeDerived() bool {
 	return true
 }
 
-// wireBundle is a bundle as JSON carries it: the config files as text.
-type wireBundle struct {
-	Manifest  string            `json:"manifest"`
-	Signature string            `json:"signature"`
-	Files     map[string]string `json:"files"`
-}
-
-func toWire(b *configstore.Bundle) wireBundle {
-	w := wireBundle{Manifest: string(b.Manifest), Signature: base64.StdEncoding.EncodeToString(b.Signature), Files: map[string]string{}}
-	for name, content := range b.Files {
-		w.Files[name] = string(content)
-	}
-	return w
-}
-
-func fromWire(w wireBundle) (*configstore.Bundle, error) {
-	sig, err := base64.StdEncoding.DecodeString(w.Signature)
-	if err != nil {
-		return nil, fmt.Errorf("signature: %w", err)
-	}
-	b := &configstore.Bundle{Manifest: []byte(w.Manifest), Signature: sig, Files: map[string][]byte{}}
-	for name, content := range w.Files {
-		b.Files[name] = []byte(content)
-	}
-	return b, nil
-}
-
 // configState is GET /warden/config/state: what runs here and why not
 // something else.
 type configState struct {
@@ -442,7 +414,7 @@ func (c *oneConfig) handle(handle func(string, http.Handler)) {
 			writeJSONResponse(rw, http.StatusNotFound, map[string]string{"detail": "no signed config yet"})
 			return
 		}
-		writeJSONResponse(rw, http.StatusOK, toWire(b))
+		writeJSONResponse(rw, http.StatusOK, b.Wire())
 	}))
 	handle("GET /warden/config/state", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		writeJSONResponse(rw, http.StatusOK, c.state())
@@ -453,15 +425,15 @@ func (c *oneConfig) handle(handle func(string, http.Handler)) {
 			writeJSONResponse(rw, http.StatusNotFound, map[string]string{"detail": err.Error()})
 			return
 		}
-		writeJSONResponse(rw, http.StatusOK, toWire(b))
+		writeJSONResponse(rw, http.StatusOK, b.Wire())
 	}))
 	handle("POST /warden/config", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		var w wireBundle
+		var w configstore.Wire
 		if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&w); err != nil {
 			writeJSONResponse(rw, http.StatusBadRequest, map[string]string{"detail": err.Error()})
 			return
 		}
-		b, err := fromWire(w)
+		b, err := w.Bundle()
 		if err != nil {
 			writeJSONResponse(rw, http.StatusBadRequest, map[string]string{"detail": err.Error()})
 			return
@@ -500,7 +472,7 @@ func (c *oneConfig) handle(handle func(string, http.Handler)) {
 
 // push sends a config published here to every other host.
 func (c *oneConfig) push(b *configstore.Bundle) {
-	body, err := json.Marshal(toWire(b))
+	body, err := json.Marshal(b.Wire())
 	if err != nil {
 		return
 	}
@@ -555,11 +527,11 @@ func (c *oneConfig) pull(name, url, key string) error {
 	if err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
-	var w wireBundle
+	var w configstore.Wire
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return err
 	}
-	b, err := fromWire(w)
+	b, err := w.Bundle()
 	if err != nil {
 		return err
 	}

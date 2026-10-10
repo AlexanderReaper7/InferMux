@@ -62,9 +62,13 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey, swapPort 
 			// host it reached infermux-ui: loopback, or the tailnet name.
 			"daemon_port": daemon.Port(),
 			"swap_port":   swapPort,
+			// The one config's editor replaces the model form, Peers and
+			// Routing (0022, 9).
+			"signed_config": store.SignedConfig != "",
 			"paths": map[string]any{
 				"models_dir": store.ModelsDir, "warden_file": store.WardenFile,
 				"base_config": store.BaseConfig, "gguf_dirs": store.GGUFDirs,
+				"signed_config": store.SignedConfig,
 			},
 		})
 	})
@@ -250,6 +254,9 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey, swapPort 
 		reply(rw, map[string]string{"commit": hash})
 	})
 
+	if store.SignedConfig != "" {
+		configRoutes(mux, store, daemonClient{url: daemon, key: daemonKey})
+	}
 	mux.Handle("/daemon/", daemonProxy(daemon, daemonKey))
 
 	app, _ := fs.Sub(dist, "dist")

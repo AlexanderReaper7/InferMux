@@ -20,6 +20,9 @@ type Peer struct {
 
 // Peers lists the peers in the models directory's files, by name.
 func (s *Store) Peers() ([]Peer, error) {
+	if s.ModelsDir == "" {
+		return []Peer{}, nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	files, err := readModelFiles(s.ModelsDir)

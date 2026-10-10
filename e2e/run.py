@@ -158,6 +158,8 @@ policy:
   fake-server: {sys.executable} {REPO / 'e2e' / 'fake_server.py'}
 healthCheckTimeout: 30
 logToStdout: proxy
+# Away from the host's own InferMux, whose model servers start at 5800.
+startPort: 15800
 """
     )
     lines = ["# The e2e clients.", "keys:"]

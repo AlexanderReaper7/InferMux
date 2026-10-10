@@ -17,6 +17,9 @@ const RoutingFile = "routing.yaml"
 func (s *Store) Routing() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.ModelsDir == "" {
+		return "", errOneConfig
+	}
 	raw, err := os.ReadFile(filepath.Join(s.ModelsDir, RoutingFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil

@@ -25,7 +25,9 @@ func main() {
 	sops := flag.String("sops", "sops", "the sops binary")
 	ageIdentity := flag.String("age-identity", "", "the user's age identity, encrypted with a passphrase (age -p): what opens -key-secrets")
 	daemonKeyFile := flag.String("daemon-key-file", "", "a file holding the UI's key for the daemon, when the daemon has a keys_file")
-	modelsDir := flag.String("models-dir", "", "the daemon's -config-dir: one YAML file per model")
+	modelsDir := flag.String("models-dir", "", "the daemon's -config-dir: one YAML file per model; unused with -signed-config")
+	signedConfig := flag.String("signed-config", "", "nixcfg's copy of the one config, the daemons' -config-seed; set, the UI edits it and Publish signs it (0022)")
+	configKey := flag.String("config-key", "", "the key that signs the one config, encrypted with a passphrase (infermux-config keygen)")
 	wardenFile := flag.String("warden-config", "", "the daemon's -warden-config")
 	baseConfig := flag.String("base-config", "", "the daemon's -config: the runtimes' macros and global settings")
 	ggufDirs := flag.String("gguf-dirs", "", "comma-separated directories to look for .gguf files in")
@@ -37,9 +39,16 @@ func main() {
 	hfTokenFile := flag.String("hf-token-file", "", "a file holding a Hugging Face token, for gated and private repos")
 	flag.Parse()
 
-	if *modelsDir == "" || *wardenFile == "" || *baseConfig == "" {
-		slog.Error("-models-dir, -warden-config and -base-config are required")
+	if (*modelsDir == "" && *signedConfig == "") || *wardenFile == "" || *baseConfig == "" {
+		slog.Error("-models-dir or -signed-config, -warden-config and -base-config are required")
 		os.Exit(2)
+	}
+	if (*signedConfig == "") != (*configKey == "") {
+		slog.Error("-signed-config and -config-key go together")
+		os.Exit(2)
+	}
+	if *signedConfig != "" {
+		*modelsDir = ""
 	}
 	daemonURL, err := url.Parse(*daemon)
 	if err != nil {
@@ -56,7 +65,7 @@ func main() {
 		daemonKey = strings.TrimSpace(string(raw))
 	}
 	store := &muxui.Store{ModelsDir: *modelsDir, WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity,
-		CommitPassphrase: *commitPassphrase, GPG: *gpg}
+		CommitPassphrase: *commitPassphrase, GPG: *gpg, SignedConfig: *signedConfig, ConfigKey: *configKey}
 	for _, d := range strings.Split(*ggufDirs, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			store.GGUFDirs = append(store.GGUFDirs, d)
@@ -90,7 +99,7 @@ func main() {
 			os.Exit(1)
 		}()
 	}
-	slog.Info("infermux-ui listening", "address", "http://"+*listen, "swap", *swapListen, "daemon", *daemon, "models-dir", *modelsDir)
+	slog.Info("infermux-ui listening", "address", "http://"+*listen, "swap", *swapListen, "daemon", *daemon, "models-dir", *modelsDir, "signed-config", *signedConfig)
 	if err := http.ListenAndServe(*listen, muxui.Handler(store, build, daemonURL, daemonKey, swapPort)); err != nil {
 		slog.Error("infermux-ui stopped", "error", err)
 		os.Exit(1)

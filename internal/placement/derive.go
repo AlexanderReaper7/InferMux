@@ -48,9 +48,9 @@ type Route struct {
 // Local is a llama-swap model of this host: the config's model it runs,
 // the devices it occupies, its place's first, and the paths of its files.
 type Local struct {
-	Model   string
-	Devices []string
-	Files   []string
+	Model   string   `json:"model"`
+	Devices []string `json:"devices"`
+	Files   []string `json:"files"`
 }
 
 // Instance is the name a model has on one device of a host. Its first place

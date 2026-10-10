@@ -81,7 +81,7 @@ func (h *configHost) send(t *testing.T, method, path string, b *configstore.Bund
 	t.Helper()
 	var body io.Reader
 	if b != nil {
-		raw, err := json.Marshal(toWire(b))
+		raw, err := json.Marshal(b.Wire())
 		if err != nil {
 			t.Fatal(err)
 		}

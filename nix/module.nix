@@ -269,6 +269,18 @@ in
           call to sops that has to decrypt.
         '';
       };
+      configKey = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/home/alice/.config/infermux/config-key.age";
+        description = ''
+          The key that signs the one config, encrypted with a passphrase by
+          `infermux-config keygen`, readable by `ui.user`. With
+          `signedConfig.trustedKeys` set, the UI edits `signedConfig.seed` in
+          place of `configDir`'s `models/`, and Publish asks for the
+          passphrase to sign (0022, 9).
+        '';
+      };
       daemonKeyFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -382,6 +394,10 @@ in
         {
           assertion = cfg.ui.enable -> cfg.configDir != null;
           message = "services.infermux.ui needs services.infermux.configDir: the UI edits those files.";
+        }
+        {
+          assertion = cfg.ui.enable && signed -> cfg.signedConfig.seed != null && cfg.ui.configKey != null;
+          message = "services.infermux.ui with the one config needs signedConfig.seed, the copy it edits, and ui.configKey, the key Publish signs with.";
         }
         {
           assertion = cfg.signedConfig.seed != null -> signed;
@@ -517,8 +533,22 @@ in
               cfg.ui.listen
               "-daemon"
               "http://${cfg.listen}"
-              "-models-dir"
-              modelsDir
+            ]
+            ++ (
+              if signed then
+                [
+                  "-signed-config"
+                  cfg.signedConfig.seed
+                  "-config-key"
+                  cfg.ui.configKey
+                ]
+              else
+                [
+                  "-models-dir"
+                  modelsDir
+                ]
+            )
+            ++ [
               "-warden-config"
               wardenFile
               "-base-config"
