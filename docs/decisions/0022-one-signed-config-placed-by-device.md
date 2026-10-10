@@ -87,3 +87,19 @@ Defaults the agent chose, open to change:
 6. Fetching a GGUF from a host or the source, checked against its hash.
 7. The editor: the schema, the validation endpoint, the add-model commands, Publish, the conflict warning. Remove the model form, Peers and Routing.
 8. Move both hosts over, and add status lines to 0005, 0008, 0011, 0016 and 0019.
+
+## Calls the agent made while building, for the user to review
+
+The user, 2026-10-10: "you may drive this to completion on your own. but note down any decisions that would normally be surfaced to me first". Each of these is open to change.
+
+### The format (`internal/placement`)
+
+- **A model file is a llama-swap model entry plus `files:`.** `models/<name>.yaml` holds what a `models.<name>` entry held (`cmd`, `env`, `ttl`, `capabilities`, ...) without the `models:` wrapper, so today's files move over nearly unchanged and llama-swap's own loader checks them. `files:` maps each weight's path to its `sha256` and optional `hf` source (0012's `org/repo/file`). A GGUF named in the command but missing from `files:` is a warning, not an error.
+- **A model on two devices of one host has two names there.** Its first place on that host, balance before failover, serves the model's own name; any further device serves `<model>@<device>`, unlisted and without aliases. The embedder on strix is `Octen-Embedding-4B.Q8_0` on the GPU and `Octen-Embedding-4B.Q8_0@cpu` on the CPU, and the zbox routes to the second as `strix/Octen-Embedding-4B.Q8_0@cpu`.
+- **A model's own lane entry replaces its group's, per lane.** A model in two groups that both have an entry in the same lane is refused, since their order would be a guess.
+- **A placement's `flags` match the exact spelling.** A value sets the flag's values, `true` keeps it bare, `false` or null removes it. `-c` does not override `--ctx-size`. The device's flags apply after the placement's, so no override puts a CPU placement's layers on a card.
+- **The CPU device's `--device none -ngl 0` go only to llama.cpp commands,** those with a `--model` ending in `.gguf`. The reranker and immich-ml take other flags; `CUDA_VISIBLE_DEVICES=` alone keeps them off the card. Every other spelling of `-ngl` and `--device` is removed first.
+- **`concurrent` defaults to false on every device,** so a device runs one model at a time unless the config says otherwise. Each device is a llama-swap group with `exclusive: false`, so a model starting on one device never stops another device's.
+- **Clouds are offered by every host,** as llama-swap peers, with the key taken from each host's environment through `${env.VAR}`.
+- **A model placed nowhere is a warning, not an error.** Removing a model's places is how it is turned off without deleting its file and notes.
+- **A host the config does not list runs no model of its own** and still routes to the others.

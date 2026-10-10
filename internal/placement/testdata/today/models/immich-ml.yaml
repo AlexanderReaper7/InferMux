@@ -1,0 +1,7 @@
+cmd: ${immich-ml} ${PORT}
+env:
+  - IMMICH_HOST=127.0.0.1
+proxy: http://127.0.0.1:${PORT}
+checkEndpoint: /ping
+ttl: 300
+unlisted: true

@@ -1,0 +1,7 @@
+cmd: |
+  ${semsearch-rerank}
+    --port ${PORT}
+    --model /srv/models/hf/jinaai/jina-reranker-v3.5
+proxy: http://127.0.0.1:${PORT}
+capabilities:
+  reranker: true

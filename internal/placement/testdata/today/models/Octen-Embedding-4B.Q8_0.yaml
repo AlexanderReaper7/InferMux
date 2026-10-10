@@ -1,0 +1,16 @@
+# The embedder of SemSearch's hister and of Episteme.
+cmd: |
+  ${llama-server}
+    --port ${PORT}
+    --model /srv/models/embed/Octen-Embedding-4B.Q8_0.gguf
+    --embeddings
+    --ctx-size 2048
+    --batch-size 2048
+    --ubatch-size 2048
+    --parallel 1
+    --n-gpu-layers 99
+    --flash-attn on
+proxy: http://127.0.0.1:${PORT}
+files:
+  /srv/models/embed/Octen-Embedding-4B.Q8_0.gguf:
+    sha256: 1111111111111111111111111111111111111111111111111111111111111111

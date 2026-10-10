@@ -1,0 +1,17 @@
+cmd: |
+  ${llama-server}
+    --port ${PORT}
+    --model /srv/models/Qwen3.8-27B-MTP-Q4_K_M.gguf
+    -fitt 768
+    -fa on
+    --ctx-size 65536
+    --fit on
+    --parallel 1
+    --mmproj /srv/models/mmproj/Qwen3.8-27B-mmproj-BF16.gguf
+proxy: http://127.0.0.1:${PORT}
+files:
+  /srv/models/Qwen3.8-27B-MTP-Q4_K_M.gguf:
+    sha256: 2222222222222222222222222222222222222222222222222222222222222222
+    hf: unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q4_K_M.gguf
+  /srv/models/mmproj/Qwen3.8-27B-mmproj-BF16.gguf:
+    sha256: 3333333333333333333333333333333333333333333333333333333333333333

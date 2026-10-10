@@ -1,0 +1,36 @@
+# Today's routing (2026-10-10), translated by hand from nixcfg's failover.yaml,
+# both hosts' models/, embed-cpu.yaml, openrouter.yaml and warden.yaml remotes.
+hosts:
+  strix:
+    url: https://strix.java-tint.ts.net:5001
+    devices:
+      gpu: {kind: gpu}
+      cpu: {kind: cpu, concurrent: true}
+  zbox:
+    url: https://zbox.java-tint.ts.net:5001
+    devices:
+      gpu: {kind: gpu}
+clouds:
+  openrouter:
+    url: https://openrouter.ai/api
+    api_key: ${env.OPENROUTER_API_KEY}
+    models:
+      - openrouter/free
+      - qwen/qwen3.8-27b:free
+groups:
+  chat: [Qwen3.8-27B-MTP-Q4_K_M, Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M]
+balance:
+  Octen-Embedding-4B.Q8_0:
+    - place: zbox/gpu
+      max_inflight: 1
+      ttl: 0
+    - place: strix/gpu
+      max_inflight: 1
+      only_if_idle: true
+    - place: strix/cpu
+      batch_only: true
+  chat:
+    - place: strix/gpu
+      occupies: [cpu]
+  jina-reranker-v3.5: [strix/gpu]
+  immich-ml: [zbox/gpu]
