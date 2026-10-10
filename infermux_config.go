@@ -33,6 +33,7 @@ var (
 	flagConfigTrustedKeys = flag.String("config-trusted-keys", "", "InferMux: the public keys a config must be signed with, one a line; set, the one config runs this host (0022)")
 	flagConfigState       = flag.String("config-state", "", "InferMux: where the signed config is kept; default $STATE_DIRECTORY/config")
 	flagConfigSeed        = flag.String("config-seed", "", "InferMux: a signed config to start from, nixcfg's copy; used when newer than the one kept")
+	flagCPUSocket         = flag.String("cpu-socket", "", "InferMux: the CPU runner's socket (infermux-cpu serve); set, a CPU device's models run as the runner's children, in its slice (0022)")
 )
 
 // derivedFile is the one file this host's part becomes in -config-dir.
@@ -45,6 +46,7 @@ const configSyncEvery = remote.PollEvery
 // oneConfig is the daemon's side of the one config.
 type oneConfig struct {
 	host       string
+	options    placement.Options
 	store      *configstore.Store
 	trusted    []ed25519.PublicKey
 	derivedDir string
@@ -164,11 +166,36 @@ func (c *oneConfig) derive(b *configstore.Bundle) (*placement.Part, []string, er
 	if err != nil {
 		return nil, nil, err
 	}
-	part, err := cfg.Derive(c.host)
+	part, err := cfg.DeriveFor(c.host, c.options)
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(c.options.CPURunner) == 0 {
+		for name, l := range part.Local {
+			if part.Devices[l.Devices[0]].Kind == placement.KindCPU {
+				warnings = append(warnings, fmt.Sprintf("%s runs in the daemon's own cgroup, not the idle slice: -cpu-socket is not set", name))
+			}
+		}
+		sort.Strings(warnings)
+	}
 	return part, warnings, nil
+}
+
+// cpuRunner is what a CPU device's commands start through: infermux-cpu,
+// beside this binary, at socket.
+func cpuRunner(socket string) ([]string, error) {
+	if socket == "" {
+		return nil, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	bin := filepath.Join(filepath.Dir(exe), "infermux-cpu")
+	if _, err := os.Stat(bin); err != nil {
+		return nil, fmt.Errorf("-cpu-socket is set, and infermux-cpu is not beside this binary: %w", err)
+	}
+	return []string{bin, "run", "-socket", socket, "--"}, nil
 }
 
 // accept checks a bundle, then hands it to the store, and runs it if the

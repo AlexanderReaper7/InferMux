@@ -25,6 +25,64 @@ let
   modelsDir = "${cfg.configDir}/models";
   signed = cfg.signedConfig.trustedKeys != [ ];
   trustedKeys = pkgs.writeText "infermux-trusted-keys" (lib.concatLines cfg.signedConfig.trustedKeys);
+  cpuSocket = "/run/infermux-cpu/socket";
+  # The model servers' sandbox, the daemon's and the CPU runner's alike: the
+  # runner's children are model servers too.
+  sandbox = {
+    DynamicUser = true;
+    StateDirectory = "infermux";
+    CacheDirectory = [
+      "infermux"
+      "infermux/home"
+    ];
+    WorkingDirectory = "/var/lib/infermux";
+    # A DynamicUser has no HOME, and the model processes inherit the
+    # daemon's environment, so anything that writes ~/.cache or a dotfile
+    # (huggingface_hub, gunicorn, Triton) would write under /, read-only
+    # here. One shared home in the cache directory, which survives
+    # restarts.
+    Environment = [ "HOME=/var/cache/infermux/home" ];
+
+    # CUDA and NVML need /dev/nvidia*, which are 0666 on NixOS. A private
+    # /dev would hide them.
+    PrivateDevices = false;
+    # The probe reads other users' /proc/<pid>/cmdline and cgroup to tell
+    # our processes from everyone else's. ProtectProc=invisible, which the
+    # nixpkgs llama-cpp and llama-swap units set, would blind it, and so
+    # would ProcSubset=pid. PrivateUsers is left off for the same reason.
+    ProtectSystem = "strict";
+    # tmpfs rather than true, so the config directory and the seed can
+    # be bound in when they live under /home.
+    ProtectHome = if cfg.configDir != null || cfg.signedConfig.seed != null then "tmpfs" else true;
+    BindReadOnlyPaths =
+      lib.optional (cfg.configDir != null) cfg.configDir
+      ++ lib.optional (cfg.signedConfig.seed != null) cfg.signedConfig.seed;
+    PrivateTmp = true;
+    NoNewPrivileges = true;
+    CapabilityBoundingSet = "";
+    ProtectClock = true;
+    ProtectHostname = true;
+    ProtectKernelLogs = true;
+    ProtectKernelTunables = true;
+    ProtectKernelModules = true;
+    ProtectControlGroups = true;
+    MemoryDenyWriteExecute = true;
+    RestrictAddressFamilies = [
+      "AF_INET"
+      "AF_INET6"
+      "AF_UNIX"
+    ];
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+    RemoveIPC = true;
+    LockPersonality = true;
+    SystemCallArchitectures = "native";
+    SystemCallFilter = [
+      "@system-service"
+      "~@privileged"
+    ];
+  };
   # The signing tool alone on PATH, not the daemon's binaries.
   configTool = pkgs.runCommand "infermux-config" { meta.mainProgram = "infermux-config"; } ''
     mkdir -p $out/bin
@@ -342,6 +400,8 @@ in
               # Written by the daemon from its part of the signed config.
               "-config-dir"
               "/var/lib/infermux/derived"
+              "-cpu-socket"
+              cpuSocket
             ]
             ++ lib.optionals (cfg.signedConfig.seed != null) [
               "-config-seed"
@@ -355,60 +415,46 @@ in
           Restart = "always";
           RestartSec = 5;
           LoadCredential = lib.mapAttrsToList (name: path: "${name}:${path}") cfg.credentials;
+        }
+        // sandbox;
+      }
+      // lib.optionalAttrs signed {
+        wants = [ "infermux-cpu.service" ];
+        after = [
+          "network.target"
+          "infermux-cpu.service"
+        ];
+      };
 
-          DynamicUser = true;
-          StateDirectory = "infermux";
-          CacheDirectory = [
-            "infermux"
-            "infermux/home"
-          ];
-          WorkingDirectory = "/var/lib/infermux";
-          # A DynamicUser has no HOME, and the model processes inherit the
-          # daemon's environment, so anything that writes ~/.cache or a dotfile
-          # (huggingface_hub, gunicorn, Triton) would write under /, read-only
-          # here. One shared home in the cache directory, which survives
-          # restarts.
-          Environment = [ "HOME=/var/cache/infermux/home" ];
+      # A slice at the root of the cgroup tree, so idle means idle against
+      # everything: a dash in the name would nest it, and a nested idle slice
+      # took 23% of a core against user.slice's 76% (0022).
+      systemd.slices.idle = lib.mkIf signed {
+        description = "Work that runs only when nothing else wants the CPU";
+        sliceConfig.CPUWeight = "idle";
+      };
 
-          # CUDA and NVML need /dev/nvidia*, which are 0666 on NixOS. A private
-          # /dev would hide them.
-          PrivateDevices = false;
-          # The probe reads other users' /proc/<pid>/cmdline and cgroup to tell
-          # our processes from everyone else's. ProtectProc=invisible, which the
-          # nixpkgs llama-cpp and llama-swap units set, would blind it, and so
-          # would ProcSubset=pid. PrivateUsers is left off for the same reason.
-          ProtectSystem = "strict";
-          # tmpfs rather than true, so the config directory and the seed can
-          # be bound in when they live under /home.
-          ProtectHome = if cfg.configDir != null || cfg.signedConfig.seed != null then "tmpfs" else true;
-          BindReadOnlyPaths =
-            lib.optional (cfg.configDir != null) cfg.configDir
-            ++ lib.optional (cfg.signedConfig.seed != null) cfg.signedConfig.seed;
-          PrivateTmp = true;
-          NoNewPrivileges = true;
-          CapabilityBoundingSet = "";
-          ProtectClock = true;
-          ProtectHostname = true;
-          ProtectKernelLogs = true;
-          ProtectKernelTunables = true;
-          ProtectKernelModules = true;
-          ProtectControlGroups = true;
-          MemoryDenyWriteExecute = true;
-          RestrictAddressFamilies = [
-            "AF_INET"
-            "AF_INET6"
-            "AF_UNIX"
+      # The CPU device's model servers run as this runner's children, in the
+      # idle slice; the daemon's own children would sit in its cgroup
+      # (internal/cpurun). The same dynamic user as the daemon, which is the
+      # only one its socket lets in.
+      systemd.services.infermux-cpu = lib.mkIf signed {
+        description = "InferMux CPU runner: the CPU device's model servers, in the idle slice";
+        wantedBy = [ "multi-user.target" ];
+        serviceConfig = sandbox // {
+          Type = "exec";
+          User = "infermux";
+          Slice = "idle.slice";
+          ExecStart = lib.escapeShellArgs [
+            (lib.getExe' cfg.package "infermux-cpu")
+            "serve"
+            "-socket"
+            cpuSocket
           ];
-          RestrictNamespaces = true;
-          RestrictRealtime = true;
-          RestrictSUIDSGID = true;
-          RemoveIPC = true;
-          LockPersonality = true;
-          SystemCallArchitectures = "native";
-          SystemCallFilter = [
-            "@system-service"
-            "~@privileged"
-          ];
+          RuntimeDirectory = "infermux-cpu";
+          RuntimeDirectoryMode = "0700";
+          Restart = "always";
+          RestartSec = 5;
         };
       };
 

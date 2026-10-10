@@ -70,9 +70,23 @@ func Instance(model string, places []Place, host, device string) string {
 	return model + "@" + device
 }
 
+// Options are what the host running the part knows and the config does not.
+type Options struct {
+	// CPURunner goes before a CPU device's commands, so the runner starts
+	// them in its slice instead of the daemon in its own cgroup
+	// (internal/cpurun): `infermux-cpu run -socket <path> --`. Empty, they
+	// run as the daemon's children.
+	CPURunner []string
+}
+
 // Derive is host's part. A host the config does not list runs no model of
 // its own and still routes to the others.
 func (c *Config) Derive(host string) (*Part, error) {
+	return c.DeriveFor(host, Options{})
+}
+
+// DeriveFor is Derive on a host with opts.
+func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 	part := &Part{
 		Host:    host,
 		Routes:  map[string][]Route{},
@@ -112,7 +126,7 @@ func (c *Config) Derive(host string) (*Part, error) {
 			if p.Host() != host {
 				continue
 			}
-			entry, err := c.entry(m, p, instance)
+			entry, err := c.entry(m, p, instance, opts)
 			if err != nil {
 				return nil, fmt.Errorf("%s on %s: %w", name, p.Place, err)
 			}
@@ -188,7 +202,7 @@ func (c *Config) DeriveAll() (map[string]*Part, error) {
 // the environment, a CPU also the device flags, and the place's overrides
 // apply before those, so no override reaches a card the model was not
 // placed on (0022).
-func (c *Config) entry(m *Model, p Place, instance string) (*yaml.Node, error) {
+func (c *Config) entry(m *Model, p Place, instance string, opts Options) (*yaml.Node, error) {
 	device := c.Hosts[p.Host()].Devices[p.Device()]
 	body := deepCopy(m.Body)
 	a := splitCmd(m.Cmd())
@@ -198,8 +212,17 @@ func (c *Config) entry(m *Model, p Place, instance string) (*yaml.Node, error) {
 		a = a.without(append(slices.Clone(gpuLayerFlags), deviceFlags...)...).set("--device", "none").set("-ngl", "0")
 		changed = true
 	}
+	cmd := a.render()
+	if device.Kind == KindCPU && len(opts.CPURunner) > 0 {
+		prefix := make([]string, len(opts.CPURunner))
+		for i, t := range opts.CPURunner {
+			prefix[i] = quote(t)
+		}
+		cmd = strings.Join(prefix, " ") + " " + cmd
+		changed = true
+	}
 	if changed {
-		setKey(body, "cmd", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: a.render() + "\n", Style: yaml.LiteralStyle})
+		setKey(body, "cmd", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: cmd + "\n", Style: yaml.LiteralStyle})
 	}
 	env := mapValue(body, "env")
 	if env == nil {

@@ -129,6 +129,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		if err == nil {
 			one, err = openConfig(cfg.Host, state, configDir, trusted, log)
 		}
+		if err == nil {
+			one.options.CPURunner, err = cpuRunner(*flagCPUSocket)
+		}
 		if err != nil {
 			slog.Error("failed to open the signed config", "error", err)
 			os.Exit(1)

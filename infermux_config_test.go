@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -366,5 +367,41 @@ func TestProxy_OneConfigRuns(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 200 || string(body) != "zbox" {
 		t.Errorf("embed went to %d %q, want zbox, the config's balance lane", resp.StatusCode, body)
+	}
+}
+
+// A CPU device's model starts through the runner when there is one, and
+// says where it runs when there is not.
+func TestCPUModelsGoThroughTheRunner(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"infermux.yaml": []byte("hosts:\n  a:\n    url: http://a\n    devices:\n      cpu: {kind: cpu}\n      gpu: {kind: gpu}\nbalance:\n  m: [a/cpu]\n  n: [a/gpu]\n"),
+		"models/m.yaml": []byte("cmd: llama-server --model /m.gguf --port ${PORT}\n"),
+		"models/n.yaml": []byte("cmd: llama-server --model /n.gguf --port ${PORT}\n"),
+	}
+	bundle, err := configstore.Sign(files, priv, "a", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, runner := range [][]string{nil, {"/bin/infermux-cpu", "run", "-socket", "/run/infermux-cpu/socket", "--"}} {
+		h := newConfigHosts(t, []ed25519.PublicKey{pub}, "a")["a"]
+		h.one.options.CPURunner = runner
+		if _, err := h.one.accept(bundle, "test"); err != nil {
+			t.Fatal(err)
+		}
+		derived := h.derived(t)
+		warned := slices.ContainsFunc(h.one.state().Warnings, func(w string) bool { return strings.Contains(w, "m runs in the daemon's own cgroup") })
+		if runner == nil {
+			if strings.Contains(derived, "infermux-cpu") || !warned {
+				t.Errorf("no runner: warned %v\n%s", warned, derived)
+			}
+			continue
+		}
+		if strings.Count(derived, "/bin/infermux-cpu run -socket /run/infermux-cpu/socket -- llama-server") != 1 || warned {
+			t.Errorf("runner: warned %v\n%s", warned, derived)
+		}
 	}
 }

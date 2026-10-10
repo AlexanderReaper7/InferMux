@@ -322,3 +322,32 @@ func TestGPUIndexAndUnknownHost(t *testing.T) {
 		t.Errorf("a host the config does not list: %+v", part)
 	}
 }
+
+// With a runner, a CPU device's command is handed to it, flags and all; a
+// GPU device's is not.
+func TestCPURunner(t *testing.T) {
+	cfg := loadToday(t)
+	plain, err := cfg.Derive("strix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := []string{"/bin/infermux-cpu", "run", "-socket", "/run/a b/socket", "--"}
+	part, err := cfg.DeriveFor("strix", Options{CPURunner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, after := loadLlamaSwap(t, plain), loadLlamaSwap(t, part)
+	for name, m := range after.Models {
+		got, err := config.SanitizeCommand(m.Cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, _ := config.SanitizeCommand(before.Models[name].Cmd)
+		if part.Local[name].Devices[0] == "cpu" {
+			want = append(slices.Clone(runner), want...)
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, want)
+		}
+	}
+}

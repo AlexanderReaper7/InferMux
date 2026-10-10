@@ -20,6 +20,7 @@ This file is rules and navigation only.
 | `internal/placement/` | ours: the one config (0022): hosts, devices, groups, the `balance` and `failover` lanes, and each host's part derived from it, llama-swap's file included |
 | `internal/configstore/`, `cmd/infermux-config/` | ours: the config's signature, the daemon's kept versions and conflicts, and the terminal tool that makes the key and signs (0022) |
 | `infermux_config.go` | ours: the daemon's side of the one config: start, `/warden/config*`, push and poll between hosts |
+| `internal/cpurun/`, `cmd/infermux-cpu/` | ours: the runner that starts a CPU device's model servers in the root `idle.slice`, as its children rather than the daemon's (0022) |
 | `internal/failover/` | ours: failure and capacity overflow between model destinations (0016, [0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md), 0021); admission counts each serving host's requests after authentication |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
 | `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
@@ -35,10 +36,10 @@ This file is rules and navigation only.
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build)               # the frontend
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_loadbalance_test.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_loadbalance_test.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun cmd internal/server/warden.go internal/server/warden_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the three test packages
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model

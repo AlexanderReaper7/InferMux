@@ -84,6 +84,7 @@ in
     "cmd/infermux-ui"
     "cmd/infermux-adapter"
     "cmd/infermux-config"
+    "cmd/infermux-cpu"
   ];
   tags = lib.optionals withUI [ "embed_ui" ];
   # go-nvml's header declares deprecated vGPU calls, one warning each.
@@ -121,7 +122,7 @@ in
   # upstream's to run.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/server/ .
     runHook postCheck
   '';
 
