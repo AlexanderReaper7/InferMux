@@ -32,14 +32,14 @@ type Part struct {
 type Route struct {
 	// Place is the failover handler's: the host, which serves the model's
 	// own name, or host/name for a second device there (Instance).
-	Place       string
-	Host        string
-	Device      string
-	MaxInflight int
-	OnlyIfIdle  bool
-	BatchOnly   bool
+	Place       string `json:"place"`
+	Host        string `json:"host"`
+	Device      string `json:"device"`
+	MaxInflight int    `json:"max_inflight,omitempty"`
+	OnlyIfIdle  bool   `json:"only_if_idle,omitempty"`
+	BatchOnly   bool   `json:"batch_only,omitempty"`
 	// Failover is a place of the failover lane.
-	Failover bool
+	Failover bool `json:"failover,omitempty"`
 }
 
 // Local is a llama-swap model of this host: the config's model it runs,

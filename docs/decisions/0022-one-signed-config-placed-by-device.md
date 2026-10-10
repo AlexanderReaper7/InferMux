@@ -103,3 +103,13 @@ The user, 2026-10-10: "you may drive this to completion on your own. but note do
 - **Clouds are offered by every host,** as llama-swap peers, with the key taken from each host's environment through `${env.VAR}`.
 - **A model placed nowhere is a warning, not an error.** Removing a model's places is how it is turned off without deleting its file and notes.
 - **A host the config does not list runs no model of its own** and still routes to the others.
+
+### Signing and the store (`internal/configstore`, `cmd/infermux-config`)
+
+- **The manifest is JSON with a `parent`,** the hash of the manifest it was edited from. A config whose parent is the one running replaces it quietly; any other later one replaces it as a conflict. Without the parent a host could not tell an edit made apart from a plain update.
+- **A tie in signed time goes to the greater host name,** `zbox` over `strix`. Any fixed order would do.
+- **A signed time more than 10 minutes ahead of the host's clock is refused.** The later time wins every conflict, so a config stamped a year ahead would beat every edit for a year.
+- **An older nixcfg copy at start is ignored, not reported.** The copy lags whenever a Publish has not been committed, so treating it as an edit made apart would raise a warning on most restarts. An older config from another daemon is still a conflict.
+- **A public key is its 32 bytes in base64,** one a line in the file Nix writes, with an optional comment after it. The private key file is age's scrypt format holding the seed in base64, so `age -d` opens it by hand too.
+- **The daemon keeps the last 20 versions** under `versions/`, besides the current one and both sides of an open conflict.
+- **`infermux-config` signs from a terminal:** `keygen`, `sign` (checks the config as a daemon would and refuses to sign one that fails), `verify` and `derive`. The migration needs it before the editor exists, and it stays useful when no browser is at hand.
