@@ -88,6 +88,8 @@ Defaults the agent chose, open to change:
 7. The editor: the schema, the validation endpoint, the add-model commands, Publish, the conflict warning. Remove the model form, Peers and Routing. Built 2026-10-11, except the removal, which waits for phase 8 (below).
 8. Move both hosts over, and add status lines to 0005, 0008, 0011, 0016 and 0019.
 
+The warden on every device (above) was built 2026-10-11, after phase 7, and is in use only under the one config.
+
 ## Calls the agent made while building, for the user to review
 
 The user, 2026-10-10: "you may drive this to completion on your own. but note down any decisions that would normally be surfaced to me first". Each of these is open to change.
@@ -155,3 +157,24 @@ The user, 2026-10-10: "you may drive this to completion on your own. but note do
 - **The Config tab is loaded on first use.** The main bundle stays at 109 kB. The Config chunk, CodeMirror included, is 577 kB, and Vite's chunk size warning remains.
 - **The module's `ui.configKey` is the encrypted key; under the one config the UI edits `signedConfig.seed`,** the directory the daemon starts from, and gets no `-models-dir`.
 - **`e2e/config.py` runs the tab against a daemon with a signed config,** and both e2e base configs set `startPort: 15800`: the host's own InferMux had a model server on 5802, which the e2e daemon's third model was given.
+
+### The warden on every device (`internal/warden/cpu.go`, `internal/warden/devices.go`)
+
+- **A host has two measured devices: the GPU at NVML index 0, and the CPU.** A model placed on a card at another CUDA index is on no measured device, and the config's state warns about it. No host has two cards today. Measuring several would mean one GPU verdict per index; NVML already lists them.
+- **Outside the one config the warden is what it was.** Every local model is on the GPU, the CPU is not read, and the refusals and unloads are the old ones.
+- **A local model the placement does not name is on both devices,** and either device's yield refuses its batch work. The derivation names every local model, so this is only a model llama-swap knows from somewhere else.
+- **Free VRAM is read whenever no GPU model runs** (CLAUDE.md's rule, reworded). A CPU model's server runs with `CUDA_VISIBLE_DEVICES=` and holds no VRAM, so it no longer hides a full card.
+- **The CPU's percent is of every online core,** counted from the `cpuN` lines of `/proc/stat`. 25% on strix's 24 threads is 6 busy threads. It is the sum of the readings within `window_seconds`, so the window slides instead of restarting.
+- **Ours is InferMux's own unit, `our_units`, and the CPU runner's unit.** The daemon reads the runner's unit through the runner's socket: SO_PEERCRED gives the pid, and `/proc/<pid>/cgroup` the unit. No new flag or key. A runner that does not answer yet is asked again every 5 s. The cgroup tree is walked for those names once a minute and whenever one cannot be read, and a cgroup inside another of ours is counted once.
+- **The busiest processes come from `/proc/<pid>/stat`:** the top three by CPU time since the last reading, grouped by name, InferMux's units left out. Reading 860 processes took 8 ms on strix. They name the reason on the Status card and decide nothing; the decision is the cgroup sum.
+- **The checks run in the order RAM, priority process, load,** so when RAM is short the reason shown is the one that unloads.
+- **Defaults: 25% busy, a 30 s window, 300 s of resume quiet, 4096 MB of available RAM.** 25% is the GPU's number, and three to six times strix's measured background of 4-8%. The RAM floor has one measurement behind it and is otherwise a guess. Unloading the 4B embedder on CPU freed 2.8 GB of anonymous memory; the other 4.2 GB was file pages, which MemAvailable already counted. The floor has to sit above what the desktop needs to keep out of swap, and 4 GB is that on a 96 GB host.
+- **A CPU yield on load or for a priority process refuses and cancels batch work on the CPU's models, and unloads nothing.** RAM under the floor owes one unload of the CPU's models, paid after `interactive_recent_seconds` of quiet on those models only. A chat on the GPU does not hold back the CPU's unload. Each fall under the floor owes another one, including a fall during the resume quiet.
+- **A CPU priority process does not skip the interactive wait,** as a GPU one does (0017). It does not unload anything, so there is no wait to skip.
+- **A refusal names the device that refused:** `gpu_yielded`, as before, or `cpu_yielded`, with that device's reason and its own `resume_quiet_seconds` as Retry-After. A model on both devices is refused by the first of them that is yielded.
+- **A batch request cancelled by hand now answers type `cancelled`, "batch request cancelled by hand",** where it used to say `gpu_yielded` and give the GPU's reason, true or not. Retry-After stays the GPU's `resume_quiet_seconds`. Episteme honours Retry-After, and 0 would have sent the work straight back. No consumer matches on the type.
+- **Unload all, Forgive owed unload and Cancel batch requests act on both devices.** Pause and Resume by hand stay the GPU's.
+- **Consumers hear the GPU's verdict only.** Decision 4's push to consumers was replaced by 0023 the same day, so the CPU was never added to it.
+- **Overflow (0021) asks the devices of the model.** An `only_if_idle` place refuses while any device its model is on is yielded. The one model at a time on a card counts only models on the GPU, so a CPU model is never GPU work there.
+- **Disabling the warden drops the CPU's verdict too,** and its batch work goes through.
+- **The UI:** the Status page has a CPU card under the GPU's, and the Models card lists each model's devices or "unmeasured". The Warden settings have a CPU section with the four numbers and the priority processes. `e2e/config.py` checks the card and the placement the daemon derives; `e2e/run.py` checks that the CPU's numbers save.

@@ -33,6 +33,24 @@ func (s *Server) UnloadAllModels() []string {
 	return running
 }
 
+// UnloadModels stops those of ids that are running and returns them, sorted.
+// It blocks until they have stopped. The warden's yield on one device stops
+// that device's models only (0022).
+func (s *Server) UnloadModels(ids []string) []string {
+	running := s.local.RunningModels()
+	stopped := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := running[id]; ok {
+			stopped = append(stopped, id)
+		}
+	}
+	sort.Strings(stopped)
+	if len(stopped) > 0 {
+		s.local.Unload(0, stopped...)
+	}
+	return stopped
+}
+
 // QualifyModel is a model name as a key's allow list sees it (0006, 4): a
 // local model or alias as its real ID with peer "", a peer's as its peer ID
 // and the peer's model name. False for a name this server does not know.

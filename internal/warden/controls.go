@@ -68,8 +68,8 @@ func (w *Warden) SetManual(action string) (Verdict, error) {
 func (w *Warden) Forgive() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	owed := w.pendingUnload
-	w.pendingUnload = false
+	owed := w.gpuUnload.pending || w.cpu.unload.pending
+	w.gpuUnload.pending, w.cpu.unload.pending = false, false
 	if owed {
 		w.log.Infof("Owed unload forgiven by hand")
 	}
@@ -82,11 +82,11 @@ func (w *Warden) UnloadNow() ([]string, error) {
 	if n := w.traffic.interactiveInFlight(); n > 0 {
 		return nil, fmt.Errorf("%d interactive request(s) in flight", n)
 	}
-	w.closeSessions("infermux: the models were unloaded by hand")
+	w.closeSessions("", "infermux: the models were unloaded by hand")
 	unloaded := w.models.UnloadAll()
 	w.mu.Lock()
-	w.pendingUnload = false
-	w.lastUnload = unloaded
+	w.gpuUnload.pending, w.cpu.unload.pending = false, false
+	w.gpuUnload.last = unloaded
 	w.mu.Unlock()
 	w.log.Infof("Models unloaded by hand: %s", orNone(strings.Join(unloaded, ", ")))
 	return unloaded, nil
@@ -94,7 +94,7 @@ func (w *Warden) UnloadNow() ([]string, error) {
 
 // CancelBatch cancels every batch request in flight without refusing new ones.
 func (w *Warden) CancelBatch() int {
-	n := w.traffic.cancelBatch("infermux: batch session cancelled by hand")
+	n := w.traffic.cancelBatch("", "infermux: batch session cancelled by hand")
 	w.log.Infof("Cancelled %d batch request(s) by hand", n)
 	return n
 }
@@ -130,6 +130,9 @@ func (w *Warden) Reload(cfg Config) {
 	if !slices.Equal(old.OurUnits, cfg.OurUnits) || !slices.Equal(old.DesktopProcesses, cfg.DesktopProcesses) ||
 		!slices.Equal(old.PriorityProcesses, cfg.PriorityProcesses) {
 		w.probe, w.freshProbe = newProbe(cfg), newProbe(cfg)
+	}
+	if !slices.Equal(old.OurUnits, cfg.OurUnits) || !slices.Equal(old.CPU.PriorityProcesses, cfg.CPU.PriorityProcesses) || old.CPU.WindowSeconds != cfg.CPU.WindowSeconds {
+		w.cpuProbe = newCPUProbe(cfg)
 	}
 	if old.ComfyUIURL != cfg.ComfyUIURL {
 		w.setComfyUI(cfg.ComfyUIURL)

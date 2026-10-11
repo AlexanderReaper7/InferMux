@@ -26,6 +26,9 @@ type Models interface {
 	Running() map[string]string
 	// UnloadAll stops every model and returns the ones that were running.
 	UnloadAll() []string
+	// Unload stops those of ids that are running and returns them, for a
+	// yield on one device under the one config (0022).
+	Unload(ids []string) []string
 	// Qualify is the model a request names, as <host>/<model> or
 	// <peer>/<model>, for a key's allow list (0006, 4), and whether it is one
 	// of this host's own, which is all the gate looks at (0009). ok is false
@@ -61,8 +64,9 @@ type Warden struct {
 
 	// tickMu serialises everything that moves the verdict: a tick, a manual
 	// verdict, a reload. The probe is only called under it.
-	tickMu sync.Mutex
-	probe  func() (Resources, error)
+	tickMu   sync.Mutex
+	probe    func() (Resources, error)
+	cpuProbe func() (CPUResources, error)
 
 	mu            sync.Mutex
 	cfg           Config
@@ -75,12 +79,13 @@ type Warden struct {
 	comfy         ComfyIdle
 	lastResources *Resources
 	probeError    *string
-	lastUnload    []string
-	pendingUnload bool
-	deferLogged   bool
-	whenQuiet     map[string]func()
-	remotes       func() any
-	quietLogged   map[string]bool
+	gpuUnload     unloadState
+	// placement is nil outside the one config, and cpu unused (0022).
+	placement   Placement
+	cpu         cpuDevice
+	whenQuiet   map[string]func()
+	remotes     func() any
+	quietLogged map[string]bool
 
 	stop chan struct{}
 	done chan struct{}
@@ -93,6 +98,7 @@ func New(cfg Config, models Models, log Logger) *Warden {
 		models:      models,
 		log:         log,
 		probe:       newProbe(cfg),
+		cpuProbe:    newCPUProbe(cfg),
 		freshProbe:  newProbe(cfg),
 		now:         time.Now,
 		announcer:   newAnnouncer(cfg.Consumers, log),
@@ -193,8 +199,10 @@ func (w *Warden) Tick() Verdict {
 
 	cfg := w.config()
 	if !cfg.Policy.Enabled {
+		w.disabledCPU()
 		return w.disabledTick()
 	}
+	defer w.cpuTick(cfg)
 
 	res, err := w.probe()
 	if err != nil {
@@ -215,7 +223,8 @@ func (w *Warden) Tick() Verdict {
 		res.ComfyUIJobs = queue()
 		w.comfyTick(res.ComfyUIJobs, now)
 	}
-	loaded := len(w.models.Running()) > 0
+	// Only a model on the GPU holds VRAM (0002).
+	loaded := len(w.runningOn(DeviceGPU)) > 0
 
 	w.mu.Lock()
 	w.probeError = nil
@@ -251,19 +260,19 @@ func (w *Warden) act(before, after Verdict) {
 	}
 	switch {
 	case after.Yielded && !before.Yielded:
-		if n := w.traffic.pause(after.Reason); n > 0 {
+		if n := w.traffic.pause(DeviceGPU, after.Reason); n > 0 {
 			w.log.Infof("Cancelled %d batch request(s)", n)
 		}
 		// The unload is owed once per yield, on the transition (0002). It may
 		// wait for an interactive session to go quiet (0004), but a model a
 		// client loads again during the pause stays loaded.
 		w.mu.Lock()
-		w.pendingUnload, w.deferLogged = true, false
+		w.gpuUnload.pending, w.gpuUnload.deferLogged = true, false
 		w.mu.Unlock()
 	case !after.Yielded && before.Yielded:
-		w.traffic.resume()
+		w.traffic.resume(DeviceGPU)
 		w.mu.Lock()
-		w.pendingUnload = false
+		w.gpuUnload.pending = false
 		w.mu.Unlock()
 	case after.Priority && !before.Priority:
 		// A priority process arriving during a pause owes an unload of its
@@ -271,10 +280,10 @@ func (w *Warden) act(before, after Verdict) {
 		// needs (0017).
 		w.log.Infof("Priority: %s", after.Reason)
 		w.mu.Lock()
-		w.pendingUnload, w.deferLogged = true, false
+		w.gpuUnload.pending, w.gpuUnload.deferLogged = true, false
 		w.mu.Unlock()
 	}
-	w.settleUnload()
+	w.settle(DeviceGPU)
 
 	w.announcer.sync(after)
 }
@@ -294,47 +303,11 @@ func (w *Warden) disabledTick() Verdict {
 	return after
 }
 
-// settleUnload pays an owed unload unless the user is in the middle of an
-// interactive session. For a priority process only a request in flight counts
-// as that (0017).
-func (w *Warden) settleUnload() {
-	w.mu.Lock()
-	pending, priority := w.pendingUnload, w.verdict.Priority
-	w.mu.Unlock()
-	if !pending {
-		return
-	}
-	window := time.Duration(w.config().Policy.InteractiveRecentSeconds) * time.Second
-	if priority {
-		window = 0
-	}
-	if recent, last := w.traffic.interactiveRecent(window); recent {
-		w.mu.Lock()
-		logged := w.deferLogged
-		w.deferLogged = true
-		w.mu.Unlock()
-		if !logged {
-			w.log.Infof("Unload deferred: interactive request %s", describeLast(last, w.now()))
-		}
-		return
-	}
-	w.mu.Lock()
-	reason := w.verdict.Reason
-	w.mu.Unlock()
-	w.closeSessions("infermux: the GPU was yielded: " + reason)
-	unloaded := w.models.UnloadAll()
-	w.mu.Lock()
-	w.pendingUnload = false
-	w.lastUnload = unloaded
-	w.mu.Unlock()
-	w.log.Infof("Models unloaded: %s", orNone(strings.Join(unloaded, ", ")))
-}
-
 // closeSessions ends the open sessions with 1013 before their models stop,
 // so a client learns why rather than seeing its connection drop (0018, 7).
 // Every one is idle by now: one that moves data defers the unload.
-func (w *Warden) closeSessions(reason string) {
-	if n := w.traffic.closeSessions(stream.TryAgainLater, reason); n > 0 {
+func (w *Warden) closeSessions(device, reason string) {
+	if n := w.traffic.closeSessions(device, stream.TryAgainLater, reason); n > 0 {
 		w.log.Infof("Closed %d idle session(s): %s", n, reason)
 	}
 }
@@ -342,7 +315,7 @@ func (w *Warden) closeSessions(reason string) {
 // CloseSessions ends every open session with code and reason, for a config
 // reload, which stops every model (0018, 7).
 func (w *Warden) CloseSessions(code int, reason string) int {
-	return w.traffic.closeSessions(code, reason)
+	return w.traffic.closeSessions("", code, reason)
 }
 
 func describeLast(last, now time.Time) string {
@@ -428,16 +401,21 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			session = stream.New(w.now(), w.now)
 			ctx = stream.With(ctx, session)
 		}
-		id, ok := w.traffic.begin(class, r.URL.Path, func() { cancel(errYielded) }, session)
-		if !ok {
-			w.refuse(rw, "batch requests wait while the GPU is yielded: ")
+		devices := []string{DeviceGPU, DeviceCPU}
+		if name, ok := w.local(model); ok && known {
+			devices = w.devices(name)
+		}
+		id, refusedBy := w.traffic.begin(class, r.URL.Path, devices, func(device string) { cancel(yielded{device}) }, session)
+		if refusedBy != "" {
+			w.refuse(rw, refusedBy, "batch requests wait while "+deviceName(refusedBy)+" is yielded: ")
 			return
 		}
 		defer w.runWhenQuiet()
 		defer w.traffic.end(id)
 		tracked := &trackedWriter{ResponseWriter: rw, session: session}
 		next.ServeHTTP(tracked, r.WithContext(ctx))
-		if context.Cause(ctx) != errYielded || tracked.hijacked {
+		var y yielded
+		if !errors.As(context.Cause(ctx), &y) || tracked.hijacked {
 			// A cancelled session has had its close frame (0018, 7).
 			return
 		}
@@ -445,7 +423,13 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 		// and Go would send that as an empty 200. A cancelled batch request
 		// has to read as a failure to the client that sent it.
 		if !tracked.started {
-			w.refuse(rw, "batch request cancelled, the GPU was yielded: ")
+			if y.device == "" {
+				// The GPU's window, as before there were devices: a client that
+				// honours Retry-After must not send the work straight back.
+				writeRefusal(rw, "cancelled", "batch request cancelled by hand", w.config().Policy.ResumeQuietSeconds)
+			} else {
+				w.refuse(rw, y.device, "batch request cancelled, "+deviceName(y.device)+" was yielded: ")
+			}
 			return
 		}
 		// Mid-stream: the status is gone, so break the connection rather than
@@ -454,10 +438,18 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-var errYielded = errors.New("the GPU was yielded")
+// yielded is a request's cancel cause: the device that yielded, "" for a
+// cancel by hand.
+type yielded struct{ device string }
 
-// Yielded says whether the GPU is yielded to someone else's work. Overflow
-// asks it before it puts a model on this card (0021).
+func (y yielded) Error() string {
+	if y.device == "" {
+		return "cancelled by hand"
+	}
+	return deviceName(y.device) + " was yielded"
+}
+
+// Yielded says whether the GPU is yielded to someone else's work.
 func (w *Warden) Yielded() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -471,19 +463,25 @@ func (w *Warden) IsBatch(r *http.Request) bool {
 	return (!required || known) && key.Class == Batch
 }
 
-func (w *Warden) refuse(rw http.ResponseWriter, why string) {
+// refuse answers 503 for a device's yield, with its reason and its own
+// resume window as Retry-After.
+func (w *Warden) refuse(rw http.ResponseWriter, device, why string) {
 	w.mu.Lock()
-	reason := w.verdict.Reason
+	reason := w.verdictLocked(device).Reason
 	retry := w.cfg.Policy.ResumeQuietSeconds
+	if device == DeviceCPU {
+		retry = w.cfg.CPU.ResumeQuietSeconds
+	}
 	w.mu.Unlock()
+	writeRefusal(rw, device+"_yielded", why+reason, retry)
+}
+
+func writeRefusal(rw http.ResponseWriter, kind, message string, retry int) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.Header().Set("Retry-After", strconv.Itoa(retry))
 	rw.WriteHeader(http.StatusServiceUnavailable)
 	json.NewEncoder(rw).Encode(map[string]any{
-		"error": map[string]string{
-			"type":    "gpu_yielded",
-			"message": why + reason,
-		},
+		"error": map[string]string{"type": kind, "message": message},
 	})
 }
 
@@ -550,9 +548,12 @@ type VerdictState struct {
 	Models        map[string]string        `json:"models"`
 	PendingUnload bool                     `json:"pending_unload"`
 	LastUnload    []string                 `json:"last_unload"`
-	ComfyUI       *comfyState              `json:"comfyui"`
-	ProbeError    *string                  `json:"probe_error"`
-	Resources     *Resources               `json:"resources"`
+	// CPU and Placement are the one config's (0022), nil outside it.
+	CPU        *CPUState   `json:"cpu"`
+	Placement  Placement   `json:"placement"`
+	ComfyUI    *comfyState `json:"comfyui"`
+	ProbeError *string     `json:"probe_error"`
+	Resources  *Resources  `json:"resources"`
 	// Remotes is the other hosts and what they list (0006, 2).
 	Remotes any `json:"remotes"`
 }
@@ -577,10 +578,21 @@ func (w *Warden) State() VerdictState {
 		Consumers:     w.announcer.state(),
 		Traffic:       w.traffic.state(),
 		Models:        models,
-		PendingUnload: w.pendingUnload,
-		LastUnload:    w.lastUnload,
+		PendingUnload: w.gpuUnload.pending,
+		LastUnload:    w.gpuUnload.last,
 		ProbeError:    w.probeError,
 		Resources:     w.lastResources,
+		Placement:     w.placement,
+	}
+	if w.placement != nil {
+		s.CPU = &CPUState{
+			Verdict:       w.cpu.verdict,
+			Policy:        w.cfg.CPU,
+			Resources:     w.cpu.resources,
+			ProbeError:    w.cpu.probeError,
+			PendingUnload: w.cpu.unload.pending,
+			LastUnload:    w.cpu.unload.last,
+		}
 	}
 	if w.cfg.ComfyUIURL != "" {
 		s.ComfyUI = &comfyState{URL: w.cfg.ComfyUIURL, ComfyIdle: w.comfy}

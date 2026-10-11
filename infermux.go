@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/catalog"
+	"github.com/mostlygeek/llama-swap/internal/cpurun"
 	"github.com/mostlygeek/llama-swap/internal/failover"
 	"github.com/mostlygeek/llama-swap/internal/fetch"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
@@ -47,6 +48,9 @@ type activeModels struct {
 
 func (a activeModels) Running() map[string]string { return a.server().RunningModelStates() }
 func (a activeModels) UnloadAll() []string        { return a.server().UnloadAllModels() }
+func (a activeModels) Unload(ids []string) []string {
+	return a.server().UnloadModels(ids)
+}
 
 // Qualify names the model as a key's allow list sees it (0006, 4): another
 // host's as <host>/<model>, a peer's as <peer>/<model>, a local one as
@@ -165,7 +169,13 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		slog.Error("failed to set up the remote hosts", "warden-config", path, "error", err)
 		os.Exit(1)
 	}
-	w := warden.New(cfg, activeModels{server: active, host: cfg.Host, remote: remotes}, log)
+	// The CPU runner's servers are InferMux's own work (0022): its unit is
+	// added to our_units wherever the warden reads them.
+	runner := &runnerUnit{}
+	if one != nil && *flagCPUSocket != "" {
+		runner.ask(*flagCPUSocket)
+	}
+	w := warden.New(runner.add(cfg), activeModels{server: active, host: cfg.Host, remote: remotes}, log)
 	w.ReportRemotes(func() any { return remotes.get().State() })
 	codex, err := catalog.Codex(w.FilterModels(remotes), *flagCodexPrompt)
 	if err != nil {
@@ -206,8 +216,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		if _, ok := remotes.get().Qualify(r); ok {
 			return "", false, false
 		}
-		return models.Qualify(r)
-	}, Yielded: w.Yielded}
+		name, local, ok := models.Qualify(r)
+		return name, local && w.OnGPU(name), ok
+	}, Yielded: w.YieldedFor}
 	if one != nil {
 		one.handle(w.Handle)
 	}
@@ -253,6 +264,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 				log.Warnf("Remote hosts not set: %v", err)
 			}
 			failovers.Set(routesOf(part))
+			w.SetPlacement(devicesOf(part))
 		}
 		if one.start(*flagConfigSeed) {
 			// llama-swap loaded -config-dir before the warden started, and
@@ -292,7 +304,10 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		if err != nil {
 			log.Warnf("Remote hosts not reloaded: %v", err)
 		}
-		w.Reload(cfg)
+		w.Reload(runner.add(cfg))
+	}
+	if runner.waiting() {
+		go runner.retry(ctx, reloadWarden, log)
 	}
 	go (&configwatcher.Watcher{Path: absolute(path), OnChange: reloadWarden}).Run(ctx)
 	if cfg.KeysPath != "" {
@@ -324,6 +339,77 @@ func checkOneConfig(cfg warden.Config) error {
 		return errors.New("failover_file is replaced by the config's balance and failover lanes")
 	}
 	return nil
+}
+
+// devicesOf is each local model's devices as the warden measures them: the
+// CPU, and the GPU at CUDA index 0, which is the one NVML reads (0022). A
+// model on another GPU is on none; derive warns about it.
+func devicesOf(part *placement.Part) warden.Placement {
+	p := warden.Placement{}
+	for name, l := range part.Local {
+		on := []string{}
+		for _, d := range l.Devices {
+			dev := part.Devices[d]
+			var w string
+			switch {
+			case dev.Kind == placement.KindCPU:
+				w = warden.DeviceCPU
+			case dev.Kind == placement.KindGPU && dev.GPUIndex() == 0:
+				w = warden.DeviceGPU
+			}
+			if w != "" && !slices.Contains(on, w) {
+				on = append(on, w)
+			}
+		}
+		p[name] = on
+	}
+	return p
+}
+
+// runnerUnit is the CPU runner's unit, read over its socket. The runner may
+// start after the daemon, so it is asked again until it answers.
+type runnerUnit struct {
+	mu     sync.Mutex
+	socket string
+	unit   string
+}
+
+// ask reads the unit once.
+func (u *runnerUnit) ask(socket string) {
+	unit, _ := cpurun.Unit(socket)
+	u.mu.Lock()
+	u.socket, u.unit = socket, unit
+	u.mu.Unlock()
+}
+
+func (u *runnerUnit) waiting() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.socket != "" && u.unit == ""
+}
+
+// retry asks every 5 s until the runner answers, then calls found.
+func (u *runnerUnit) retry(ctx context.Context, found func(), log *logmon.Monitor) {
+	for u.waiting() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+		u.ask(u.socket)
+	}
+	log.Infof("The CPU runner is %s, counted as InferMux's own", u.unit)
+	found()
+}
+
+// add puts the runner's unit in cfg's our_units, once it is known.
+func (u *runnerUnit) add(cfg warden.Config) warden.Config {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.unit != "" && !slices.Contains(cfg.OurUnits, u.unit) {
+		cfg.OurUnits = append(slices.Clone(cfg.OurUnits), u.unit)
+	}
+	return cfg
 }
 
 // remotesOf is the other hosts of a part, read with this host's key.

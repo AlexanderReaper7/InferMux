@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -100,30 +101,36 @@ func Serve(ln *net.UnixListener, logf func(format string, args ...any)) error {
 	}
 }
 
-func peerUID(conn *net.UnixConn) (uint32, error) {
+func peerCred(conn *net.UnixConn) (*unix.Ucred, error) {
 	raw, err := conn.SyscallConn()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	var cred *unix.Ucred
 	var credErr error
 	if err := raw.Control(func(fd uintptr) {
 		cred, credErr = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
 	}); err != nil {
-		return 0, err
+		return nil, err
 	}
-	if credErr != nil {
-		return 0, credErr
-	}
-	return cred.Uid, nil
+	return cred, credErr
 }
 
 func handle(conn *net.UnixConn) error {
-	if uid, err := peerUID(conn); err != nil || uid != uint32(os.Getuid()) {
+	cred, err := peerCred(conn)
+	if err != nil || cred.Uid != uint32(os.Getuid()) {
+		uid := -1
+		if cred != nil {
+			uid = int(cred.Uid)
+		}
 		return fmt.Errorf("refused a connection from uid %d: %v", uid, err)
 	}
 	in := bufio.NewReader(io.LimitReader(conn, maxFrame))
 	line, err := in.ReadBytes('\n')
+	if errors.Is(err, io.EOF) && len(line) == 0 {
+		// Unit's connection, which only reads who the runner is.
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("no request: %w", err)
 	}
@@ -233,6 +240,31 @@ func handle(conn *net.UnixConn) error {
 
 // Run hands req to the runner at socket, writes the server's output to out,
 // and returns its exit code. Closing stop asks the runner to end it.
+// Unit is the runner's unit, the last component of its cgroup path, so the
+// daemon's warden counts the CPU time of the servers under it as InferMux's
+// own (0022). The runner's PID comes from the socket's peer credentials.
+func Unit(socket string) (string, error) {
+	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		return "", fmt.Errorf("the CPU runner: %w", err)
+	}
+	defer conn.Close()
+	cred, err := peerCred(conn)
+	if err != nil {
+		return "", fmt.Errorf("the CPU runner's credentials: %w", err)
+	}
+	raw, err := os.ReadFile("/proc/" + strconv.Itoa(int(cred.Pid)) + "/cgroup")
+	if err != nil {
+		return "", err
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(string(raw)), "\n")
+	i := strings.LastIndexByte(line, '/')
+	if i < 0 || i == len(line)-1 {
+		return "", fmt.Errorf("the CPU runner's cgroup is %q", line)
+	}
+	return line[i+1:], nil
+}
+
 func Run(socket string, req Request, out io.Writer, stop <-chan struct{}) (int, error) {
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
 	if err != nil {

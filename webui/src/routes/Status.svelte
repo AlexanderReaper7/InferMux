@@ -30,6 +30,7 @@
 
   const s = $derived(live.state);
   const res = $derived(s?.resources ?? null);
+  const cpu = $derived(s?.cpu ?? null);
 </script>
 
 {#if live.error && !s}
@@ -45,6 +46,7 @@
     <div class="flex flex-wrap items-start gap-6">
       <div>
         <div class="text-3xl font-semibold {s.verdict.yielded ? 'text-amber-300' : 'text-emerald-300'}">
+          {#if cpu}<span class="text-neutral-500">GPU</span>{/if}
           {s.action.toUpperCase()}
         </div>
         <div class="mt-1 text-neutral-300">{s.verdict.reason}</div>
@@ -154,7 +156,10 @@
       {#if Object.keys(s.models).length}
         <ul class="mb-3 text-sm">
           {#each Object.entries(s.models) as [id, state]}
-            <li class="flex justify-between border-t border-neutral-900 py-1"><span>{id}</span><span class="text-sky-300">{state}</span></li>
+            <li class="flex justify-between gap-2 border-t border-neutral-900 py-1">
+              <span>{id}{#if s.placement?.[id]}<span class="ml-2 text-xs text-neutral-500">{s.placement[id].join(", ") || "unmeasured"}</span>{/if}</span>
+              <span class="text-sky-300">{state}</span>
+            </li>
           {/each}
         </ul>
       {:else}
@@ -171,6 +176,54 @@
         <div class="mt-3 text-xs text-neutral-500">Last unloaded: {s.last_unload.join(", ")}</div>
       {/if}
     </section>
+
+    {#if cpu}
+      <section class="card lg:col-span-2">
+        <div class="mb-3 flex items-baseline gap-4">
+          <h2 class="font-medium">CPU</h2>
+          <span class="font-semibold {cpu.verdict.yielded ? 'text-amber-300' : 'text-emerald-300'}">{cpu.verdict.yielded ? "PAUSE" : "RESUME"}</span>
+          <span class="text-sm text-neutral-300">{cpu.verdict.reason}</span>
+          {#if cpu.resources}<span class="ml-auto text-sm text-neutral-500">sampled {ago(cpu.resources.sampled_at)}</span>{/if}
+        </div>
+        {#if cpu.resources}
+          {@const r = cpu.resources}
+          <div class="mb-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div>
+              <div class="label">Foreign</div>
+              <div class="text-2xl {(r.foreign_percent ?? 0) >= cpu.policy.busy_percent ? 'text-amber-300' : ''}">{r.foreign_percent ?? "–"}%</div>
+              <div class="text-xs text-neutral-500">busy at {cpu.policy.busy_percent}% over {cpu.policy.window_seconds}s, {r.cores} threads</div>
+            </div>
+            <div>
+              <div class="label">Ours</div>
+              <div class="text-2xl text-sky-300">{r.our_percent ?? "–"}%</div>
+            </div>
+            <div>
+              <div class="label">RAM available</div>
+              <div class="text-2xl {r.ram_available_mb < cpu.policy.min_available_ram_mb ? 'text-amber-300' : ''}">
+                {r.ram_available_mb} <span class="text-sm text-neutral-500">/ {r.ram_total_mb} MB</span>
+              </div>
+              <div class="text-xs text-neutral-500">unloads under {cpu.policy.min_available_ram_mb} MB</div>
+            </div>
+            <div>
+              <div class="label">Busiest outside</div>
+              <div class="text-sm">{r.culprits.join(", ") || "–"}</div>
+              {#if r.priority.length}<div class="text-sm text-amber-300">priority: {r.priority.join(", ")}</div>{/if}
+            </div>
+          </div>
+        {:else}
+          <div class="mb-3 text-neutral-500">No measurement yet.</div>
+        {/if}
+        {#if cpu.pending_unload}
+          <div class="text-sm text-amber-300">An unload of the CPU's models is owed and waits for your session on them to go quiet.</div>
+        {/if}
+        {#if cpu.last_unload?.length}
+          <div class="text-xs text-neutral-500">Last unloaded from the CPU: {cpu.last_unload.join(", ")}</div>
+        {/if}
+        {#if cpu.probe_error}
+          <div class="text-sm text-red-300">Probe failed, verdict unchanged: {cpu.probe_error}</div>
+        {/if}
+      </section>
+    {/if}
 
     <section class="card">
       <h2 class="mb-3 font-medium">Requests</h2>

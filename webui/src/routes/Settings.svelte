@@ -1,12 +1,12 @@
 <script lang="ts">
   import { api } from "../lib/api";
-  import type { Policy, Stuck, WardenConfig } from "../lib/types";
+  import type { CPUPolicy, Policy, Stuck, WardenConfig } from "../lib/types";
 
   let cfg = $state<WardenConfig | null>(null);
   let path = $state("");
   let error = $state<string | null>(null);
   let saved = $state(false);
-  let lists = $state({ our_units: "", desktop_processes: "", priority_processes: "", trusted_hosts: "" });
+  let lists = $state({ our_units: "", desktop_processes: "", priority_processes: "", trusted_hosts: "", cpu_priority: "" });
 
   async function load() {
     try {
@@ -20,6 +20,7 @@
         desktop_processes: (cfg.desktop_processes ?? []).join("\n"),
         priority_processes: (cfg.priority_processes ?? []).join("\n"),
         trusted_hosts: (cfg.trusted_hosts ?? []).join("\n"),
+        cpu_priority: (cfg.cpu.priority_processes ?? []).join("\n"),
       };
     } catch (e) {
       error = (e as Error).message;
@@ -44,6 +45,7 @@
       priority_processes: lines(lists.priority_processes),
       trusted_hosts: lines(lists.trusted_hosts),
     };
+    body.cpu = { ...body.cpu, priority_processes: lines(lists.cpu_priority) };
     try {
       await api.saveWarden(body);
       saved = true;
@@ -60,6 +62,13 @@
     { key: "interactive_recent_seconds", label: "Interactive recent, s", help: "No unload this long after your last request." },
     { key: "poll_seconds", label: "Poll every, s", help: "The yield latency." },
     { key: "comfyui_idle_seconds", label: "ComfyUI idle, s", help: "Empty queue this long before /free." },
+  ];
+
+  const cpuNumbers: { key: Exclude<keyof CPUPolicy, "priority_processes">; label: string; help: string }[] = [
+    { key: "busy_percent", label: "Busy at, % foreign CPU", help: "CPU time outside InferMux, of every core. The desktop counts." },
+    { key: "window_seconds", label: "Averaged over, s", help: "So a program starting is not a yield." },
+    { key: "resume_quiet_seconds", label: "Resume after quiet, s", help: "The CPU's own, and its Retry-After." },
+    { key: "min_available_ram_mb", label: "Min available RAM, MB", help: "Under it the CPU's models unload, once your requests on them are quiet." },
   ];
 
   const stuckSteps: { key: Exclude<keyof Stuck, "escalate_to">; label: string; help: string }[] = [
@@ -134,6 +143,28 @@
         <input class="font-mono text-sm" bind:value={cfg.comfyui_unit} />
         <span class="text-xs text-neutral-500">Its systemd unit. A save that also lists it under our units is refused.</span>
       </label>
+    </section>
+
+    <section class="card lg:col-span-2">
+      <h2 class="mb-1 font-medium">CPU</h2>
+      <div class="mb-3 text-xs text-neutral-500">
+        Under the one config, for the models placed on a CPU device or occupying one (0022). A busy CPU refuses and cancels
+        their batch work and unloads nothing; only RAM under the floor unloads them.
+      </div>
+      <div class="grid gap-3 sm:grid-cols-5">
+        {#each cpuNumbers as n}
+          <label class="flex flex-col gap-1">
+            <span class="label">{n.label}</span>
+            <input type="number" bind:value={cfg.cpu[n.key]} />
+            <span class="text-xs text-neutral-500">{n.help}</span>
+          </label>
+        {/each}
+        <label class="flex flex-col gap-1">
+          <span class="label">Priority processes</span>
+          <textarea class="h-16 font-mono text-sm" bind:value={lists.cpu_priority}></textarea>
+          <span class="text-xs text-neutral-500">Contention while one runs, at any load.</span>
+        </label>
+      </div>
     </section>
 
     <section class="card lg:col-span-2">

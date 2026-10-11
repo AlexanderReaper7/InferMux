@@ -85,7 +85,7 @@ files:
 """
     )
     tool("sign", "-key", key, "-host", "here", signed)
-    (cfg / "warden.yaml").write_text("# The e2e warden.\nhost: here\npolicy:\n  gpu_busy_percent: 100\n  min_free_vram_mb: 0\n  poll_seconds: 2\n")
+    (cfg / "warden.yaml").write_text("# The e2e warden.\nhost: here\npolicy:\n  gpu_busy_percent: 100\n  min_free_vram_mb: 0\n  poll_seconds: 2\ncpu:\n  busy_percent: 100\n  min_available_ram_mb: 0\n")
     base = root / "base.yaml"
     base.write_text(
         f"""macros:
@@ -369,6 +369,25 @@ def run(root, cfg, signed, gguf, key):
         check("${ offers the runtimes and llama-swap's macros", opts == ["${fake-server}", "${MODEL_ID}", "${PORT}"], opts)
         pg.keyboard.press("Escape")
         pg.screenshot(path=str(OUT / "config-model.png"), full_page=True)
+
+        # --- The warden on every device (0022) ---------------------------------------------
+        v = {}
+
+        def measured():
+            nonlocal v
+            v = get(DAEMON + "/warden/verdict")
+            return (v.get("cpu") or {}).get("resources")
+
+        check("the CPU is measured under the one config", wait_for(measured, 10), v.get("cpu"))
+        res = (v.get("cpu") or {}).get("resources") or {}
+        check("the CPU reading has its cores and RAM", res.get("cores", 0) > 0 and 0 < res.get("ram_available_mb", 0) <= res.get("ram_total_mb", 0), res)
+        check("each local model is on its devices", v.get("placement") == {"alpha": ["gpu"], "alpha@cpu": ["cpu"], "beta": ["gpu"]}, v.get("placement"))
+        pg.goto(UI + "/#status")
+        pg.wait_for_selector("h2:text-is('CPU')", timeout=10000)
+        card = pg.locator(".card", has=pg.locator("h2:text-is('CPU')")).inner_text()
+        # .label is uppercase on screen, and inner_text returns it so.
+        check("Status shows the CPU's verdict and RAM", "RESUME" in card and "RAM AVAILABLE" in card and "unloads under 0 MB" in card, card)
+        pg.screenshot(path=str(OUT / "config-status.png"), full_page=True)
 
         check("no page errors", not errors, errors)
         browser.close()

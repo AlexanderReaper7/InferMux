@@ -92,7 +92,10 @@ type Config struct {
 	// rebinding check (0005).
 	TrustedHosts []string `yaml:"trusted_hosts" json:"trusted_hosts"`
 
-	Policy    Policy     `yaml:"policy" json:"policy"`
+	Policy Policy `yaml:"policy" json:"policy"`
+	// CPU is the CPU's policy, used under the one config for the models
+	// placed on a CPU device or occupying one (0022).
+	CPU       CPUPolicy  `yaml:"cpu" json:"cpu"`
 	Consumers []Consumer `yaml:"consumers" json:"consumers"`
 
 	// Stuck is what is done about an agent on a local model that repeats
@@ -140,6 +143,50 @@ type Policy struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
+// CPUPolicy is the CPU's decision table (0022, the warden on every device). A
+// busy CPU refuses and cancels batch work on its models and unloads nothing:
+// an idle model holds RAM, not CPU time. Only available RAM under the floor
+// unloads them, once interactive traffic on them is quiet (0004).
+type CPUPolicy struct {
+	// BusyPercent is the CPU time outside InferMux's cgroups, as a percent of
+	// every core, that counts as contention. The desktop is not exempt: on
+	// the CPU it is the work being protected. Measured on strix (24 threads)
+	// on 2026-10-11 with Firefox and T3 Code open: 4 to 8%.
+	BusyPercent float64 `yaml:"busy_percent" json:"busy_percent"`
+
+	// WindowSeconds is what BusyPercent is averaged over, so a program
+	// starting is not a yield.
+	WindowSeconds int `yaml:"window_seconds" json:"window_seconds"`
+
+	// ResumeQuietSeconds is the CPU's own: it resumes after this much quiet.
+	ResumeQuietSeconds int `yaml:"resume_quiet_seconds" json:"resume_quiet_seconds"`
+
+	// MinAvailableRAMMB is the floor of MemAvailable under which the CPU's
+	// models are unloaded. MemAvailable already counts the mapped GGUF as
+	// reclaimable, so an unload frees the rest: 2.8 GB anonymous for the
+	// 4B embedder on CPU, measured 2026-10-11 (4.2 GB more was file pages).
+	MinAvailableRAMMB int `yaml:"min_available_ram_mb" json:"min_available_ram_mb"`
+
+	// PriorityProcesses are process names that take the CPU while they run,
+	// at any load.
+	PriorityProcesses []string `yaml:"priority_processes" json:"priority_processes"`
+}
+
+func (p CPUPolicy) check() error {
+	if p.BusyPercent < 0 || p.BusyPercent > 100 {
+		return fmt.Errorf("cpu.busy_percent is %v, not 0 to 100", p.BusyPercent)
+	}
+	if p.WindowSeconds < 1 {
+		return fmt.Errorf("cpu.window_seconds is %d, less than 1", p.WindowSeconds)
+	}
+	for name, v := range map[string]int{"cpu.resume_quiet_seconds": p.ResumeQuietSeconds, "cpu.min_available_ram_mb": p.MinAvailableRAMMB} {
+		if v < 0 {
+			return fmt.Errorf("%s is %d, below 0", name, v)
+		}
+	}
+	return nil
+}
+
 // Consumer is something that yields the GPU when told to. URL is the base of
 // an HTTP service and AnnouncePath the route that takes
 // {"action": "pause"|"resume", "reason": "..."}. What a consumer does about it
@@ -170,6 +217,12 @@ func DefaultConfig() Config {
 			ComfyUIIdleSeconds:       600,
 			InteractiveRecentSeconds: 600,
 			Enabled:                  true,
+		},
+		CPU: CPUPolicy{
+			BusyPercent:        25,
+			WindowSeconds:      30,
+			ResumeQuietSeconds: 300,
+			MinAvailableRAMMB:  4096,
 		},
 		// Measured against the thread of 2026-10-05 (0015): the streak
 		// reached 2 at its first exact repeat.
@@ -240,6 +293,9 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	if err := cfg.Policy.check(); err != nil {
+		return cfg, fmt.Errorf("%s: %w", path, err)
+	}
+	if err := cfg.CPU.check(); err != nil {
 		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
 	if err := cfg.Stuck.check(); err != nil {

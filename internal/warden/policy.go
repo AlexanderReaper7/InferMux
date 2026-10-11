@@ -38,7 +38,10 @@ type Verdict struct {
 	Reason  string `json:"reason"`
 	// Priority is a yield for a priority process (0017): its unload waits for
 	// no interactive request but one in flight.
-	Priority    bool       `json:"priority"`
+	Priority bool `json:"priority"`
+	// RAMShort is a CPU yield for available RAM under the floor (0022): it
+	// owes an unload of the CPU's models, which a busy CPU alone does not.
+	RAMShort    bool       `json:"ram_short,omitempty"`
 	Since       *time.Time `json:"since"`
 	ContendedAt *time.Time `json:"contended_at"`
 	SampledAt   *time.Time `json:"sampled_at"`
@@ -98,38 +101,53 @@ func IsContended(r Resources, modelsLoaded bool, p Policy) (bool, string) {
 // during a lull between two loading screens is worse than waiting.
 func Decide(previous Verdict, r Resources, now time.Time, modelsLoaded bool, p Policy) Verdict {
 	contended, why := IsContended(r, modelsLoaded, p)
-	priority := len(r.Priority) > 0
+	return decide(previous, contention{contended: contended, why: why, priority: len(r.Priority) > 0}, now, p.ResumeQuietSeconds)
+}
 
-	if contended {
+// contention is one device's reading, as decide takes it. priority and
+// ramShort are the reasons that owe an unload of their own; both end the
+// moment their cause does, while the yield waits out its quiet.
+type contention struct {
+	contended bool
+	why       string
+	priority  bool
+	ramShort  bool
+}
+
+// decide is the asymmetric rule every device shares: yield at once, resume
+// after resumeQuiet seconds without contention.
+func decide(previous Verdict, c contention, now time.Time, resumeQuiet int) Verdict {
+	if c.contended {
 		if previous.Yielded {
 			// Still busy: re-stamp the observation without moving Since, which
 			// is what the announcement reports as the start.
 			next := previous
-			next.Reason, next.ContendedAt, next.SampledAt, next.Priority = why, &now, &now, priority
+			next.Reason, next.ContendedAt, next.SampledAt, next.Priority, next.RAMShort = c.why, &now, &now, c.priority, c.ramShort
 			return next
 		}
-		return Verdict{Yielded: true, Reason: why, Priority: priority, Since: &now, ContendedAt: &now, SampledAt: &now}
+		return Verdict{Yielded: true, Reason: c.why, Priority: c.priority, RAMShort: c.ramShort, Since: &now, ContendedAt: &now, SampledAt: &now}
 	}
 
 	if !previous.Yielded {
 		next := previous
-		next.Reason, next.SampledAt = why, &now
+		next.Reason, next.SampledAt = c.why, &now
 		return next
 	}
 
 	if previous.ContendedAt != nil {
 		quiet := now.Sub(*previous.ContendedAt).Seconds()
-		if quiet < float64(p.ResumeQuietSeconds) {
+		if quiet < float64(resumeQuiet) {
 			next := previous
-			next.Reason = fmt.Sprintf("%s, but only for %.0fs of %ds", why, quiet, p.ResumeQuietSeconds)
-			// The priority process is gone; what remains is an ordinary pause.
-			next.SampledAt, next.Priority = &now, false
+			next.Reason = fmt.Sprintf("%s, but only for %.0fs of %ds", c.why, quiet, resumeQuiet)
+			// The priority process is gone, or the RAM is back; what remains
+			// is an ordinary pause.
+			next.SampledAt, next.Priority, next.RAMShort = &now, false, false
 			return next
 		}
 	}
 	// No observation to measure from counts as long enough, since the
 	// alternative is a pause that can never lift.
-	return Verdict{Yielded: false, Reason: why, Since: &now, SampledAt: &now}
+	return Verdict{Yielded: false, Reason: c.why, Since: &now, SampledAt: &now}
 }
 
 // ComfyIdle is when ComfyUI was last seen working, and whether it has been told

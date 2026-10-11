@@ -144,11 +144,12 @@ func TestAdmission_PanicReleasesReservation(t *testing.T) {
 }
 
 // A game that made the warden yield must not get a model loaded under it by
-// overflow, interactive or not (0021). Directly addressed work is the gate's.
+// overflow, interactive or not (0021), nor a busy CPU a model on it (0022).
+// Directly addressed work is the gate's.
 func TestAdmission_OnlyIfIdleRefusedWhileYielded(t *testing.T) {
 	a := testAdmission()
 	yielded := true
-	a.Yielded = func() bool { return yielded }
+	a.Yielded = func(name string) bool { return yielded && name != "cpu" }
 	if busy := a.begin("embed", true, 1, true); busy != "yielded" {
 		t.Fatalf("busy=%q, want yielded", busy)
 	}
@@ -156,6 +157,9 @@ func TestAdmission_OnlyIfIdleRefusedWhileYielded(t *testing.T) {
 		t.Fatalf("CPU refused by the GPU's yield: %s", busy)
 	}
 	a.end("cpu", false)
+	if busy := a.begin("cpu-busy", false, 0, true); busy != "yielded" {
+		t.Fatalf("a model on a yielded CPU: busy=%q", busy)
+	}
 	if busy := a.begin("embed", true, 1, false); busy != "" {
 		t.Fatalf("a request without only_if_idle was refused: %s", busy)
 	}

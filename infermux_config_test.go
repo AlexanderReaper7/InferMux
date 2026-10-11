@@ -470,3 +470,46 @@ func TestCPUModelsGoThroughTheRunner(t *testing.T) {
 		}
 	}
 }
+
+// The warden counts a model on every device its place occupies, on the GPU
+// NVML reads only, and the config says so about a model on another GPU.
+func TestTheWardenSeesEachModelsDevices(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{
+		"infermux.yaml": []byte("hosts:\n  a:\n    url: http://a\n    devices:\n      cpu: {kind: cpu}\n      gpu: {kind: gpu}\n      second: {kind: gpu, index: 1}\nbalance:\n  m: [a/cpu]\n  n: [{place: a/gpu, occupies: [cpu]}]\n  o: [a/second]\n"),
+		"models/m.yaml": []byte("cmd: llama-server --model /m.gguf --port ${PORT}\n"),
+		"models/n.yaml": []byte("cmd: llama-server --model /n.gguf --port ${PORT}\n"),
+		"models/o.yaml": []byte("cmd: llama-server --model /o.gguf --port ${PORT}\n"),
+	}
+	bundle, err := configstore.Sign(files, priv, "a", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newConfigHosts(t, []ed25519.PublicKey{pub}, "a")["a"]
+	h.one.options.CPURunner = []string{"/bin/infermux-cpu", "run", "-socket", "/s", "--"}
+	if _, err := h.one.accept(bundle, "test"); err != nil {
+		t.Fatal(err)
+	}
+	got := devicesOf(h.one.current())
+	want := map[string][]string{"m": {"cpu"}, "n": {"gpu", "cpu"}, "o": {}}
+	if len(got) != len(want) {
+		t.Fatalf("%v", got)
+	}
+	for name, devices := range want {
+		if !slices.Equal(got[name], devices) {
+			t.Errorf("%s: %v, want %v", name, got[name], devices)
+		}
+	}
+	var gpus []string
+	for _, w := range h.one.state().Warnings {
+		if strings.Contains(w, "CUDA index") {
+			gpus = append(gpus, w)
+		}
+	}
+	if len(gpus) != 1 || !strings.Contains(gpus[0], "o is on second, CUDA index 1, which the warden does not measure") {
+		t.Fatalf("warnings %v", gpus)
+	}
+}

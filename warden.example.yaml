@@ -74,6 +74,24 @@ policy:
   # false: measure on request only, announce nothing, unload nothing.
   enabled: true
 
+# The CPU, measured only under the one config (0022), for the models placed
+# on a CPU device or occupying one. A busy CPU refuses and cancels their batch
+# work and unloads nothing; RAM under the floor unloads them, once interactive
+# traffic on them is quiet.
+cpu:
+  # CPU time outside InferMux's cgroups, as a percent of every core. The
+  # desktop counts: on the CPU it is the work being protected. Firefox and
+  # T3 Code on 24 threads measured 4-8%.
+  busy_percent: 25
+  # What busy_percent is averaged over, so a program starting is not a yield.
+  window_seconds: 30
+  # The CPU's own: it resumes after this much quiet.
+  resume_quiet_seconds: 300
+  # MemAvailable under this unloads the CPU's models.
+  min_available_ram_mb: 4096
+  # Contention while one runs, at any load. (Default: none.)
+  priority_processes: [blender]
+
 # An agent on this host's models that repeats itself (InferMux 0015). Each is
 # a streak: replies in a row in the user's current turn whose every call, with
 # its output, was already made in that turn. 0 turns a step off.

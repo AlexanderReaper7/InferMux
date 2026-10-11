@@ -24,6 +24,11 @@ func TestTheExampleFileLoadsWithEveryKeyRead(t *testing.T) {
 	if cfg.Policy != DefaultConfig().Policy {
 		t.Fatalf("the example's policy is not the defaults: %+v", cfg.Policy)
 	}
+	cpu := DefaultConfig().CPU
+	if cfg.CPU.BusyPercent != cpu.BusyPercent || cfg.CPU.WindowSeconds != cpu.WindowSeconds || cfg.CPU.ResumeQuietSeconds != cpu.ResumeQuietSeconds ||
+		cfg.CPU.MinAvailableRAMMB != cpu.MinAvailableRAMMB || len(cfg.CPU.PriorityProcesses) != 1 || cfg.CPU.PriorityProcesses[0] != "blender" {
+		t.Fatalf("the example's CPU policy is not the defaults with blender: %+v", cfg.CPU)
+	}
 	if cfg.Consumers[0].AnnouncePath != "/api/pipeline/announce" || cfg.Consumers[0].TimeoutSeconds != 10 {
 		t.Fatalf("consumer defaults: %+v", cfg.Consumers[0])
 	}

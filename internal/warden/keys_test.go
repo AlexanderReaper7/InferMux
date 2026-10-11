@@ -135,11 +135,11 @@ func TestAWebSocketIsInferenceAndCrossOriginOnesAreRefused(t *testing.T) {
 		t.Fatal("a WebSocket session was not tracked as a request in flight")
 	}
 
-	h.w.traffic.pause("test")
+	h.w.traffic.pause(DeviceGPU, "test")
 	if rec, served := gated(h, "GET", "/v1/realtime?model=qwen", "", ws); *served != 0 || rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("a batch WebSocket while paused: %d", rec.Code)
 	}
-	h.w.traffic.resume()
+	h.w.traffic.resume(DeviceGPU)
 
 	crossOrigin := map[string]string{"Origin": "https://evil.example", "Authorization": "Bearer my-key"}
 	for k, v := range ws {

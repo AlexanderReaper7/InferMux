@@ -138,3 +138,31 @@ func TestACommandThatCannotStart(t *testing.T) {
 		t.Errorf("no runner: %v", err)
 	}
 }
+
+// The runner here is this test process, so its unit is this process's own,
+// and the connection that read it is no request to complain about.
+func TestUnitIsTheRunnersCgroupAndLogsNothing(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "socket")
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged syncBuffer
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		Serve(ln, func(format string, args ...any) { logged.Write([]byte(format)) })
+	}()
+	raw, _ := os.ReadFile("/proc/self/cgroup")
+	line := strings.TrimSpace(string(raw))
+	want := line[strings.LastIndexByte(line, '/')+1:]
+	got, err := Unit(socket)
+	if err != nil || got != want || got == "" {
+		t.Fatalf("Unit = %q, %v; want %q", got, err, want)
+	}
+	ln.Close()
+	<-served
+	if logged.String() != "" {
+		t.Fatalf("logged %q", logged.String())
+	}
+}

@@ -173,14 +173,17 @@ func (c *oneConfig) derive(b *configstore.Bundle) (*placement.Part, []string, er
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(c.options.CPURunner) == 0 {
-		for name, l := range part.Local {
-			if part.Devices[l.Devices[0]].Kind == placement.KindCPU {
-				warnings = append(warnings, fmt.Sprintf("%s runs in the daemon's own cgroup, not the idle slice: -cpu-socket is not set", name))
+	for name, l := range part.Local {
+		if len(c.options.CPURunner) == 0 && part.Devices[l.Devices[0]].Kind == placement.KindCPU {
+			warnings = append(warnings, fmt.Sprintf("%s runs in the daemon's own cgroup, not the idle slice: -cpu-socket is not set", name))
+		}
+		for _, d := range l.Devices {
+			if dev := part.Devices[d]; dev.Kind == placement.KindGPU && dev.GPUIndex() != 0 {
+				warnings = append(warnings, fmt.Sprintf("%s is on %s, CUDA index %d, which the warden does not measure: it reads index 0 only", name, d, dev.GPUIndex()))
 			}
 		}
-		sort.Strings(warnings)
 	}
+	sort.Strings(warnings)
 	return part, warnings, nil
 }
 

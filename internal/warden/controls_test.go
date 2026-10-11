@@ -91,7 +91,7 @@ func TestAutoAndAManualVerdictEqualToTheOwnClearTheHold(t *testing.T) {
 
 func TestUnloadNowRefusesUnderAnInteractiveRequest(t *testing.T) {
 	h := newHarness(t, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/messages", func() {}, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/messages", gpu, func(string) {}, nil)
 	if _, err := h.w.UnloadNow(); err == nil || h.models.unloads != 0 {
 		t.Fatal("unloaded under the user's own request")
 	}
@@ -103,7 +103,7 @@ func TestUnloadNowRefusesUnderAnInteractiveRequest(t *testing.T) {
 
 func TestForgiveDropsAnOwedUnload(t *testing.T) {
 	h := newHarness(t, nil)
-	h.w.traffic.begin(Interactive, "/v1/messages", func() {}, nil)
+	h.w.traffic.begin(Interactive, "/v1/messages", gpu, func(string) {}, nil)
 	h.reading = busy(60)
 	h.w.Tick()
 	if !h.w.Forgive() || h.w.State().PendingUnload {

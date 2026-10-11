@@ -15,7 +15,7 @@ This file is rules and navigation only.
 
 | path | what it is |
 |---|---|
-| `internal/warden/` | ours: config, policy, probe, ComfyUI, consumers, request classes, stuck agents, the loop and `/warden/*` |
+| `internal/warden/` | ours: config, policy, probe, the CPU's meter and each model's devices (`cpu.go`, `devices.go`, 0022), ComfyUI, consumers, request classes, stuck agents, the loop and `/warden/*` |
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
 | `internal/placement/` | ours: the one config (0022): hosts, devices, groups, the `balance` and `failover` lanes, and each host's part derived from it, llama-swap's file included |
 | `internal/configstore/`, `cmd/infermux-config/` | ours: the config's signature, the daemon's kept versions and conflicts, and the terminal tool that makes the key and signs (0022) |
@@ -69,7 +69,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **A config is trusted by its signature and by nothing else** (0022, 10). The trusted keys come from Nix's command line, never from the config or a file the UI writes. A daemon never runs a config that fails the check, and the host key carries a signed config without being able to write one.
 - **Between hosts the client's own key travels; a host's own key is for discovery and never replaces it** (0006). A llama-swap peer `apiKey` would replace the client's key and with it its class, so the hosts are `remotes`, not `peers`.
 - **The user's own request is never killed** (0004). Unmarked is interactive. Do not add a path that cancels, refuses or unloads under an interactive request; the unload waits for `interactive_recent_seconds` of quiet. The one exception is a stuck agent's request, refused before it reaches the model, by the user's choice (0015).
-- **The gate is for this host's card** (0009). Only a request for a local model is refused, cancelled or counted as interactive; another host's and a peer's pass after the key and allow check.
+- **The gate is for this host's devices** (0009; the CPU under the one config, 0022). Only a request for a local model is refused, cancelled or counted as interactive, and only by a device the model is on; another host's and a peer's pass after the key and allow check.
 - **Overflow never takes a yielded card** (0021). An `only_if_idle` place on this host's GPU refuses every key while the warden is yielded. A directly addressed request is still the gate's to decide.
 - **Upstream files stay untouched except at the marked hook points** (0004). New behaviour goes in `internal/warden/`, `infermux.go`, or a new file in upstream's package. Editing upstream code is a merge conflict we pay every release.
 - **`internal/warden` imports nothing from llama-swap.** It sees the models through the `Models` interface, which is what keeps it testable without a server and survives a config reload replacing the server.
@@ -77,8 +77,8 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **A pause is a message, not a lease.** Nothing expires, so a warden that dies while a consumer is paused leaves it paused. The residual risk is stated in 0001. Do not add a second, quieter mitigation without reading that section; the real fix, if it is ever needed, is the lease.
 - **An announcement must be idempotent at the other end.** The verdict is re-sent every 300 s, so a consumer that re-stamps `since` on every `pause` erases the one fact its panel shows.
 - **A failed probe leaves the verdict alone, and so does an unreadable ComfyUI queue.** Neither is evidence that the GPU is free.
-- **The models are unloaded once per yield** (0002), owed from the transition and paid when interactive traffic is quiet (0004). Unloading every tick would fight a client the user chose to let through.
-- **Free VRAM is only read while no model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001).
+- **A device's models are unloaded once per yield of that device** (0002), owed from the transition and paid when interactive traffic on that device is quiet (0004). The CPU's are unloaded only for RAM under the floor (0022). Unloading every tick would fight a client the user chose to let through.
+- **Free VRAM is only read while no GPU model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001). A CPU model holds no VRAM (0022).
 - **A WebSocket counts toward the warden only while data frames cross** (0018). An open connection and a ping count for nothing. Anything that stops a model under a session closes it first with 1013 or 1012; the backend's death is a 1006 the client cannot tell from a crash.
 - **A llama-swap config reload waits for quiet** (0005). It stops every model, so it goes through `WhenNoInteractive`, never `-watch-config`.
 - **The UI never pushes, and commits only when the user presses Commit** (0005).

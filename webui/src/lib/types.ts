@@ -6,6 +6,9 @@ export type { Schema } from "./yamlschema";
 export interface Verdict {
   yielded: boolean;
   reason: string;
+  priority: boolean;
+  // a CPU yield for RAM under the floor, which unloads (0022)
+  ram_short?: boolean;
   since: string | null;
   contended_at: string | null;
   sampled_at: string | null;
@@ -52,6 +55,36 @@ export interface Policy {
   enabled: boolean;
 }
 
+// The CPU under the one config (0022).
+export interface CPUResources {
+  foreign_percent: number | null;
+  our_percent: number | null;
+  window_seconds: number;
+  cores: number;
+  ram_available_mb: number;
+  ram_total_mb: number;
+  culprits: string[];
+  priority: string[];
+  sampled_at: string;
+}
+
+export interface CPUPolicy {
+  busy_percent: number;
+  window_seconds: number;
+  resume_quiet_seconds: number;
+  min_available_ram_mb: number;
+  priority_processes: string[] | null;
+}
+
+export interface CPUState {
+  verdict: Verdict;
+  policy: CPUPolicy;
+  resources: CPUResources | null;
+  probe_error: string | null;
+  pending_unload: boolean;
+  last_unload: string[] | null;
+}
+
 export interface ConsumerState {
   url: string;
   action: string | null;
@@ -63,6 +96,7 @@ export interface Flight {
   class: "interactive" | "batch";
   path: string;
   age_seconds: number;
+  devices: string[];
   // an upgraded WebSocket (0018): in flight while data moves
   session?: { moving: boolean; idle_seconds: number };
 }
@@ -78,6 +112,7 @@ export interface VerdictState {
   consumers: Record<string, ConsumerState>;
   traffic: {
     paused: boolean;
+    paused_devices: string[];
     in_flight: Flight[];
     last_interactive: string | null;
     refused_batch: number;
@@ -89,6 +124,9 @@ export interface VerdictState {
   comfyui: { url: string; busy_at: string; freed: boolean } | null;
   probe_error: string | null;
   resources: Resources | null;
+  // the one config's (0022), null outside it
+  cpu: CPUState | null;
+  placement: Record<string, string[]> | null;
 }
 
 export interface Flag {
@@ -150,6 +188,8 @@ export interface WardenConfig {
   remotes: Remote[] | null;
   trusted_hosts: string[] | null;
   policy: Policy;
+  // used under the one config only (0022)
+  cpu: CPUPolicy;
   consumers: Consumer[] | null;
   stuck: Stuck;
 }

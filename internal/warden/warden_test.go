@@ -66,6 +66,24 @@ func (m *fakeModels) QualifyName(name string) (string, bool) {
 	return "this/" + name, true
 }
 
+// gpu is a request on the GPU, as every local one is outside the one config.
+var gpu = []string{DeviceGPU}
+
+func (m *fakeModels) Unload(ids []string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.unloads++
+	var stopped []string
+	for _, id := range ids {
+		if _, ok := m.running[id]; ok {
+			stopped = append(stopped, id)
+			delete(m.running, id)
+		}
+	}
+	m.unloaded = stopped
+	return stopped
+}
+
 func (m *fakeModels) UnloadAll() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -163,7 +181,7 @@ func TestAFailedProbeLeavesTheVerdictAlone(t *testing.T) {
 
 func TestAnInteractiveRequestInFlightDefersTheUnload(t *testing.T) {
 	h := newHarness(t, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", func() {}, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string) {}, nil)
 	h.reading = busy(60)
 	h.w.Tick()
 	if h.models.unloads != 0 || !h.w.State().PendingUnload {
@@ -186,7 +204,7 @@ func TestAnInteractiveRequestInFlightDefersTheUnload(t *testing.T) {
 
 func TestAResumeForgivesAnOwedUnload(t *testing.T) {
 	h := newHarness(t, nil)
-	h.w.traffic.begin(Interactive, "/v1/messages", func() {}, nil)
+	h.w.traffic.begin(Interactive, "/v1/messages", gpu, func(string) {}, nil)
 	h.reading = busy(60)
 	h.w.Tick()
 	h.reading = quiet()
@@ -200,7 +218,7 @@ func TestAResumeForgivesAnOwedUnload(t *testing.T) {
 
 func TestAPriorityYieldUnloadsWithinTheInteractiveWindow(t *testing.T) {
 	h := newHarness(t, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/embeddings", func() {}, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/embeddings", gpu, func(string) {}, nil)
 	h.w.traffic.end(id)
 	h.reading = obsWithCUDA()
 	h.at(time.Minute).w.Tick()
@@ -211,7 +229,7 @@ func TestAPriorityYieldUnloadsWithinTheInteractiveWindow(t *testing.T) {
 
 func TestAPriorityYieldStillWaitsForARequestInFlight(t *testing.T) {
 	h := newHarness(t, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", func() {}, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string) {}, nil)
 	h.reading = obsWithCUDA()
 	h.w.Tick()
 	if h.models.unloads != 0 || !h.w.State().PendingUnload {
@@ -245,8 +263,8 @@ func TestAPriorityProcessDuringAPauseOwesAnotherUnload(t *testing.T) {
 func TestAYieldCancelsBatchButNotInteractive(t *testing.T) {
 	h := newHarness(t, nil)
 	var batchCancelled, interactiveCancelled bool
-	h.w.traffic.begin(Batch, "/v1/chat/completions", func() { batchCancelled = true }, nil)
-	h.w.traffic.begin(Interactive, "/v1/responses", func() { interactiveCancelled = true }, nil)
+	h.w.traffic.begin(Batch, "/v1/chat/completions", gpu, func(string) { batchCancelled = true }, nil)
+	h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string) { interactiveCancelled = true }, nil)
 	h.reading = busy(60)
 	h.w.Tick()
 	if !batchCancelled || interactiveCancelled {
@@ -459,6 +477,25 @@ func TestACancelledBatchRequestIsA503NotAnEmpty200(t *testing.T) {
 	rec := <-done
 	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "cancelled") {
 		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestABatchRequestCancelledByHandWaitsBeforeItIsSentAgain(t *testing.T) {
+	h := newHarness(t, nil)
+	inside := make(chan struct{})
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		close(inside)
+		<-r.Context().Done()
+	}))
+	done := make(chan *httptest.ResponseRecorder)
+	go func() {
+		done <- post(handler, "/v1/chat/completions", map[string]string{"Authorization": "Bearer batch-key"})
+	}()
+	<-inside
+	h.w.CancelBatch()
+	rec := <-done
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"type":"cancelled"`) || rec.Header().Get("Retry-After") != "300" {
+		t.Fatalf("%d, Retry-After %q: %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
 	}
 }
 
