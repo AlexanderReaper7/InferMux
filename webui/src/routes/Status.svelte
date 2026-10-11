@@ -28,6 +28,14 @@
     return { label: "foreign", cls: "text-amber-400" };
   }
 
+  // "2 running, 5 paused", in the order a job goes through them; "" for none.
+  function jobStates(counts: Record<string, number>) {
+    return ["queued", "running", "paused", "done", "failed", "cancelled"]
+      .filter((state) => counts[state])
+      .map((state) => `${counts[state]} ${state}`)
+      .join(", ");
+  }
+
   const s = $derived(live.state);
   const res = $derived(s?.resources ?? null);
   const cpu = $derived(s?.cpu ?? null);
@@ -249,6 +257,14 @@
       <div class="mb-3 text-sm text-neutral-400">
         Last interactive {ago(s.traffic.last_interactive)}. Batch refused {s.traffic.refused_batch}, cancelled {s.traffic.cancelled_batch}.
       </div>
+      {#if s.jobs && jobStates(s.jobs.counts)}
+        <div class="mb-3 text-sm text-neutral-400" title="a job is paused mid-reply by a yield and continued where a place takes it again (0023)">
+          Jobs: {jobStates(s.jobs.counts)}.
+          {#each s.jobs.paused_reasons as reason}
+            <div class="text-amber-300">Paused: {reason}</div>
+          {/each}
+        </div>
+      {/if}
       <button class="btn" disabled={busy || !s.traffic.in_flight.some((f) => f.class === "batch")} onclick={() => act("Cancel batch", api.cancelBatch)}
         >Cancel batch requests</button
       >

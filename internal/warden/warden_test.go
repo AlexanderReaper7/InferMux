@@ -181,7 +181,7 @@ func TestAFailedProbeLeavesTheVerdictAlone(t *testing.T) {
 
 func TestAnInteractiveRequestInFlightDefersTheUnload(t *testing.T) {
 	h := newHarness(t, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string) {}, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string, string) {}, nil)
 	h.reading = busy(60)
 	h.w.Tick()
 	if h.models.unloads != 0 || !h.w.State().PendingUnload {
@@ -204,7 +204,7 @@ func TestAnInteractiveRequestInFlightDefersTheUnload(t *testing.T) {
 
 func TestAResumeForgivesAnOwedUnload(t *testing.T) {
 	h := newHarness(t, nil)
-	h.w.traffic.begin(Interactive, "/v1/messages", gpu, func(string) {}, nil)
+	h.w.traffic.begin(Interactive, "/v1/messages", gpu, func(string, string) {}, nil)
 	h.reading = busy(60)
 	h.w.Tick()
 	h.reading = quiet()
@@ -218,7 +218,7 @@ func TestAResumeForgivesAnOwedUnload(t *testing.T) {
 
 func TestAPriorityYieldUnloadsWithinTheInteractiveWindow(t *testing.T) {
 	h := newHarness(t, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/embeddings", gpu, func(string) {}, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/embeddings", gpu, func(string, string) {}, nil)
 	h.w.traffic.end(id)
 	h.reading = obsWithCUDA()
 	h.at(time.Minute).w.Tick()
@@ -229,7 +229,7 @@ func TestAPriorityYieldUnloadsWithinTheInteractiveWindow(t *testing.T) {
 
 func TestAPriorityYieldStillWaitsForARequestInFlight(t *testing.T) {
 	h := newHarness(t, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string) {}, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string, string) {}, nil)
 	h.reading = obsWithCUDA()
 	h.w.Tick()
 	if h.models.unloads != 0 || !h.w.State().PendingUnload {
@@ -263,8 +263,8 @@ func TestAPriorityProcessDuringAPauseOwesAnotherUnload(t *testing.T) {
 func TestAYieldCancelsBatchButNotInteractive(t *testing.T) {
 	h := newHarness(t, nil)
 	var batchCancelled, interactiveCancelled bool
-	h.w.traffic.begin(Batch, "/v1/chat/completions", gpu, func(string) { batchCancelled = true }, nil)
-	h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string) { interactiveCancelled = true }, nil)
+	h.w.traffic.begin(Batch, "/v1/chat/completions", gpu, func(string, string) { batchCancelled = true }, nil)
+	h.w.traffic.begin(Interactive, "/v1/responses", gpu, func(string, string) { interactiveCancelled = true }, nil)
 	h.reading = busy(60)
 	h.w.Tick()
 	if !batchCancelled || interactiveCancelled {

@@ -70,9 +70,9 @@ func TestABusyCPURefusesBatchOnItsModelsOnly(t *testing.T) {
 func TestACPUYieldCancelsBatchOnTheCPUOnly(t *testing.T) {
 	h, cpu := placed(t)
 	var onCPU, onGPU, onBoth string
-	h.w.traffic.begin(Batch, "/v1/embeddings", []string{DeviceCPU}, func(d string) { onCPU = d }, nil)
-	h.w.traffic.begin(Batch, "/v1/chat/completions", []string{DeviceGPU}, func(d string) { onGPU = d }, nil)
-	h.w.traffic.begin(Batch, "/v1/chat/completions", []string{DeviceGPU, DeviceCPU}, func(d string) { onBoth = d }, nil)
+	h.w.traffic.begin(Batch, "/v1/embeddings", []string{DeviceCPU}, func(d, _ string) { onCPU = d }, nil)
+	h.w.traffic.begin(Batch, "/v1/chat/completions", []string{DeviceGPU}, func(d, _ string) { onGPU = d }, nil)
+	h.w.traffic.begin(Batch, "/v1/chat/completions", []string{DeviceGPU, DeviceCPU}, func(d, _ string) { onBoth = d }, nil)
 	cpu.ForeignPercent = f64(80)
 	h.w.Tick()
 	if onCPU != DeviceCPU || onBoth != DeviceCPU || onGPU != "" {
@@ -83,8 +83,8 @@ func TestACPUYieldCancelsBatchOnTheCPUOnly(t *testing.T) {
 func TestRAMUnderTheFloorUnloadsTheCPUsModelsOnceInteractiveIsQuiet(t *testing.T) {
 	h, cpu := placed(t)
 	// The user is chatting on the GPU: that does not hold the CPU's unload.
-	h.w.traffic.begin(Interactive, "/v1/chat/completions", []string{DeviceGPU}, func(string) {}, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/embeddings", []string{DeviceCPU}, func(string) {}, nil)
+	h.w.traffic.begin(Interactive, "/v1/chat/completions", []string{DeviceGPU}, func(string, string) {}, nil)
+	id, _ := h.w.traffic.begin(Interactive, "/v1/embeddings", []string{DeviceCPU}, func(string, string) {}, nil)
 	cpu.RAMAvailableMB = 2000
 	h.w.Tick()
 	s := h.w.State()

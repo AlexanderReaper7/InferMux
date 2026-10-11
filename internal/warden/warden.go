@@ -85,6 +85,7 @@ type Warden struct {
 	cpu         cpuDevice
 	whenQuiet   map[string]func()
 	remotes     func() any
+	jobs        func() any
 	quietLogged map[string]bool
 
 	stop chan struct{}
@@ -383,7 +384,7 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 				return
 			}
 		}
-		// The gate is for this host's card (0009). Another host's model is
+		// The gate is for this host's devices (0009). Another host's model is
 		// gated by that host's warden, and a cloud peer's uses no card here, so
 		// neither is paused, cancelled or counted as interactive traffic. A
 		// model nobody knows is gated: it fails in llama-swap either way.
@@ -405,7 +406,18 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 		if name, ok := w.local(model); ok && known {
 			devices = w.devices(name)
 		}
-		id, refusedBy := w.traffic.begin(class, r.URL.Path, devices, func(device string) { cancel(yielded{device}) }, session)
+		stop := func(device, why string) { cancel(yielded{device}) }
+		if pause := PauserOf(r.Context()); pause != nil {
+			hold := time.Duration(w.config().Policy.ResumeQuietSeconds) * time.Second
+			stop = func(device, why string) {
+				p := Pause{Device: device, Reason: why}
+				if device == "" {
+					p.Hold = hold
+				}
+				pause(p)
+			}
+		}
+		id, refusedBy := w.traffic.begin(class, r.URL.Path, devices, stop, session)
 		if refusedBy != "" {
 			w.refuse(rw, refusedBy, "batch requests wait while "+deviceName(refusedBy)+" is yielded: ")
 			return
@@ -556,6 +568,8 @@ type VerdictState struct {
 	Resources  *Resources  `json:"resources"`
 	// Remotes is the other hosts and what they list (0006, 2).
 	Remotes any `json:"remotes"`
+	// Jobs counts the jobs (0023).
+	Jobs any `json:"jobs,omitempty"`
 }
 
 type comfyState struct {
@@ -599,6 +613,9 @@ func (w *Warden) State() VerdictState {
 	}
 	if w.remotes != nil {
 		s.Remotes = w.remotes()
+	}
+	if w.jobs != nil {
+		s.Jobs = w.jobs()
 	}
 	return s
 }

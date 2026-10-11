@@ -142,6 +142,7 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 				return true, nil
 			}
 			held := &heldWriter{rw: rw, header: http.Header{}, final: last && i == len(lane)-1}
+			held.header.Set(PlaceHeader, h.where(place.Place, model))
 			h.next.ServeHTTP(held, attempt)
 			if !held.failed {
 				return true, nil
@@ -180,6 +181,7 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
 			return
 		}
+		rw.Header().Set(PlaceHeader, h.where(queue.Place, model))
 		h.next.ServeHTTP(rw, attempt)
 		return
 	}
@@ -198,6 +200,15 @@ func (h *Handler) name(place, model string) string {
 		return other
 	}
 	return host + "/" + other
+}
+
+// where is a place's name for the model with its host, this host's too.
+func (h *Handler) where(place, model string) string {
+	name := h.name(place, model)
+	if !strings.Contains(name, "/") {
+		return h.host + "/" + name
+	}
+	return name
 }
 
 // failsOver is an answer that says the place cannot serve the request now.

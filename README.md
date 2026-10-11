@@ -132,7 +132,7 @@ Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_m
 
 ## What it does on a yield
 
-1. Cancels every batch request in flight, and closes every batch session with 1013.
+1. Cancels every batch request in flight, and closes every batch session with 1013. A job's request is paused instead (see Jobs).
 2. Unloads every model, once. If an interactive request is in flight or ended less than `interactive_recent_seconds` ago, the unload waits until it has been quiet that long; a session is in flight while it moves data. The sessions still open are closed with 1013 first. A resume forgives an unload still owed.
 3. Sends one POST to every configured consumer, repeated every five minutes until it lands:
 
@@ -146,6 +146,22 @@ What a consumer does about that is the consumer's business. **The endpoint must 
 Nothing expires. A warden that dies while a consumer is paused leaves it paused, and that trade is argued in [0001](docs/decisions/0001-the-warden-decides-and-says-so.md#push-not-a-lease).
 
 Under the one config the GPU and the CPU each have a verdict, and a yield refuses, cancels and unloads only the models on the device that yielded. A model's devices are the device its place names plus its `occupies`. The CPU yields when CPU time outside InferMux's cgroups reaches `cpu.busy_percent` of every core over `cpu.window_seconds`, while a `cpu.priority_processes` name runs, or when MemAvailable falls under `cpu.min_available_ram_mb`. A busy CPU refuses and cancels batch work on its models and unloads nothing. RAM under the floor unloads them once, after `interactive_recent_seconds` of quiet on the CPU's own models. A refusal names the device: `gpu_yielded` or `cpu_yielded`, with that device's `resume_quiet_seconds` as Retry-After. Consumers hear the GPU's verdict only. Status shows the CPU's card: the verdict, the foreign and own CPU time, RAM, and the busiest processes outside InferMux. The GPU warden reads NVML's first card only, so a model on another CUDA index is on no measured device, and the config check warns about it.
+
+## Jobs
+
+A first-party batch client hands InferMux a request as a job rather than sending it, and a yield then pauses it mid-reply instead of losing it ([0023](docs/decisions/0023-a-batch-request-is-a-job-paused-mid-inference.md)). The job keeps the text sent so far. When a place in the model's lanes takes it again, here after the resume or another host at once, InferMux sends the request again with that text as a prefilled assistant message (`continue_final_message`) and `max_tokens` cut by the tokens already sent. The client hears one reply.
+
+```sh
+imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/jobs \
+  -d '{"path": "/v1/chat/completions", "body": {"model": "qwen", "messages": [...]}}'   # 201, {"id": "job_...", ...}
+imx -N 127.0.0.1:5001/warden/jobs/job_.../events     # SSE; ?after=<seq> or Last-Event-ID to reconnect
+imx 127.0.0.1:5001/warden/jobs                       # this key's jobs
+imx -XDELETE -H 'X-InferMux: cli' 127.0.0.1:5001/warden/jobs/job_...
+```
+
+An event is `state` (queued, running with the place, paused with the reason, done, failed with the answer, cancelled), `chunk` (an OpenAI stream chunk, unchanged), or `response` (the whole answer of an embedding or rerank). Chat and completions always stream. A tool call is sent only whole, so a pause inside one drops it and the model writes it again. An embedding or rerank is never stopped inside: a yield lets it finish, and a job is refused before it starts like any batch request. A job refused by every place waits for a device here to resume, and asks again on its own at its Retry-After, at most 30 s apart, one job per model and key at a time. Another host's yield cuts the stream, and the job continues from what it had after 2 s. Three failures in a row without a new token fail it.
+
+A job belongs to the key that made it. It lives in memory and is kept 10 minutes after it ends. On SIGTERM InferMux writes the unfinished ones, never their keys, to `-jobs-file` or `$STATE_DIRECTORY/jobs.json`, and reads them back and deletes the file at start. A job read back waits for its key's next request to `/warden/jobs`. Status counts the jobs and says why the paused ones are.
 
 ## One config for every host
 

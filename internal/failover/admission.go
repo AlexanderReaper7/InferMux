@@ -17,6 +17,10 @@ const (
 	BusyHeader        = "X-InferMux-Busy"
 )
 
+// PlaceHeader names, on an answer, the place that gave it as host/model, so
+// a job (0023) can show where it runs.
+const PlaceHeader = "X-InferMux-Place"
+
 // Admission counts requests on the host that serves them, including direct
 // clients and aliases. Model returns a canonical name, whether it uses this
 // host's GPU, and whether this host serves it. Remote forwarding is excluded.

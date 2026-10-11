@@ -127,6 +127,8 @@ export interface VerdictState {
   // the one config's (0022), null outside it
   cpu: CPUState | null;
   placement: Record<string, string[]> | null;
+  // the jobs this host holds (0023), finished ones for ten minutes
+  jobs?: { counts: Record<string, number>; paused_reasons: string[] };
 }
 
 export interface Flag {

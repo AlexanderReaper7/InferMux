@@ -2,9 +2,11 @@
 
 llama-swap starts it as a model's runtime (`${fake-server} --port N --model
 X ...`) and checks /health. A chat completion streams `max_tokens` chunks,
-one every `FAKE_DELAY` seconds (0.1), so a test can act while a reply is
-still being written, and ends with llama-server's `timings`. It never touches
-the GPU.
+`w0 `, `w1 `, ..., one every `FAKE_DELAY` seconds (0.1), so a test can act
+while a reply is still being written, and ends with llama-server's `timings`.
+Like llama-server's continue_final_message, a prefilled assistant message of
+k words is continued from `wk `, which is what a job (0023) sends after a
+pause. It never touches the GPU.
 """
 
 import json
@@ -74,9 +76,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(f"{len(raw):x}\r\n".encode() + raw + b"\r\n")
             self.wfile.flush()
 
+        start = 0
+        messages = body.get("messages") or []
+        if body.get("continue_final_message") and messages and messages[-1].get("role") == "assistant":
+            start = len((messages[-1].get("content") or "").split())
         try:
-            for i in range(n):
-                chunk(json.dumps({"choices": [{"delta": {"content": str(i)}}]}))
+            for i in range(start, start + n):
+                chunk(json.dumps({"choices": [{"delta": {"content": f"w{i} "}}]}))
                 time.sleep(DELAY)
             chunk(json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}], "timings": timings(n)}))
             chunk("[DONE]")

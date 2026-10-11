@@ -131,7 +131,7 @@ in
   # upstream's to run.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/server/ .
     runHook postCheck
   '';
 

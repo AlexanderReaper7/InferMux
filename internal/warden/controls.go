@@ -94,7 +94,7 @@ func (w *Warden) UnloadNow() ([]string, error) {
 
 // CancelBatch cancels every batch request in flight without refusing new ones.
 func (w *Warden) CancelBatch() int {
-	n := w.traffic.cancelBatch("", "infermux: batch session cancelled by hand")
+	n := w.traffic.cancelBatch("", "cancelled by hand")
 	w.log.Infof("Cancelled %d batch request(s) by hand", n)
 	return n
 }

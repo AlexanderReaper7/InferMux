@@ -103,6 +103,13 @@ func TestFirstPlaceThatAnswers(t *testing.T) {
 			if got := rw.Header().Values("X-Answered-By"); fmt.Sprint(got) != fmt.Sprint([]string{last}) {
 				t.Fatalf("X-Answered-By %v: a dropped attempt's headers reached the client", got)
 			}
+			where := last
+			if !strings.Contains(where, "/") {
+				where = "reaperboi/" + where
+			}
+			if got := rw.Header().Values(PlaceHeader); fmt.Sprint(got) != fmt.Sprint([]string{where}) {
+				t.Fatalf("%s %v, want %s", PlaceHeader, got, where)
+			}
 		})
 	}
 }
@@ -281,12 +288,13 @@ func TestTheFailoverLane(t *testing.T) {
 		busy     map[string]string
 		attempts []string
 		code     int
+		place    string
 	}{
-		{"balance serves", nil, nil, []string{"zbox/m"}, 200},
-		{"both down", map[string]int{"zbox/m": 502, "m": 503}, nil, []string{"zbox/m", "m", "m@cpu"}, 200},
-		{"one at its limit waits there", map[string]int{"m": 502}, map[string]string{"zbox/m": "capacity"}, []string{"zbox/m busy", "m", "zbox/m"}, 200},
-		{"a yielded card is refusing", map[string]int{"zbox/m": 502}, map[string]string{"m": "yielded"}, []string{"zbox/m", "m busy", "m@cpu"}, 200},
-		{"the failover place's failure is the client's", map[string]int{"zbox/m": 502, "m": 502, "m@cpu": 503}, nil, []string{"zbox/m", "m", "m@cpu"}, 503},
+		{"balance serves", nil, nil, []string{"zbox/m"}, 200, "zbox/m"},
+		{"both down", map[string]int{"zbox/m": 502, "m": 503}, nil, []string{"zbox/m", "m", "m@cpu"}, 200, "strix/m@cpu"},
+		{"one at its limit waits there", map[string]int{"m": 502}, map[string]string{"zbox/m": "capacity"}, []string{"zbox/m busy", "m", "zbox/m"}, 200, "zbox/m"},
+		{"a yielded card is refusing", map[string]int{"zbox/m": 502}, map[string]string{"m": "yielded"}, []string{"zbox/m", "m busy", "m@cpu"}, 200, "strix/m@cpu"},
+		{"the failover place's failure is the client's", map[string]int{"zbox/m": 502, "m": 502, "m@cpu": 503}, nil, []string{"zbox/m", "m", "m@cpu"}, 503, "strix/m@cpu"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &busyPlaces{places: places{status: tc.status}, busy: tc.busy}
@@ -295,6 +303,9 @@ func TestTheFailoverLane(t *testing.T) {
 			rw := post(t, h, "m", nil)
 			if fmt.Sprint(p.attempts) != fmt.Sprint(tc.attempts) || rw.Code != tc.code {
 				t.Fatalf("attempts %v status %d, want %v and %d", p.attempts, rw.Code, tc.attempts, tc.code)
+			}
+			if got := rw.Header().Values(PlaceHeader); fmt.Sprint(got) != fmt.Sprint([]string{tc.place}) {
+				t.Fatalf("%s %v, want %s", PlaceHeader, got, tc.place)
 			}
 		})
 	}

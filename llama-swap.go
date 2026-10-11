@@ -309,7 +309,7 @@ func main() {
 	}
 
 	// InferMux: the warden in front of whichever server is active (infermux.go).
-	startWarden(*flagWardenConfig, *flagConfig, *flagConfigDir, httpServer, func() *server.Server {
+	stopInferMux := startWarden(*flagWardenConfig, *flagConfig, *flagConfigDir, httpServer, func() *server.Server {
 		activeMu.RLock()
 		defer activeMu.RUnlock()
 		return activeSrv
@@ -492,6 +492,9 @@ func main() {
 					proxyLog.Warnf("graceful shutdown exceeded %v, forcing exit", shutdownTimeout)
 					os.Exit(1)
 				}()
+
+				// InferMux: the unfinished jobs go to disk first (infermux.go).
+				stopInferMux()
 
 				activeMu.RLock()
 				srv := activeSrv

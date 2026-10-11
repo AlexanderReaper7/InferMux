@@ -59,8 +59,8 @@ type flight struct {
 	started time.Time
 	devices []string
 	// cancel ends the request; device is the one that yielded, "" for a
-	// cancel by hand.
-	cancel func(device string)
+	// cancel by hand, and why says so.
+	cancel func(device, why string)
 	// session is a WebSocket's, nil for any other request.
 	session *stream.Session
 }
@@ -120,6 +120,7 @@ type traffic struct {
 	lastOn          map[string]time.Time
 	refused         int
 	cancelled       int
+	resumed         []func()
 }
 
 func newTraffic(keys *KeyFile, now func() time.Time) *traffic {
@@ -191,7 +192,7 @@ func isInference(r *http.Request) bool {
 // device. The pause check and the registration share one lock with pause(),
 // so a batch request is either refused or registered before the yield, never
 // neither. session is a WebSocket's, nil for any other request.
-func (t *traffic) begin(class Class, path string, devices []string, cancel func(device string), session *stream.Session) (uint64, string) {
+func (t *traffic) begin(class Class, path string, devices []string, cancel func(device, why string), session *stream.Session) (uint64, string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if class == Batch {
@@ -255,14 +256,15 @@ func (t *traffic) pause(device, reason string) int {
 	t.mu.Lock()
 	t.paused[device] = true
 	t.mu.Unlock()
-	return t.cancelBatch(device, "infermux: batch session cancelled, "+deviceName(device)+" was yielded: "+reason)
+	return t.cancelBatch(device, deviceName(device)+" was yielded: "+reason)
 }
 
 // cancelBatch cancels the batch requests in flight on device, "" for every
-// one, and closes a batch session with reason first. Returns how many. The
-// set is taken under the lock and cancelled after it, since a close frame to
-// a slow client can take up to a second.
-func (t *traffic) cancelBatch(device, reason string) int {
+// one by hand, and closes a batch session first. why is the yield's reason,
+// or "cancelled by hand". Returns how many. The set is taken under the lock
+// and cancelled after it, since a close frame to a slow client can take up
+// to a second.
+func (t *traffic) cancelBatch(device, why string) int {
 	t.mu.Lock()
 	var batch []*flight
 	for _, f := range t.flights {
@@ -272,11 +274,15 @@ func (t *traffic) cancelBatch(device, reason string) int {
 	}
 	t.cancelled += len(batch)
 	t.mu.Unlock()
+	reason := "infermux: batch session cancelled, " + why
+	if device == "" {
+		reason = "infermux: batch session " + why
+	}
 	for _, f := range batch {
 		if f.session != nil {
 			f.session.Close(stream.TryAgainLater, reason)
 		}
-		f.cancel(device)
+		f.cancel(device, why)
 	}
 	return len(batch)
 }
@@ -304,8 +310,12 @@ func (t *traffic) closeSessions(device string, code int, reason string) int {
 
 func (t *traffic) resume(device string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	delete(t.paused, device)
+	resumed := t.resumed
+	t.mu.Unlock()
+	for _, f := range resumed {
+		f()
+	}
 }
 
 // interactiveInFlight counts the interactive requests in flight, an idle

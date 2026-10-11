@@ -484,6 +484,29 @@ def run(cfg, models, gguf):
         unload.click()
         check("unload all after it stops the model", wait_for(lambda: json.loads(http("GET", DAEMON + "/running")[1])["running"] == [], 10))
 
+        # --- A job is paused mid-reply and goes on where it stopped (0023) ------------
+        jobs_headers = {"Authorization": "Bearer batch-key", "X-InferMux": "1"}
+        status, body = http("POST", DAEMON + "/warden/jobs", {"path": "/v1/chat/completions", "body": {"model": "alpha", "max_tokens": 40, "messages": [{"role": "user", "content": "count"}]}}, jobs_headers)
+        check("a batch client hands in a job", status == 201, f"{status} {body[:200]}")
+        job_id = json.loads(body)["id"] if status == 201 else ""
+
+        def job():
+            return json.loads(http("GET", DAEMON + "/warden/jobs/" + job_id, None, jobs_headers)[1])
+
+        check("the job runs", wait_for(lambda: job()["state"] == "running" and job()["last_seq"] >= 8, 30), job())
+        open_tab("status")
+        page.get_by_role("button", name="Pause", exact=True).click()
+        check("pause by hand pauses the job", wait_for(lambda: job()["state"] == "paused", 10), job())
+        check("status shows the paused job and why", visible(page.get_by_text("Jobs: 1 paused")) and visible(page.get_by_text("Paused: batch requests wait while the GPU is yielded")), verdict().get("jobs"))
+        shot("status-job-paused")
+        page.get_by_role("button", name="Automatic").click()
+        check("the job finishes after the resume", wait_for(lambda: job()["state"] == "done", 30), job())
+        status, events = http("GET", DAEMON + "/warden/jobs/" + job_id + "/events", None, jobs_headers)
+        heard = "".join(c.get("delta", {}).get("content") or "" for line in events.splitlines() if line.startswith("data: ")
+                        for c in json.loads(line[6:]).get("choices", []))
+        check("the client heard one reply, each word once", heard == "".join(f"w{i} " for i in range(40)), heard)
+        check("in two attempts", job()["attempts"] >= 2, job())
+
         # --- Warden settings ----------------------------------------------------------
         open_tab("settings")
         busy_input = page.locator("label", has_text="Busy at, % foreign GPU").locator("input")

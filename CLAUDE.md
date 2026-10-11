@@ -24,6 +24,7 @@ This file is rules and navigation only.
 | `internal/fetch/` | ours: a local model's missing file, fetched from another host or Hugging Face and checked against the signed SHA-256; the gate that answers 503 until it is here (0022, 8) |
 | `internal/failover/` | ours: failure and capacity overflow between model destinations (0016, [0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md), 0021); admission counts each serving host's requests after authentication |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
+| `internal/jobs/` | ours: the job envelope (0023); a batch request InferMux pauses mid-reply on a yield and continues from its text, each attempt sent through failover in-process; `/warden/jobs`; written to disk only on SIGTERM |
 | `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
 | `internal/stream/` | ours: a WebSocket followed frame by frame for the warden and the stats, closed with a code of ours, and routed by `?model=` (0018); `wstest/` is the tests' frame client and echo backend |
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
@@ -31,16 +32,16 @@ This file is rules and navigation only.
 | `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; file editing, validation, git, the proxy to the daemon (0005); under the one config, its check, Publish and nixcfg's copy (`config.go`, 0022) |
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build; the one config's YAML editor is CodeMirror (`src/lib/editor.ts`, `yamlschema.ts`), tested by bun in `test/` |
 | `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
-| `llama-swap.go` | upstream's `main`, plus one flag and one call |
+| `llama-swap.go` | upstream's `main`, plus one flag and two calls: `startWarden`, and the stop it returns, first in the SIGTERM branch (0023) |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build && bun test)   # the frontend; bun runs webui/test
 nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_loadbalance_test.go infermux_stream_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_loadbalance_test.go infermux_stream_test.go infermux_jobs_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs cmd internal/server/warden.go internal/server/warden_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the Go tests above and webui's
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
@@ -65,10 +66,10 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 
 ## The rules that have to fire without being looked up
 
-- **Every client has a key once `keys_file` is set, and keys.yaml holds only hashes** (0006). The plaintext lives in the hosts' sops file and nowhere else, and never on a command line.
+- **Every client has a key once `keys_file` is set, and keys.yaml holds only hashes** (0006). The plaintext lives in the hosts' sops file and nowhere else, and never on a command line. A job's key stays in memory, so `jobs.json` never holds one (0023).
 - **A config is trusted by its signature and by nothing else** (0022, 10). The trusted keys come from Nix's command line, never from the config or a file the UI writes. A daemon never runs a config that fails the check, and the host key carries a signed config without being able to write one.
 - **Between hosts the client's own key travels; a host's own key is for discovery and never replaces it** (0006). A llama-swap peer `apiKey` would replace the client's key and with it its class, so the hosts are `remotes`, not `peers`.
-- **The user's own request is never killed** (0004). Unmarked is interactive. Do not add a path that cancels, refuses or unloads under an interactive request; the unload waits for `interactive_recent_seconds` of quiet. The one exception is a stuck agent's request, refused before it reaches the model, by the user's choice (0015).
+- **The user's own request is never killed** (0004), **nor paused** (0023). Unmarked is interactive. Do not add a path that cancels, refuses or unloads under an interactive request; the unload waits for `interactive_recent_seconds` of quiet. The one exception is a stuck agent's request, refused before it reaches the model, by the user's choice (0015).
 - **The gate is for this host's devices** (0009; the CPU under the one config, 0022). Only a request for a local model is refused, cancelled or counted as interactive, and only by a device the model is on; another host's and a peer's pass after the key and allow check.
 - **Overflow never takes a yielded card** (0021). An `only_if_idle` place on this host's GPU refuses every key while the warden is yielded. A directly addressed request is still the gate's to decide.
 - **Upstream files stay untouched except at the marked hook points** (0004). New behaviour goes in `internal/warden/`, `infermux.go`, or a new file in upstream's package. Editing upstream code is a merge conflict we pay every release.

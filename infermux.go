@@ -20,6 +20,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/cpurun"
 	"github.com/mostlygeek/llama-swap/internal/failover"
 	"github.com/mostlygeek/llama-swap/internal/fetch"
+	"github.com/mostlygeek/llama-swap/internal/jobs"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/placement"
 	"github.com/mostlygeek/llama-swap/internal/remote"
@@ -37,6 +38,8 @@ import (
 // Declared here rather than in llama-swap.go, so upstream's main stays as it
 // is; flag.Parse there reads it all the same.
 var flagCodexPrompt = flag.String("codex-prompt", "", "InferMux: Codex's prompt.md, for the catalog Codex asks /v1/models for (internal/catalog)")
+
+var flagJobsFile = flag.String("jobs-file", "", "InferMux: where the unfinished jobs are written on shutdown and read back at start (0023); default $STATE_DIRECTORY/jobs.json")
 
 // activeModels reaches the models through whichever server is active. A config
 // reload replaces the server; the warden, like perfMon, outlives it.
@@ -118,9 +121,13 @@ func (a activeModels) qualifyHere(requested string) (string, bool, bool) {
 // path (0018), then llama-swap (0006). In front of all of it, failover sends a request for a
 // model in failover.yaml through that chain once per place it lists, until
 // one answers (0016).
-func startWarden(path, configPath, configDir string, httpServer *http.Server, active func() *server.Server, log *logmon.Monitor) {
+//
+// A job (0023) sends each attempt through the whole of it, failover first,
+// as a client would. The returned func writes the unfinished jobs to disk,
+// and is called on a shutdown signal before the server stops.
+func startWarden(path, configPath, configDir string, httpServer *http.Server, active func() *server.Server, log *logmon.Monitor) (stop func()) {
 	if path == "" {
-		return
+		return func() {}
 	}
 	cfg, err := warden.LoadConfig(path)
 	if err != nil {
@@ -222,6 +229,11 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	if one != nil {
 		one.handle(w.Handle)
 	}
+	jobStore := &jobs.Store{File: jobsFile(), KeysRequired: w.KeysRequired, Logf: log.Infof}
+	w.Handle("/warden/jobs", jobStore.Handler())
+	w.Handle("/warden/jobs/", jobStore.Handler())
+	w.OnResume(jobStore.Wake)
+	w.ReportJobs(func() any { return jobStore.Summary() })
 	var served http.Handler = codex
 	if one != nil {
 		// A local model whose files are still coming is a place that is
@@ -236,6 +248,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	}
 	failovers := failover.New(w.Wrap(recorder.Wrap(admission.Wrap(served))), cfg.Host, log)
 	failovers.Batch = w.IsBatch
+	jobStore.Serve = failovers
 	setFailover := func(routes warden.Failover) {
 		places := make(map[string][]failover.Place, len(routes))
 		for model, route := range routes {
@@ -265,6 +278,8 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			}
 			failovers.Set(routesOf(part))
 			w.SetPlacement(devicesOf(part))
+			// New places may take a job every old one refused.
+			jobStore.Wake()
 		}
 		if one.start(*flagConfigSeed) {
 			// llama-swap loaded -config-dir before the warden started, and
@@ -283,6 +298,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	}
 	httpServer.Handler = failovers
 	w.Start()
+	jobStore.Start()
 
 	reloadWarden := func() {
 		cfg, err := warden.LoadConfig(path)
@@ -325,6 +341,23 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	if configDir != "" && one == nil {
 		go (&configwatcher.DirWatcher{Path: absolute(configDir), OnChange: reload}).Run(ctx)
 	}
+	return func() {
+		if err := jobStore.Stop(10 * time.Second); err != nil {
+			log.Warnf("Jobs not written: %v", err)
+		}
+	}
+}
+
+// jobsFile is -jobs-file, or jobs.json in systemd's StateDirectory. Outside
+// both, an unfinished job is lost on shutdown, and the log says so.
+func jobsFile() string {
+	if *flagJobsFile != "" {
+		return *flagJobsFile
+	}
+	if dir := os.Getenv("STATE_DIRECTORY"); dir != "" {
+		return filepath.Join(dir, "jobs.json")
+	}
+	return ""
 }
 
 // checkOneConfig refuses the warden settings the one config replaced, so a
