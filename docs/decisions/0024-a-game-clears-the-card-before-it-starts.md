@@ -36,5 +36,6 @@ How it is built (the agent's choice): `Warden.LocalControl` is the keyless handl
 - If the user had set a manual pause before the launch, `infermux-hold` leaves it in place at exit.
 - Two games under `infermux-hold` at once: the first to exit sets `auto` under the second. Only a game below 25% load would notice.
 - The daemon joins `controlGroup` to hand it the socket. On strix that group is `users`, so the user's existing session can open the socket without logging in again.
+- Handing the socket to the group is an `fchownat`, which the unit's `~@privileged` filter forbids. The first deploy on strix, 2026-10-12, was killed with SIGSYS at start. The user chose to allow `@chown` when `controlGroup` is set, over a systemd socket unit (no chown and no group for the daemon, but a connection to a stopped InferMux would start it). A dynamic user can only chown its own files to groups it is in.
 
 Verified: `TestLocalControlTakesNoKeyAndServesOnlyTheControls`, `TestControl_TheSocketIsTheGroupsOrOnlyOurs` and `internal/hold`'s five tests. A keyless handler that also served the keyed routes failed the first, and a release that cleared the user's own pause failed `TestHold_AUsersOwnPauseIsLeftInPlace`.

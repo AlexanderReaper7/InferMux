@@ -513,6 +513,10 @@ in
           # 0660 and the group's.
           RuntimeDirectory = "infermux";
           RuntimeDirectoryMode = "0755";
+          # The socket's group is set with fchownat, which ~@privileged
+          # forbids; the daemon was killed with SIGSYS on strix (0024).
+          # Allowed after it, so it is taken back out of the deny.
+          SystemCallFilter = sandbox.SystemCallFilter ++ [ "@chown" ];
         };
       }
       // lib.optionalAttrs signed {
