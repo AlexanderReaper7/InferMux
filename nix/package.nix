@@ -33,6 +33,8 @@ let
       ../infermux.go
       ../infermux_config.go
       ../infermux_config_test.go
+      ../infermux_control.go
+      ../infermux_control_test.go
       ../infermux_loadbalance_test.go
       ../infermux_stream_test.go
       ../config-schema.json
@@ -132,7 +134,7 @@ in
   # upstream's to run.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/server/ .
     runHook postCheck
   '';
 

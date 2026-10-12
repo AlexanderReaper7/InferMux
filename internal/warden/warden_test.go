@@ -120,6 +120,9 @@ func newHarness(t *testing.T, mutate func(*Config)) *harness {
 	h.w.now = func() time.Time { return h.clock }
 	h.w.comfy = ComfyIdle{BusyAt: t0}
 	h.w.probe = func() (Resources, error) { return h.reading, h.probeErr }
+	// /warden/resources reads its own probe; the real one needs NVML, which
+	// the nix build has none of.
+	h.w.freshProbe = h.w.probe
 	h.w.announcer.now = h.w.now
 	h.w.announcer.post = func(_ context.Context, _ string, payload any) (any, error) {
 		if h.postErr != nil {
