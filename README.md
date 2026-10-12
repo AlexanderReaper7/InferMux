@@ -102,6 +102,15 @@ imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/comfyui/free
 
 A manual pause or resume holds until the warden's own verdict changes, then the warden takes over again. A browser POST from another origin, or to a name that is neither loopback nor in `trusted_hosts`, gets 403.
 
+With `-control-socket` (the module's `controlGroup`), the verdict, the probe and the controls above also answer on a Unix socket without a key, for the members of `-control-group` (0024). `infermux-hold` uses it to clear the card before a game reads its VRAM budget:
+
+```sh
+infermux-hold -- gamescope -W 3840 -H 2160 -f -- %command%   # a Steam launch option
+curl --unix-socket /run/infermux/control.sock http://infermux/warden/verdict
+```
+
+It pauses by hand, unloads, and waits up to `-timeout` (30 s) for InferMux to hold no VRAM; if the card is still not clear, typically because one of your requests is running, it refuses to start the command and says why in a notification. When the command exits it sets `auto`.
+
 A key with `class: batch` makes its requests batch. While the verdict is pause such a request gets:
 
 ```

@@ -298,6 +298,14 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	}
 	httpServer.Handler = failovers
 	w.Start()
+	stopControl := func() {}
+	if *flagControlSocket != "" {
+		stopControl, err = serveControl(*flagControlSocket, *flagControlGroup, w.LocalControl())
+		if err != nil {
+			slog.Error("failed to open the control socket", "control-socket", *flagControlSocket, "error", err)
+			os.Exit(1)
+		}
+	}
 	jobStore.Start()
 
 	reloadWarden := func() {
@@ -342,6 +350,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		go (&configwatcher.DirWatcher{Path: absolute(configDir), OnChange: reload}).Run(ctx)
 	}
 	return func() {
+		stopControl()
 		if err := jobStore.Stop(10 * time.Second); err != nil {
 			log.Warnf("Jobs not written: %v", err)
 		}

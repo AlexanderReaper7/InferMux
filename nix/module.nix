@@ -26,6 +26,7 @@ let
   signed = cfg.signedConfig.trustedKeys != [ ];
   trustedKeys = pkgs.writeText "infermux-trusted-keys" (lib.concatLines cfg.signedConfig.trustedKeys);
   cpuSocket = "/run/infermux-cpu/socket";
+  controlSocket = "/run/infermux/control.sock";
   # The model servers' sandbox, the daemon's and the CPU runner's alike: the
   # runner's children are model servers too.
   sandbox = {
@@ -88,6 +89,18 @@ let
     mkdir -p $out/bin
     ln -s ${lib.getExe' cfg.package "infermux-config"} $out/bin/infermux-config
   '';
+  # notify-send on its PATH: a launch from Steam has no terminal, and a
+  # refusal that only reached stderr would look like a game that did nothing.
+  holdTool =
+    pkgs.runCommand "infermux-hold"
+      {
+        meta.mainProgram = "infermux-hold";
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+      }
+      ''
+        makeWrapper ${lib.getExe' cfg.package "infermux-hold"} $out/bin/infermux-hold \
+          --prefix PATH : ${lib.makeBinPath [ pkgs.libnotify ]}
+      '';
   wardenFile =
     if cfg.configDir != null then
       "${cfg.configDir}/warden.yaml"
@@ -192,6 +205,18 @@ in
           group of the directory. Declared here if nothing else declares it.
         '';
       };
+    };
+
+    controlGroup = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "users";
+      description = ''
+        The group that may open the control socket, ${controlSocket}, which
+        answers the warden's controls without a key, and so run
+        `infermux-hold` (0024). Null: no socket and no `infermux-hold`.
+        The daemon joins the group to hand the socket to it.
+      '';
     };
 
     codexPrompt = lib.mkOption {
@@ -409,7 +434,8 @@ in
         }
       ];
 
-      environment.systemPackages = lib.optional signed configTool;
+      environment.systemPackages =
+        lib.optional signed configTool ++ lib.optional (cfg.controlGroup != null) holdTool;
       users.groups = lib.optionalAttrs (cfg.signedConfig.fetchGroup != null) {
         ${cfg.signedConfig.fetchGroup} = { };
       };
@@ -460,6 +486,12 @@ in
               "-codex-prompt"
               cfg.codexPrompt
             ]
+            ++ lib.optionals (cfg.controlGroup != null) [
+              "-control-socket"
+              controlSocket
+              "-control-group"
+              cfg.controlGroup
+            ]
           );
           Restart = "always";
           RestartSec = 5;
@@ -471,8 +503,16 @@ in
           # the config's state shows, rather than the unit.
           ReadWritePaths = map (dir: "-" + dir) cfg.signedConfig.fetchDirs;
         }
-        // lib.optionalAttrs (cfg.signedConfig.fetchGroup != null) {
-          SupplementaryGroups = [ cfg.signedConfig.fetchGroup ];
+        // {
+          SupplementaryGroups =
+            lib.optional (cfg.signedConfig.fetchGroup != null) cfg.signedConfig.fetchGroup
+            ++ lib.optional (cfg.controlGroup != null) cfg.controlGroup;
+        }
+        // lib.optionalAttrs (cfg.controlGroup != null) {
+          # 0755, so the group can reach the socket; the socket itself is
+          # 0660 and the group's.
+          RuntimeDirectory = "infermux";
+          RuntimeDirectoryMode = "0755";
         };
       }
       // lib.optionalAttrs signed {

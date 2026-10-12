@@ -30,5 +30,6 @@ Nothing here is edited to reflect later changes. A decision that was replaced ge
 | [0021](0021-overflow-never-takes-a-yielded-card.md) | Overflow never takes a yielded card, whatever the key; bulk indexing gets a batch key | 2026-10-09 |
 | [0022](0022-one-signed-config-placed-by-device.md) | Proposed: one signed config on every host, models placed on devices in balance and failover lanes, edited as YAML | 2026-10-10 |
 | [0023](0023-a-batch-request-is-a-job-paused-mid-inference.md) | Proposed: a batch request is a job InferMux pauses mid-inference and resumes; first-party consumers use a job envelope, nothing is pushed to them | 2026-10-10 |
+| [0024](0024-a-game-clears-the-card-before-it-starts.md) | A game clears the card before it starts: `infermux-hold` pauses and unloads through a keyless control socket, and refuses the launch if the card stays busy | 2026-10-12 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.

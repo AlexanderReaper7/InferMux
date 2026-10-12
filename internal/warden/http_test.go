@@ -212,3 +212,42 @@ func TestAPanickingTickDoesNotStopTheLoop(t *testing.T) {
 		}
 	}
 }
+
+// The control socket's handler takes no key and answers only the verdict, a
+// probe and the controls (0024).
+func TestLocalControlTakesNoKeyAndServesOnlyTheControls(t *testing.T) {
+	h := newHarness(t, nil)
+	h.w.Handle("GET /warden/extra", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {}))
+	h.w.Tick()
+	local := h.w.LocalControl()
+	keyless := func(method, path, body string) int {
+		rec := httptest.NewRecorder()
+		local.ServeHTTP(rec, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return rec.Code
+	}
+	if code := keyless("POST", "/warden/manual", `{"action":"pause"}`); code != 200 || !h.w.State().Verdict.Yielded {
+		t.Fatalf("a pause on the socket: %d, yielded %v", code, h.w.State().Verdict.Yielded)
+	}
+	before := h.models.unloads
+	if code := keyless("POST", "/warden/unload", ""); code != 200 || h.models.unloads != before+1 {
+		t.Fatalf("an unload on the socket: %d, unloads %d after %d", code, h.models.unloads, before)
+	}
+	for _, path := range []string{"/warden/verdict", "/warden/resources"} {
+		if code := keyless("GET", path, ""); code != 200 {
+			t.Errorf("%s on the socket: %d", path, code)
+		}
+	}
+	for _, path := range []string{"/warden/extra", "/v1/chat/completions", "/running"} {
+		if code := keyless("GET", path, ""); code != http.StatusNotFound {
+			t.Errorf("%s is not a control, and the socket answered %d", path, code)
+		}
+	}
+	// The TCP side still wants a key for the same route.
+	req := httptest.NewRequest("POST", "/warden/manual", strings.NewReader(`{"action":"auto"}`))
+	req.Header.Set("X-InferMux", "test")
+	rec := httptest.NewRecorder()
+	h.w.Wrap(http.NotFoundHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/warden/manual without a key over Wrap: %d", rec.Code)
+	}
+}

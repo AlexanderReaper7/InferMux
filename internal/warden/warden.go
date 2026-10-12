@@ -644,6 +644,22 @@ func (w *Warden) api() http.Handler {
 	for _, r := range w.extra {
 		mux.Handle(r.pattern, r.handler)
 	}
+	w.status(mux)
+	w.controls(mux)
+	return mux
+}
+
+// LocalControl answers the verdict, a fresh probe and the controls without a
+// key, for the control socket (0024). Whoever can open the socket is trusted
+// by its file mode, so it must never be reachable over TCP.
+func (w *Warden) LocalControl() http.Handler {
+	mux := http.NewServeMux()
+	w.status(mux)
+	w.controls(mux)
+	return mux
+}
+
+func (w *Warden) status(mux *http.ServeMux) {
 	mux.HandleFunc("GET /warden/verdict", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, http.StatusOK, w.State())
 	})
@@ -660,8 +676,6 @@ func (w *Warden) api() http.Handler {
 		}
 		writeJSON(rw, http.StatusOK, res)
 	})
-	w.controls(mux)
-	return mux
 }
 
 func writeJSON(rw http.ResponseWriter, status int, body any) {

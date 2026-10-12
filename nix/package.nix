@@ -94,6 +94,7 @@ in
     "cmd/infermux-adapter"
     "cmd/infermux-config"
     "cmd/infermux-cpu"
+    "cmd/infermux-hold"
   ];
   tags = lib.optionals withUI [ "embed_ui" ];
   # go-nvml's header declares deprecated vGPU calls, one warning each.
