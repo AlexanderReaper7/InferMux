@@ -31,11 +31,6 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey, swapPort 
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/state", func(rw http.ResponseWriter, r *http.Request) {
-		models, err := store.Models()
-		if err != nil {
-			fail(rw, err)
-			return
-		}
 		runtimes, err := store.Runtimes()
 		if err != nil {
 			fail(rw, err)
@@ -46,104 +41,19 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey, swapPort 
 			fail(rw, err)
 			return
 		}
-		peers, err := store.Peers()
-		if err != nil {
-			fail(rw, err)
-			return
-		}
 		reply(rw, map[string]any{
-			"models":     models,
-			"peers":      peers,
 			"runtimes":   runtimes,
 			"warden":     wcfg,
 			"kv_kernels": store.KVKernels,
-			"hf":         store.HF != nil,
 			// The browser reaches llama-swap's own UI on this port, on whatever
 			// host it reached infermux-ui: loopback, or the tailnet name.
 			"daemon_port": daemon.Port(),
 			"swap_port":   swapPort,
-			// The one config's editor replaces the model form, Peers and
-			// Routing (0022, 9).
-			"signed_config": store.SignedConfig != "",
 			"paths": map[string]any{
-				"models_dir": store.ModelsDir, "warden_file": store.WardenFile,
-				"base_config": store.BaseConfig, "gguf_dirs": store.GGUFDirs,
-				"signed_config": store.SignedConfig,
+				"warden_file": store.WardenFile, "base_config": store.BaseConfig,
+				"gguf_dirs": store.GGUFDirs, "signed_config": store.SignedConfig,
 			},
 		})
-	})
-	mux.HandleFunc("POST /api/models", func(rw http.ResponseWriter, r *http.Request) {
-		var m Model
-		if !decode(rw, r, &m) {
-			return
-		}
-		if err := store.SaveModel("", m); err != nil {
-			fail(rw, err)
-			return
-		}
-		build.Outdated()
-		reply(rw, m)
-	})
-	mux.HandleFunc("PUT /api/models/{name}", func(rw http.ResponseWriter, r *http.Request) {
-		var m Model
-		if !decode(rw, r, &m) {
-			return
-		}
-		if err := store.SaveModel(r.PathValue("name"), m); err != nil {
-			fail(rw, err)
-			return
-		}
-		build.Outdated()
-		reply(rw, m)
-	})
-	mux.HandleFunc("DELETE /api/models/{name}", func(rw http.ResponseWriter, r *http.Request) {
-		if err := store.DeleteModel(r.PathValue("name")); err != nil {
-			fail(rw, err)
-			return
-		}
-		build.Outdated()
-		reply(rw, map[string]bool{"deleted": true})
-	})
-	mux.HandleFunc("GET /api/downloads", func(rw http.ResponseWriter, r *http.Request) {
-		if store.HF == nil {
-			reply(rw, []Download{})
-			return
-		}
-		reply(rw, store.HF.State())
-	})
-	mux.HandleFunc("PUT /api/peers/{name}", func(rw http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Models []string `json:"models"`
-		}
-		if !decode(rw, r, &body) {
-			return
-		}
-		if err := store.SavePeerModels(r.PathValue("name"), body.Models); err != nil {
-			fail(rw, err)
-			return
-		}
-		reply(rw, body)
-	})
-	mux.HandleFunc("GET /api/routing", func(rw http.ResponseWriter, r *http.Request) {
-		text, err := store.Routing()
-		if err != nil {
-			fail(rw, err)
-			return
-		}
-		reply(rw, map[string]string{"file": RoutingFile, "text": text})
-	})
-	mux.HandleFunc("PUT /api/routing", func(rw http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Text string `json:"text"`
-		}
-		if !decode(rw, r, &body) {
-			return
-		}
-		if err := store.SaveRouting(body.Text); err != nil {
-			fail(rw, err)
-			return
-		}
-		reply(rw, body)
 	})
 	mux.HandleFunc("GET /api/gguf", func(rw http.ResponseWriter, r *http.Request) {
 		files, err := store.GGUFs()
@@ -254,9 +164,7 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey, swapPort 
 		reply(rw, map[string]string{"commit": hash})
 	})
 
-	if store.SignedConfig != "" {
-		configRoutes(mux, store, daemonClient{url: daemon, key: daemonKey})
-	}
+	configRoutes(mux, store, build, daemonClient{url: daemon, key: daemonKey})
 	mux.Handle("/daemon/", daemonProxy(daemon, daemonKey))
 
 	app, _ := fs.Sub(dist, "dist")

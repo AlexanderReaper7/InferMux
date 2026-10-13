@@ -25,8 +25,7 @@ func main() {
 	sops := flag.String("sops", "sops", "the sops binary")
 	ageIdentity := flag.String("age-identity", "", "the user's age identity, encrypted with a passphrase (age -p): what opens -key-secrets")
 	daemonKeyFile := flag.String("daemon-key-file", "", "a file holding the UI's key for the daemon, when the daemon has a keys_file")
-	modelsDir := flag.String("models-dir", "", "the daemon's -config-dir: one YAML file per model; unused with -signed-config")
-	signedConfig := flag.String("signed-config", "", "nixcfg's copy of the one config, the daemons' -config-seed; set, the UI edits it and Publish signs it (0022)")
+	signedConfig := flag.String("signed-config", "", "nixcfg's copy of the one config, the daemons' -config-seed: the UI edits it and Publish signs it (0022)")
 	configKey := flag.String("config-key", "", "the key that signs the one config, encrypted with a passphrase (infermux-config keygen)")
 	wardenFile := flag.String("warden-config", "", "the daemon's -warden-config")
 	baseConfig := flag.String("base-config", "", "the daemon's -config: the runtimes' macros and global settings")
@@ -35,20 +34,12 @@ func main() {
 	prebuild := flag.String("prebuild", "", "a flake installable the UI may build ahead of a switch; empty hides the button")
 	commitPassphrase := flag.Bool("commit-passphrase", false, "Commit asks for the passphrase of the user's GPG key and signs in gpg's loopback mode, for a host with no session to show a pinentry")
 	gpg := flag.String("gpg", "gpg", "the gpg binary, for -commit-passphrase")
-	hfDir := flag.String("hf-dir", "", "where a model's Hugging Face files are downloaded to; empty: models cannot name one")
-	hfTokenFile := flag.String("hf-token-file", "", "a file holding a Hugging Face token, for gated and private repos")
+	hfTokenFile := flag.String("hf-token-file", "", "a file holding a Hugging Face token, for Add model's lookup in gated and private repos")
 	flag.Parse()
 
-	if (*modelsDir == "" && *signedConfig == "") || *wardenFile == "" || *baseConfig == "" {
-		slog.Error("-models-dir or -signed-config, -warden-config and -base-config are required")
+	if *signedConfig == "" || *configKey == "" || *wardenFile == "" || *baseConfig == "" {
+		slog.Error("-signed-config, -config-key, -warden-config and -base-config are required")
 		os.Exit(2)
-	}
-	if (*signedConfig == "") != (*configKey == "") {
-		slog.Error("-signed-config and -config-key go together")
-		os.Exit(2)
-	}
-	if *signedConfig != "" {
-		*modelsDir = ""
 	}
 	daemonURL, err := url.Parse(*daemon)
 	if err != nil {
@@ -64,7 +55,7 @@ func main() {
 		}
 		daemonKey = strings.TrimSpace(string(raw))
 	}
-	store := &muxui.Store{ModelsDir: *modelsDir, WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity,
+	store := &muxui.Store{WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity,
 		CommitPassphrase: *commitPassphrase, GPG: *gpg, SignedConfig: *signedConfig, ConfigKey: *configKey}
 	for _, d := range strings.Split(*ggufDirs, ",") {
 		if d = strings.TrimSpace(d); d != "" {
@@ -81,8 +72,8 @@ func main() {
 			os.Exit(2)
 		}
 	}
-	if *hfDir != "" {
-		store.HF = &muxui.Downloads{Dir: *hfDir, TokenFile: *hfTokenFile}
+	if *hfTokenFile != "" {
+		store.HF = &muxui.HuggingFace{TokenFile: *hfTokenFile}
 	}
 	build := &muxui.Builder{Installable: *prebuild, Prepare: store.IntentToAdd}
 	swapPort := ""
@@ -99,7 +90,7 @@ func main() {
 			os.Exit(1)
 		}()
 	}
-	slog.Info("infermux-ui listening", "address", "http://"+*listen, "swap", *swapListen, "daemon", *daemon, "models-dir", *modelsDir, "signed-config", *signedConfig)
+	slog.Info("infermux-ui listening", "address", "http://"+*listen, "swap", *swapListen, "daemon", *daemon, "signed-config", *signedConfig)
 	if err := http.ListenAndServe(*listen, muxui.Handler(store, build, daemonURL, daemonKey, swapPort)); err != nil {
 		slog.Error("infermux-ui stopped", "error", err)
 		os.Exit(1)

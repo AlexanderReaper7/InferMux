@@ -304,3 +304,23 @@ func writeKeys(path string, kf warden.KeyFile) error {
 	enc.Close()
 	return writeAtomic(path, buf.Bytes())
 }
+
+// leadingComment is the comment at the top of a file. yaml.v3 hangs it on
+// the document, the top mapping or the first key, depending on blank lines.
+func leadingComment(doc *yaml.Node) string {
+	parts := []string{doc.HeadComment}
+	if len(doc.Content) > 0 {
+		root := doc.Content[0]
+		parts = append(parts, root.HeadComment)
+		if len(root.Content) > 0 {
+			parts = append(parts, root.Content[0].HeadComment)
+		}
+	}
+	var kept []string
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "\n\n")
+}

@@ -16,3 +16,6 @@ evals/config.yaml
 # nix
 result
 result-*
+
+# A local build of the daemon, `go build` at the root
+/llama-swap

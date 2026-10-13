@@ -1,10 +1,11 @@
 """End-to-end run of infermux-ui against a real InferMux daemon, in a browser.
 
-Everything is isolated: a temp git repository holds the models and the warden
-file, the models are e2e/fake_server.py, and the daemon and the UI listen on
-5101 and 5110. Neither the GPU's models nor the user's configuration are
-touched. The warden measures the real card, so its threshold is set to 100%
-to keep its own verdict at resume.
+Everything is isolated: a temp git repository holds the signed config's copy
+and the warden file, the daemon's state and the config key sit beside it, the
+models are e2e/fake_server.py, and the daemon and the UI listen on 5101 and
+5110. Neither the GPU's models nor the user's configuration are touched. The
+warden measures the real card and CPU, so its thresholds are set to 100% to
+keep its own verdict at resume. The Config tab's editor is config.py's.
 
 See CLAUDE.md for the command. Exits 1 if any check failed.
 """
@@ -108,40 +109,55 @@ class Stream(threading.Thread):
         self.first.set()
 
 
+def tool(*args):
+    """infermux-config, with the config key's passphrase."""
+    env = dict(os.environ, INFERMUX_CONFIG_PASSPHRASE=PASSPHRASE)
+    return subprocess.run([BIN / "infermux-config", *map(str, args)], check=True, env=env, capture_output=True, text=True).stdout
+
+
 def setup(root: Path):
     gguf = root / "gguf"
     gguf.mkdir()
     for name in ("alpha", "beta", "unused"):
         (gguf / f"{name}.gguf").write_bytes(b"GGUF")
+    # The config key and the trusted key, outside the repository as the
+    # user's age identity is.
+    key = root / "config-key.age"
+    (root / "trusted.pub").write_text(tool("keygen", "-out", key))
     cfg = root / "cfg"
-    (cfg / "models").mkdir(parents=True)
-    (cfg / "models" / "alpha.yaml").write_text(
-        f"""# Alpha, the table-form model.
-models:
-  alpha:
-    cmd: |
-      ${{fake-server}}
-        --port ${{PORT}}
-        --model {gguf}/alpha.gguf
-        --ctx-size 4096
-        --cache-type-k q8_0
-        --cache-type-v q8_0
-    proxy: http://127.0.0.1:${{PORT}}
-    env:
-      - KEEP=me # a key the UI does not edit
+    signed = cfg / "infermux"
+    (signed / "models").mkdir(parents=True)
+    (signed / "infermux.yaml").write_text(
+        f"""# The e2e one config.
+hosts:
+  e2e:
+    url: {DAEMON}
+    devices:
+      gpu: {{kind: gpu}}
+balance:
+  alpha: [e2e/gpu]
+  beta: [e2e/gpu]
 """
     )
-    (cfg / "models" / "beta.yaml").write_text(
-        f"""models:
-  beta:
-    cmd: |
-      ${{fake-server}}
-        # a comment makes it raw text
-        --port ${{PORT}}
-        --model {gguf}/beta.gguf
-    proxy: http://127.0.0.1:${{PORT}}
+    (signed / "models" / "alpha.yaml").write_text(
+        f"""# Alpha, a fake model.
+cmd: |
+  ${{fake-server}}
+    --port ${{PORT}}
+    --model {gguf}/alpha.gguf
+    --ctx-size 4096
+proxy: http://127.0.0.1:${{PORT}}
 """
     )
+    (signed / "models" / "beta.yaml").write_text(
+        f"""cmd: |
+  ${{fake-server}}
+    --port ${{PORT}}
+    --model {gguf}/beta.gguf
+proxy: http://127.0.0.1:${{PORT}}
+"""
+    )
+    tool("sign", "-key", key, "-host", "e2e", signed)
     (cfg / "warden.yaml").write_text(
         """# The e2e warden.
 host: e2e
@@ -150,6 +166,9 @@ policy:
   gpu_busy_percent: 100
   min_free_vram_mb: 0
   poll_seconds: 1
+cpu:
+  busy_percent: 100
+  min_available_ram_mb: 0
 """
     )
     base = root / "base.yaml"
@@ -183,7 +202,7 @@ startPort: 15800
     subprocess.run(["git", "init", "-q", str(cfg)], check=True)
     subprocess.run(git + ["add", "-A"], check=True)
     subprocess.run(git + ["commit", "-qm", "start"], check=True)
-    return cfg, base, kv, gguf, identity
+    return cfg, signed, base, kv, gguf, identity, key
 
 
 def age_passphrase(src, dst):
@@ -210,18 +229,20 @@ def age_passphrase(src, dst):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="infermux-e2e-"))
-    cfg, base, kv, gguf, identity = setup(root)
-    models = cfg / "models"
+    cfg, signed, base, kv, gguf, identity, key = setup(root)
+    for d in ("state", "derived"):
+        (root / d).mkdir()
     (root / "ui-key").write_text("ui-key\n")
     env = dict(os.environ, GIT_AUTHOR_NAME="e2e", GIT_AUTHOR_EMAIL="e2e@example", GIT_COMMITTER_NAME="e2e", GIT_COMMITTER_EMAIL="e2e@example")
     daemon_log = open(OUT / "daemon.log", "w")
     daemon = subprocess.Popen(
-        [BIN / "infermux", "-listen", "127.0.0.1:5101", "-config", base, "-config-dir", models, "-warden-config", cfg / "warden.yaml"],
+        [BIN / "infermux", "-listen", "127.0.0.1:5101", "-config", base, "-config-dir", root / "derived", "-warden-config", cfg / "warden.yaml",
+         "-config-trusted-keys", root / "trusted.pub", "-config-state", root / "state", "-config-seed", signed],
         stdout=daemon_log, stderr=subprocess.STDOUT, env=env,
     )
     ui = subprocess.Popen(
-        [BIN / "infermux-ui", "-listen", "127.0.0.1:5110", "-swap-listen", "127.0.0.1:5111", "-daemon", DAEMON, "-models-dir", models,
-         "-warden-config", cfg / "warden.yaml", "-base-config", base, "-gguf-dirs", gguf, "-kv-kernels", kv,
+        [BIN / "infermux-ui", "-listen", "127.0.0.1:5110", "-swap-listen", "127.0.0.1:5111", "-daemon", DAEMON,
+         "-signed-config", signed, "-config-key", key, "-warden-config", cfg / "warden.yaml", "-base-config", base, "-gguf-dirs", gguf, "-kv-kernels", kv,
          "-daemon-key-file", root / "ui-key", "-key-secrets", cfg / "secrets" / "infermux.yaml",
          "-age-identity", identity],
         stdout=open(OUT / "ui.log", "w"), stderr=subprocess.STDOUT, env=env,
@@ -230,7 +251,7 @@ def main():
         if not wait_for(lambda: http("GET", DAEMON + "/warden/verdict")[0] == 200 and http("GET", UI + "/api/state")[0] == 200, 20):
             print("the stack did not come up; see", OUT)
             return 1
-        run(cfg, models, gguf)
+        run(cfg, signed)
     finally:
         ui.terminate()
         daemon.terminate()
@@ -255,7 +276,11 @@ def git(cfg, *args):
     return subprocess.run(["git", "-C", str(cfg), *args], capture_output=True, text=True).stdout
 
 
-def run(cfg, models, gguf):
+def config_state():
+    return json.loads(http("GET", DAEMON + "/warden/config/state")[1])
+
+
+def run(cfg, signed):
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         # No key: llama-swap's UI comes through infermux-ui's second listener,
@@ -282,22 +307,18 @@ def run(cfg, models, gguf):
             page.goto(f"{UI}/?t={time.time()}#{tab}")
             page.wait_for_load_state("networkidle")
 
-        def flag_row(name):
-            """The flag table row whose name input holds name."""
-            index = page.evaluate(
-                """name => [...document.querySelectorAll('tbody tr')].findIndex(
-                    tr => tr.querySelector('input')?.value === name)""",
-                name,
+        def publish(edit):
+            """A Publish from this UI, as the Config tab sends it: the running
+            version's files, edited, signed with the config key."""
+            files = {"infermux.yaml": (signed / "infermux.yaml").read_text()}
+            files.update({"models/" + f.name: f.read_text() for f in (signed / "models").iterdir()})
+            edit(files)
+            body = {"files": files, "base": config_state()["current"]["hash"], "passphrase": PASSPHRASE, "force": False}
+            return page.evaluate(
+                """body => fetch('/api/config/publish', {method: 'POST', headers: {'X-InferMux': '1', 'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)}).then(async r => [r.status, await r.text()])""",
+                body,
             )
-            return page.locator("tbody tr").nth(index) if index >= 0 else None
-
-        def edit(model):
-            open_tab("models")
-            page.locator("tr", has_text=model).first.click()
-            page.get_by_role("heading", name=f"Edit {model}").wait_for()
-
-        def save():
-            page.get_by_role("button", name="Save", exact=True).click()
 
         # --- Keys at the daemon ---------------------------------------------------
         chat = {"model": "alpha", "max_tokens": 1, "messages": []}
@@ -319,32 +340,13 @@ def run(cfg, models, gguf):
         check("status lists GPU processes", visible(page.get_by_role("columnheader", name="Process")))
         shot("status")
 
-        # --- Models: the list ---------------------------------------------------
-        open_tab("models")
-        alpha_row = page.locator("tr", has_text="alpha").first
-        alpha_row.wait_for()
-        check("models lists the table-form model with its runtime", "fake-server" in alpha_row.inner_text())
-        check("models lists the raw model as text", "text" in page.locator("tr", has_text="beta").first.inner_text())
-        check("the KV column shows the pair", "q8_0-q8_0" in alpha_row.inner_text())
-        check("an unused GGUF is offered", visible(page.get_by_text(f"{gguf}/unused.gguf")))
-        shot("models")
-
-        # --- Edit a flag, the file and the daemon follow ----------------------
-        edit("alpha")
-        check("the file's comment is shown", visible(page.get_by_text("Alpha, the table-form model.")))
-        before = reloads()
-        flag_row("--ctx-size").locator("input").nth(1).fill("8192")
-        save()
-        text = wait_for(lambda: "--ctx-size 8192" in (models / "alpha.yaml").read_text() and (models / "alpha.yaml").read_text())
-        check("a flag edit lands in the file", text, (models / "alpha.yaml").read_text())
-        check("keys the UI does not edit survive", text and "KEEP=me # a key the UI does not edit" in text, text)
-        check("the comment survives", text and text.startswith("# Alpha, the table-form model."), text)
-        check("the daemon reloads after a save", wait_for(lambda: reloads() > before, 10), f"{reloads()} reloads")
-
+        # --- The signed config runs ---------------------------------------------
+        st = config_state()
+        check("the daemon runs the signed config from the seed", st["current"] and st["current"]["revision"] == 1, st)
         status, body = http("POST", DAEMON + "/v1/chat/completions", {"model": "alpha", "max_tokens": 1, "messages": []})
-        check("the edited model starts and answers", status == 200, f"{status} {body[:200]}")
+        check("its model starts and answers", status == 200, f"{status} {body[:200]}")
         running = json.loads(http("GET", DAEMON + "/running")[1])["running"]
-        check("the daemon runs it with the new flag", running and re.search(r"--ctx-size\s+8192", running[0]["cmd"]), running)
+        check("on the GPU device it was placed on", running and running[0]["model"] == "alpha", running)
 
         # --- Performance: the request just made, and a streamed one ------------
         status, _ = http("POST", DAEMON + "/v1/chat/completions", {"model": "alpha", "max_tokens": 3, "stream": True, "messages": []})
@@ -360,93 +362,18 @@ def run(cfg, models, gguf):
         open_tab("performance")
         check("the performance tab summarises the model", visible(page.locator("tr", has_text="e2e/alpha").first))
         check("and lists every request, beta's too", page.locator("tr", has_text="/v1/chat/completions").count() == 3)
+        alpha_row = page.locator("tr", has_text="e2e/alpha").first
+        check("the summary has the median decode rate", "10.0" in alpha_row.inner_text(), alpha_row.inner_text())
         shot("performance")
-        open_tab("models")
-        alpha_row = page.locator("tr", has_text="alpha").first
-        alpha_row.wait_for()
-        check("the models table shows the median decode rate", wait_for(lambda: "10.0" in alpha_row.inner_text(), 5), alpha_row.inner_text())
-
-        # --- Add a flag, a switch, and remove one --------------------------------
-        edit("alpha")
-        page.get_by_role("button", name="Add flag").click()
-        last = page.locator("tbody tr").last
-        last.locator("input").nth(0).fill("--jinja")
-        last.locator('input[type="checkbox"]').check()
-        flag_row("--cache-type-v").get_by_title("Remove").click()
-        save()
-        text = wait_for(lambda: "--jinja" in (models / "alpha.yaml").read_text() and (models / "alpha.yaml").read_text())
-        check("an added switch is written without a value", text and re.search(r"--jinja\n", text), text)
-        check("a removed flag is gone", text and "--cache-type-v" not in text, text)
-
-        # --- The KV warning ----------------------------------------------------
-        edit("alpha")
-        # --cache-type-v was removed above, so the pair is now q8_0-f16.
-        check("the editor warns about q8_0-f16, which has no kernel", visible(page.get_by_text("has no FlashAttention kernel for q8_0-f16")))
-        flag_row("--cache-type-k").locator("input").nth(1).fill("f16")
-        check("the warning clears as the pair becomes f16-f16", wait_for(lambda: not page.get_by_text("has no FlashAttention kernel").is_visible(), 3))
-        flag_row("--cache-type-k").locator("input").nth(1).fill("q4_1")
-        check("the warning comes back for q4_1-f16", visible(page.get_by_text("has no FlashAttention kernel for q4_1-f16")))
-        shot("editor-kv-warning")
-        save()
-        open_tab("models")
-        check("the list marks the model", visible(page.get_by_text("q4_1-f16 ⚠")))
-        check("the banner names the model", visible(page.locator(".card", has_text="no FlashAttention kernel for q4_1-f16")))
-        check("no build button without -prebuild", page.get_by_role("button", name="Build now").count() == 0)
-
-        # --- Refusals leave the file alone ------------------------------------------
-        edit("alpha")
-        before_text = (models / "alpha.yaml").read_text()
-        page.locator("label", has_text="Name, the model ID").locator("input").fill("has space")
-        save()
-        err = page.locator(".border-red-900").first
-        err.wait_for(timeout=5000)
-        check("a bad name shows the refusal", "a model name is" in err.inner_text(), err.inner_text())
-        page.locator("label", has_text="Name, the model ID").locator("input").fill("alpha")
-        page.get_by_role("button", name="Add flag").click()
-        last = page.locator("tbody tr").last
-        last.locator("input").nth(0).fill("--prompt")
-        last.locator("input").nth(1).fill("--looks-like-a-flag")
-        save()
-        refusal = page.locator(".border-red-900", has_text="would read as a flag")
-        check("a value that would read as a flag is refused", visible(refusal), page.locator(".border-red-900").all_inner_texts())
-        check("refused saves leave the file alone", (models / "alpha.yaml").read_text() == before_text)
-
-        # --- Raw text --------------------------------------------------------------
-        edit("beta")
-        check("a commented cmd opens as text", visible(page.locator("textarea")))
-        area = page.locator("textarea").first
-        area.fill(area.input_value().replace("--model", "--threads 2\n  --model"))
-        save()
-        check("a raw edit lands", wait_for(lambda: "--threads 2" in (models / "beta.yaml").read_text()), (models / "beta.yaml").read_text())
-        check("a raw edit keeps its comment", "# a comment makes it raw text" in (models / "beta.yaml").read_text())
-
-        # --- New model from an unused GGUF, rename, delete -----------------------------
-        open_tab("models")
-        page.locator("div", has_text=f"{gguf}/unused.gguf").get_by_role("button", name="Add as a model").last.click()
-        page.get_by_role("heading", name="New model").wait_for()
-        check("the new model is named after its file", page.locator("label", has_text="Name, the model ID").locator("input").input_value() == "unused")
-        check("the new model copies flags from one on its runtime", page.locator("tbody tr").count() > 0)
-        save()
-        check("a new model gets its own file", wait_for(lambda: (models / "unused.yaml").exists()))
-        edit("unused")
-        page.locator("label", has_text="Name, the model ID").locator("input").fill("gamma")
-        save()
-        check("a rename moves the file", wait_for(lambda: (models / "gamma.yaml").exists() and not (models / "unused.yaml").exists()))
-        edit("gamma")
-        page.get_by_role("button", name="Delete").click()
-        check("delete removes the file", wait_for(lambda: not (models / "gamma.yaml").exists()))
-        open_tab("models")
-        check("the list no longer has it", page.locator("tr", has_text="gamma").count() == 0)
 
         # --- The reload waits for the user's reply ------------------------------------
         reply = Stream("alpha", 60)
         reply.start()
         check("an interactive reply starts", reply.first.wait(30) and reply.chunks > 0, reply.status)
         before = reloads()
-        edit("alpha")
-        page.locator("label", has_text="Description").locator("input").fill("edited mid-reply")
-        save()
         open_tab("status")
+        status, body = publish(lambda f: f.update({"models/alpha.yaml": f["models/alpha.yaml"].replace("--ctx-size 4096", "--ctx-size 8192")}))
+        check("a Publish mid-reply is accepted", status == 200 and config_state()["current"]["revision"] == 2, f"{status} {body[:200]}")
         waiting = page.get_by_text("Waiting for your requests to finish")
         check("status shows the reload waiting", visible(waiting, 5), verdict().get("waiting_for_quiet"))
         shot("status-waiting")
@@ -454,6 +381,10 @@ def run(cfg, models, gguf):
         reply.join(60)
         check("the reply finished whole", reply.done and reply.chunks == 60, f"{reply.chunks} chunks, done {reply.done}")
         check("the reload ran after it", wait_for(lambda: reloads() > before, 10))
+        status, _ = http("POST", DAEMON + "/v1/chat/completions", {"model": "alpha", "max_tokens": 1, "messages": []})
+        running = json.loads(http("GET", DAEMON + "/running")[1])["running"]
+        check("the daemon runs the published flag", status == 200 and running and re.search(r"--ctx-size\s+8192", running[0]["cmd"]), running)
+        check("nixcfg's copy is the published version", "--ctx-size 8192" in (signed / "models" / "alpha.yaml").read_text())
 
         # --- Manual verdict, and what batch gets ------------------------------------
         page.get_by_role("button", name="Pause", exact=True).click()
@@ -561,7 +492,7 @@ def run(cfg, models, gguf):
 
         # --- Changes ---------------------------------------------------------------
         open_tab("changes")
-        check("changes lists the edited files", visible(page.get_by_text("models/alpha.yaml")))
+        check("changes lists the edited files", visible(page.get_by_text("infermux/models/alpha.yaml")) and visible(page.get_by_text("warden.yaml")))
         commits = git(cfg, "rev-list", "--count", "HEAD").strip()
         page.get_by_placeholder("Commit message").fill("e2e edits")
         page.get_by_role("button", name="Commit").click()

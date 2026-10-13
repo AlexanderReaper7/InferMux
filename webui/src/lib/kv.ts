@@ -1,13 +1,5 @@
-import type { Model } from "./types";
-
-// The K-V cache pair a model asks llama.cpp for. An unset type is f16,
+// The K-V cache pair a command asks llama.cpp for. An unset type is f16,
 // llama.cpp's own default.
-export function kvPair(m: Model): string {
-  if (m.raw) return cmdPair(m.cmd);
-  const value = (...names: string[]) => m.flags.find((f) => names.includes(f.name))?.value ?? "f16";
-  return `${value("--cache-type-k", "-ctk")}-${value("--cache-type-v", "-ctv")}`;
-}
-
 function cmdPair(cmd: string): string {
   const k = cmd.match(/(?:--cache-type-k|-ctk)\s+(\S+)/);
   const v = cmd.match(/(?:--cache-type-v|-ctv)\s+(\S+)/);
@@ -18,18 +10,10 @@ function cmdRuntime(cmd: string): string {
   return cmd.match(/^\s*\$\{([^}]+)\}/)?.[1] ?? "";
 }
 
-// The runtime's compiled pairs, when the module said what they are.
-function runtimeOf(m: Model): string {
-  return m.raw ? cmdRuntime(m.cmd) : m.runtime;
-}
-
-// A sentence when the model's pair has no kernel in its runtime, else null.
-// Such a cache is converted to f16 on every decode step: 61 instead of 80 t/s
-// on the 9B at 32k context (nixcfg's decisions, 2026-09-25).
-export function kvWarning(m: Model, kernels: Record<string, string[]> | null): string | null {
-  return missing(runtimeOf(m), kvPair(m), kernels);
-}
-
+// A sentence when the pair has no kernel in the runtime, else null; a
+// runtime the module gave no compiled pairs for is not checked. Such a cache
+// is converted to f16 on every decode step: 61 instead of 80 t/s on the 9B at
+// 32k context (nixcfg's decisions, 2026-09-25).
 function missing(runtime: string, pair: string, kernels: Record<string, string[]> | null): string | null {
   const compiled = kernels?.[runtime];
   if (!compiled || compiled.includes(pair)) return null;

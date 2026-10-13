@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -64,7 +63,7 @@ func TestStateCarriesWhatTheAppReads(t *testing.T) {
 	u.f.store.KVKernels = map[string][]string{"llama-server": {"f16-f16"}}
 	code, out := u.call("GET", "/api/state", nil)
 	u.want(code, 200, out, "state")
-	for _, key := range []string{"models", "runtimes", "warden", "kv_kernels", "daemon_port", "swap_port", "paths"} {
+	for _, key := range []string{"runtimes", "warden", "kv_kernels", "daemon_port", "swap_port", "paths"} {
 		if _, ok := out[key]; !ok {
 			t.Errorf("no %s in %v", key, out)
 		}
@@ -79,92 +78,9 @@ func TestStateCarriesWhatTheAppReads(t *testing.T) {
 
 func TestStateFailsLoudlyOnABrokenFile(t *testing.T) {
 	u := newUI(t)
-	os.WriteFile(filepath.Join(u.f.store.ModelsDir, "broken.yaml"), []byte("models: [\n"), 0o644)
+	os.WriteFile(u.f.store.BaseConfig, []byte("macros: [\n"), 0o644)
 	code, out := u.call("GET", "/api/state", nil)
-	u.want(code, http.StatusUnprocessableEntity, out, "broken model file")
-	if !strings.Contains(out["detail"].(string), "broken.yaml") {
-		t.Errorf("detail does not name the file: %v", out)
-	}
-}
-
-func TestModelRoutes(t *testing.T) {
-	u := newUI(t)
-	m := u.f.model(t, "qwen")
-
-	fresh := m
-	fresh.Name, fresh.File, fresh.Comment = "fresh", "", ""
-	code, out := u.call("POST", "/api/models", fresh)
-	u.want(code, 200, out, "create")
-	if _, err := os.Stat(filepath.Join(u.f.store.ModelsDir, "fresh.yaml")); err != nil {
-		t.Fatalf("no file: %v", err)
-	}
-	code, out = u.call("POST", "/api/models", fresh)
-	u.want(code, http.StatusUnprocessableEntity, out, "create a name that exists")
-
-	bad := fresh
-	bad.Name = "has space"
-	code, out = u.call("POST", "/api/models", bad)
-	u.want(code, http.StatusUnprocessableEntity, out, "a bad name")
-
-	code, out = u.call("POST", "/api/models", `{"name":"x","bogus":1}`)
-	u.want(code, http.StatusBadRequest, out, "an unknown field")
-	code, out = u.call("POST", "/api/models", `{`)
-	u.want(code, http.StatusBadRequest, out, "broken JSON")
-
-	missing := fresh
-	missing.Name, missing.GGUF = "missing", "/nowhere/x.gguf"
-	code, out = u.call("POST", "/api/models", missing)
-	u.want(code, http.StatusUnprocessableEntity, out, "a GGUF that does not exist")
-
-	relative := fresh
-	relative.Name, relative.GGUF = "relative", "x.gguf"
-	code, out = u.call("POST", "/api/models", relative)
-	u.want(code, http.StatusUnprocessableEntity, out, "a relative GGUF")
-
-	renamed := u.f.model(t, "fresh")
-	renamed.Name = "renamed"
-	code, out = u.call("PUT", "/api/models/fresh", renamed)
-	u.want(code, 200, out, "rename")
-	if _, err := os.Stat(filepath.Join(u.f.store.ModelsDir, "renamed.yaml")); err != nil {
-		t.Fatalf("the file did not follow the name: %v", err)
-	}
-	gone := renamed
-	gone.Name = "unused"
-	code, out = u.call("PUT", "/api/models/fresh", gone)
-	u.want(code, http.StatusNotFound, out, "save under the old name")
-
-	clash := u.f.model(t, "renamed")
-	clash.Name = "qwen"
-	code, out = u.call("PUT", "/api/models/renamed", clash)
-	u.want(code, http.StatusUnprocessableEntity, out, "rename onto another model")
-
-	code, out = u.call("DELETE", "/api/models/renamed", nil)
-	u.want(code, 200, out, "delete")
-	code, out = u.call("DELETE", "/api/models/renamed", nil)
-	u.want(code, http.StatusNotFound, out, "delete twice")
-	if _, err := os.Stat(filepath.Join(u.f.store.ModelsDir, "renamed.yaml")); !os.IsNotExist(err) {
-		t.Fatalf("the emptied file is still there: %v", err)
-	}
-}
-
-func TestAFlagLlamaSwapWouldReadDifferentlyIsRefused(t *testing.T) {
-	u := newUI(t)
-	m := u.f.model(t, "qwen")
-	before := u.f.file(t, "qwen.yaml")
-	for _, fl := range []Flag{
-		{Name: "--chat-template", Value: str("line\n# a comment to llama-swap")},
-		{Name: `--x\`, Value: nil},
-		{Name: "--port", Value: str("1")},
-		{Name: "--temp", Value: str("--oops")},
-	} {
-		edited := m
-		edited.Flags = append(append([]Flag{}, m.Flags...), fl)
-		code, out := u.call("PUT", "/api/models/qwen", edited)
-		u.want(code, http.StatusUnprocessableEntity, out, "flag "+fl.Name)
-	}
-	if after := u.f.file(t, "qwen.yaml"); after != before {
-		t.Fatalf("a refused save changed the file:\n%s", after)
-	}
+	u.want(code, http.StatusUnprocessableEntity, out, "a broken base config")
 }
 
 func TestGGUFAndWardenRoutes(t *testing.T) {
@@ -193,6 +109,15 @@ func TestGGUFAndWardenRoutes(t *testing.T) {
 	u.want(code, http.StatusUnprocessableEntity, out, "a policy the warden refuses")
 	code, out = u.call("PUT", "/api/warden", `{"nonsense":true}`)
 	u.want(code, http.StatusBadRequest, out, "an unknown key")
+
+	// The one config replaced remotes, and the daemon refuses them (0022).
+	policy["poll_seconds"] = 2
+	cfg["remotes"] = []map[string]string{{"name": "zbox", "url": "https://zbox.ts.net:5001", "key_file": "/k"}}
+	code, out = u.call("PUT", "/api/warden", cfg)
+	u.want(code, http.StatusUnprocessableEntity, out, "remotes under the one config")
+	if !strings.Contains(out["detail"].(string), "remotes come from the config's hosts") {
+		t.Errorf("%v", out)
+	}
 }
 
 func TestGitRoutesOutsideARepositoryFail(t *testing.T) {
@@ -217,10 +142,11 @@ func TestBuildRoutes(t *testing.T) {
 // Every write route, sent without the header or from another origin.
 func TestEveryWriteRouteIsGuarded(t *testing.T) {
 	u := newUI(t)
-	before := u.f.file(t, "qwen.yaml")
+	before := mustRead(t, u.f.store.WardenFile)
 	routes := []struct{ method, path string }{
-		{"POST", "/api/models"}, {"PUT", "/api/models/qwen"}, {"DELETE", "/api/models/qwen"},
 		{"PUT", "/api/warden"}, {"POST", "/api/git/commit"}, {"POST", "/api/build"},
+		{"POST", "/api/config/publish"}, {"POST", "/api/config/copy"},
+		{"POST", "/api/keys/phone"}, {"DELETE", "/api/keys/episteme-batch"},
 		{"POST", "/daemon/warden/manual"},
 	}
 	for _, r := range routes {
@@ -242,7 +168,7 @@ func TestEveryWriteRouteIsGuarded(t *testing.T) {
 			}
 		}
 	}
-	if after := u.f.file(t, "qwen.yaml"); after != before {
+	if after := mustRead(t, u.f.store.WardenFile); string(after) != string(before) {
 		t.Fatal("a refused write changed the file")
 	}
 }

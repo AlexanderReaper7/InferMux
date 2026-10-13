@@ -42,7 +42,7 @@ func TestACommitIsSignedWithThePassphraseFromTheBrowser(t *testing.T) {
 
 	f := newFixture(t)
 	f.store.CommitPassphrase = true
-	repo := filepath.Dir(f.store.ModelsDir)
+	repo := f.store.repoDir()
 	git := func(args ...string) string {
 		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
 		if err != nil {
@@ -56,11 +56,7 @@ func TestACommitIsSignedWithThePassphraseFromTheBrowser(t *testing.T) {
 	}
 	git("-c", "commit.gpgSign=false", "commit", "-q", "--allow-empty", "-m", "start")
 	edit := func(description string) {
-		m := f.model(t, "qwen")
-		m.Description = description
-		if err := f.store.SaveModel("qwen", m); err != nil {
-			t.Fatal(err)
-		}
+		f.write(t, "models/qwen.yaml", "cmd: x\ndescription: "+description+"\n")
 	}
 
 	edit("one")

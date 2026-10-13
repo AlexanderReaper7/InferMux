@@ -1,6 +1,6 @@
 #!/bin/sh
 # The end-to-end runs: an isolated daemon and UI, driven by Playwright.
-# run.py is the models directory on 5101/5110, config.py the one config on
+# run.py is the UI's pages on 5101/5110, config.py the Config tab's editor on
 # 5121/5130; `e2e/run.sh config.py` runs one. Run `nix build` first;
 # INFERMUX_BIN points elsewhere.
 cd "$(dirname "$0")/.." || exit 1

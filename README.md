@@ -52,31 +52,36 @@ Two files. `-config` is llama-swap's own: models, groups, TTLs. See [config.exam
 
 ## The web UI
 
-`infermux-ui` is a separate binary that edits those files, shows the verdict, and has the controls. With the module:
+`infermux-ui` is a separate binary that edits the one config, warden.yaml and the keys, shows the verdict, and has the controls. It needs the one config (see [One config for every host](#one-config-for-every-host)), and the module refuses `ui.enable` without `signedConfig.seed` and `ui.configKey`. With the module:
 
 ```nix
 services.infermux = {
-  configDir = "/home/alice/nixcfg/infermux";   # models/*.yaml and warden.yaml, outside the store
+  configDir = "/home/alice/nixcfg/infermux";   # warden.yaml, outside the store
+  signedConfig = {
+    trustedKeys = [ "q6NnXhYc3E5gq0n2m8l0Z8m0g6Yy3eJmWm4mVq3Zr2Q= the user's config key" ];
+    seed = "/home/alice/nixcfg/infermux/config";
+  };
   settings.macros.llama-server = "${pkgs.llama-cpp}/bin/llama-server --host 127.0.0.1";
-  ui = { enable = true; user = "alice"; ggufDirs = [ "/srv/models" ]; };
+  ui = {
+    enable = true;
+    user = "alice";
+    configKey = "/home/alice/.config/infermux/config-key.age";
+    ggufDirs = [ "/srv/models" ];
+  };
 };
 ```
 
-Then open http://127.0.0.1:5010. Its llama-swap tab frames llama-swap's own UI from infermux-ui's second listener, `ui.swapListen` (:5011), which passes everything to the daemon with the UI's key. A model's command is edited as runtime, GGUF and flags when it has the form `${runtime} --port ${PORT} --model <file> <flags>`, and as text otherwise. Every save is validated with llama-swap's loader first. The Changes tab commits the files to the repository they live in, when asked; it never pushes. On a host with no desktop session to show gpg's pinentry, `ui.commitPassphrase` makes Commit ask for the GPG key's passphrase and sign in gpg's loopback mode ([0008](docs/decisions/0008-the-zbox-has-its-own-ui.md)).
+Then open http://127.0.0.1:5010. Its llama-swap tab frames llama-swap's own UI from infermux-ui's second listener, `ui.swapListen` (:5011), which passes everything to the daemon with the UI's key. A save of warden.yaml is validated with the daemon's loader first. The Changes tab commits the files to the repository they live in, when asked; it never pushes. On a host with no desktop session to show gpg's pinentry, `ui.commitPassphrase` makes Commit ask for the GPG key's passphrase and sign in gpg's loopback mode ([0008](docs/decisions/0008-the-zbox-has-its-own-ui.md)).
 
 Both answer on loopback names only, plus the warden file's `trusted_hosts`. To reach them from another device, publish them with `tailscale serve --bg --https=5010 http://127.0.0.1:5010` (and 5001 and 5011) and add the node's tailnet name to `trusted_hosts`.
 
-With `ui.kvKernels` set, the UI marks a model whose K-V cache pair has no compiled FlashAttention kernel, which llama.cpp runs by converting the cache to f16 on every decode step. `ui.prebuild` adds a "Build now" button that runs `nix build` on that installable as the user, ahead of the switch that puts the new kernels in use.
+With `ui.kvKernels` set, the Config tab marks a model whose K-V cache pair has no compiled FlashAttention kernel, which llama.cpp runs by converting the cache to f16 on every decode step. `ui.prebuild` lets the UI run `nix build` on that installable as the user, ahead of the switch that puts the new kernels in use; its "Build now" button was on the model form, and no tab shows it since the form was removed ([TODO.md](TODO.md)).
 
 The Keys tab makes, edits and revokes keys. With `ui.keySecrets`, a new key's plaintext goes to that sops file, so the tab can show it again; keys.yaml gets only its SHA-256. The sops file opens with the user's age identity at `ui.ageIdentity`, encrypted with `age -p`; the tab asks for its passphrase for Make key (after the first), Show and Revoke, and forgets it when the tab closes. `ui.daemonKeyFile` is the UI's own key for the daemon. The browser needs none for the UI or the llama-swap tab. Without `ui.swapListen` the tab frames the daemon, which asks with a Basic prompt (any user name, the key as password).
 
-A models file may hold llama-swap `peers:` instead, such as OpenRouter with `apiKey: ${env.OPENROUTER_API_KEY}`. The Models tab edits each peer's model list, and the proxy and key stay as written. The check fills every `${env.NAME}` with a placeholder, because the daemon's environment is not the UI's. A models file that is a symlink is written through, so two hosts' directories can share one peers file, and Changes shows and commits the file it points to.
+The Config tab's "Model from Hugging Face" reads a file's SHA-256 and size for `files:` from its LFS ETag, given `org/repo/file.gguf`. `ui.hfTokenFile` is a token for gated and private repos. The UI downloads nothing; a daemon fetches a missing file into `signedConfig.fetchDirs` (0022, 9).
 
-The Models tab also edits `routing.yaml` in the models directory as text: llama-swap's `routing.router`, groups or a matrix, saying which models may run at once. A save is checked like a model's, and a group member that names no model is refused (0006, 9).
-
-With `ui.hfDir`, a model can take its files from Hugging Face: `org/repo/file.gguf` for the GGUF and for its mmproj, kept in the model file as `metadata.hf`. Saving writes the paths under `ui.hfDir` into `--model` and `--mmproj` and downloads from the repository's `main`, again on a later save only if main has changed; the Models tab shows the progress, and an interrupted download resumes. `ui.hfTokenFile` is a token for gated and private repos ([0012](docs/decisions/0012-a-model-names-its-gguf-on-hugging-face.md)).
-
-The Performance tab shows each host's last 500 requests for the models it serves, kept in memory since the daemon started, and per model the median and 95th percentile of time to the first token, the prefill and decode rates, the prompt cache's share and drafts accepted. The Models table shows the median time to the first token and decode rate beside each model ([0014](docs/decisions/0014-performance-measured-at-the-front-door.md)).
+The Performance tab shows each host's last 500 requests for the models it serves, kept in memory since the daemon started, and per model the median and 95th percentile of time to the first token, the prefill and decode rates, the prompt cache's share and drafts accepted ([0014](docs/decisions/0014-performance-measured-at-the-front-door.md)).
 
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
 
@@ -135,9 +140,9 @@ Each local model in `/v1/models` has `meta.infermux`: `context_window`, `input_m
 
 ## The other host
 
-`remotes` in warden.yaml lists the other InferMux hosts, each with the file holding this host's key for it. That key's `allow` decides which of the other host's models this one learns. InferMux reads each one's `/v1/models` every 30 s and lists its models as `<host>/<model>`. A request for one is forwarded with the client's own key, so the other host applies that key's class and allow list. A host that stops answering keeps its models listed and fails a request for them at once with 502. Off the machine, traffic goes over HTTPS with `tailscale serve`.
+Under the one config the other InferMux hosts are `infermux.yaml`'s `hosts`, and warden.yaml's `remote_key_file` holds this host's key for them. Without it, `remotes` in warden.yaml lists them, each with the file holding this host's key for it. That key's `allow` decides which of the other host's models this one learns. InferMux reads each one's `/v1/models` every 30 s and lists its models as `<host>/<model>`. A request for one is forwarded with the client's own key, so the other host applies that key's class and allow list. A host that stops answering keeps its models listed and fails a request for them at once with 502. Off the machine, traffic goes over HTTPS with `tailscale serve`.
 
-`failover_file` names a reloadable YAML file mapping any model to destinations in preference order. Bare names such as `[zbox, strix]` switch only on 502, 503 or 504. A destination can set `max_inflight` to send excess concurrent requests to the next host, `only_if_idle` to skip a GPU running a different model request, and `batch_only` to restrict a destination to batch keys. The destination counts and reserves requests atomically, including direct traffic and aliases. An idle loaded model may be swapped. Both hosts need overflow support. See [failover.example.yaml](failover.example.yaml) and [routing capacity](docs/kb/guides/routing/capacity-and-queues.md). Outside the one config, CPU models should be peers of independent CPU-only services so the GPU warden never unloads or gates them; under it, the warden gates each model by its own devices ([0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md)).
+Under the one config a model's `balance` and `failover` lanes decide where its requests go, with the place settings below. Without it, `failover_file` names a reloadable YAML file mapping any model to destinations in preference order. Bare names such as `[zbox, strix]` switch only on 502, 503 or 504. A destination can set `max_inflight` to send excess concurrent requests to the next host, `only_if_idle` to skip a GPU running a different model request, and `batch_only` to restrict a destination to batch keys. The destination counts and reserves requests atomically, including direct traffic and aliases. An idle loaded model may be swapped. Both hosts need overflow support. See [failover.example.yaml](failover.example.yaml) and [routing capacity](docs/kb/guides/routing/capacity-and-queues.md). Outside the one config, CPU models should be peers of independent CPU-only services so the GPU warden never unloads or gates them; under it, the warden gates each model by its own devices ([0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md)).
 
 ## What it does on a yield
 
@@ -174,7 +179,7 @@ A job belongs to the key that made it. It lives in memory and is kept 10 minutes
 
 ## One config for every host
 
-With `signedConfig.trustedKeys` set, one signed directory decides every host's models and places, instead of `models/`, `remotes` and `failover_file` ([0022](docs/decisions/0022-one-signed-config-placed-by-device.md)). `infermux.yaml` names the hosts and their devices, the `balance` lane each model runs in, the `failover` lane it falls back to when every balance place is down or refusing, and groups of models. `models/<name>.yaml` is one llama-swap model entry plus `files:`, each weight's SHA-256. Each daemon derives its own part, keeps the versions under its state directory and pushes a new one to the others. warden.yaml then names this host as `host` and its key for the others as `remote_key_file`.
+With `signedConfig.trustedKeys` set, one signed directory decides every host's models and places, instead of `models/`, `remotes` and `failover_file` ([0022](docs/decisions/0022-one-signed-config-placed-by-device.md)). `infermux.yaml` names the hosts and their devices, the clouds whose models every host offers as `<cloud>/<model>`, the `balance` lane each model runs in, the `failover` lane it falls back to when every balance place is down or refusing, and groups of models. `models/<name>.yaml` is one llama-swap model entry plus `files:`, each weight's SHA-256. Each daemon derives its own part, keeps the versions under its state directory and pushes a new one to the others. warden.yaml then names this host as `host` and its key for the others as `remote_key_file`.
 
 ```sh
 infermux-config keygen -out ~/.config/infermux/config-key.age   # prints the public key for trustedKeys
@@ -192,7 +197,7 @@ services.infermux = {
 };
 ```
 
-The UI's Config tab then replaces Models. It edits the YAML with completion and hover from the schema, checks the draft with the daemons' own loader as it is typed, and shows where each model would run. Publish asks for the key's passphrase, signs the draft and hands it to this host's daemon. Once the daemon runs it, the UI writes nixcfg's copy, which Changes commits. A draft made from an older version than the one running gets a side-by-side comparison instead: build on the running version, or publish over it, which every host then shows as a conflict until it is dismissed.
+The UI's Config tab edits the YAML with completion and hover from the schema, checks the draft with the daemons' own loader as it is typed, and shows where each model would run. Publish asks for the key's passphrase, signs the draft and hands it to this host's daemon. Once the daemon runs it, the UI writes nixcfg's copy, which Changes commits. A draft made from an older version than the one running gets a side-by-side comparison instead: build on the running version, or publish over it, which every host then shows as a conflict until it is dismissed.
 
 ## Develop
 

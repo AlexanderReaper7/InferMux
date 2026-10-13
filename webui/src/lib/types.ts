@@ -131,39 +131,11 @@ export interface VerdictState {
   jobs?: { counts: Record<string, number>; paused_reasons: string[] };
 }
 
-export interface Flag {
-  name: string;
-  value: string | null;
-}
-
-export interface Model {
-  name: string;
-  file: string;
-  runtime: string;
-  gguf: string;
-  flags: Flag[];
-  raw: boolean;
-  cmd: string;
-  ttl: number | null;
-  aliases: string[];
-  description: string;
-  unlisted: boolean;
-  comment: string;
-  // The GGUF and mmproj on Hugging Face, as org/repo/file.gguf; null for local files.
-  hf: { model: string; mmproj?: string } | null;
-}
-
 export interface Consumer {
   name: string;
   url: string;
   announce_path: string;
   timeout_seconds: number;
-}
-
-export interface Remote {
-  name: string;
-  url: string;
-  key_file: string;
 }
 
 export interface Key {
@@ -187,7 +159,6 @@ export interface WardenConfig {
   priority_processes: string[] | null;
   host: string;
   keys_file: string;
-  remotes: Remote[] | null;
   trusted_hosts: string[] | null;
   policy: Policy;
   // used under the one config only (0022)
@@ -204,45 +175,19 @@ export interface Stuck {
   refuse_after: number;
 }
 
-// A cloud API in llama-swap's peers: (0006, 6). The UI edits only the list.
-export interface Peer {
-  name: string;
-  proxy: string;
-  models: string[];
-  file: string;
-}
-
 export interface UIState {
-  models: Model[];
-  peers: Peer[];
   runtimes: Record<string, string>;
   warden: WardenConfig;
   // Per runtime macro, the K-V pairs with a compiled FlashAttention kernel.
   kv_kernels: Record<string, string[]> | null;
   daemon_port: string;
   swap_port: string;
-  // Whether a model may name its files on Hugging Face (-hf-dir is set).
-  hf: boolean;
-  // The UI edits the one config (0022, 9): the Config tab replaces Models.
-  signed_config: boolean;
-  paths: { models_dir: string; warden_file: string; base_config: string; gguf_dirs: string[]; signed_config: string };
-}
-
-export interface Download {
-  source: string;
-  path: string;
-  total: number;
-  done: number;
-  running: boolean;
-  error?: string;
-  result?: "downloaded" | "up to date";
-  updated: string;
+  paths: { warden_file: string; base_config: string; gguf_dirs: string[]; signed_config: string };
 }
 
 export interface GGUF {
   path: string;
   bytes: number;
-  used_by: string[];
 }
 
 export interface GitState {

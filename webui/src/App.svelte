@@ -1,16 +1,14 @@
 <script lang="ts">
   import { live } from "./lib/live.svelte";
   import Status from "./routes/Status.svelte";
-  import Models from "./routes/Models.svelte";
   import Settings from "./routes/Settings.svelte";
   import Changes from "./routes/Changes.svelte";
   import Keys from "./routes/Keys.svelte";
   import Performance from "./routes/Performance.svelte";
   import { api } from "./lib/api";
 
-  const allTabs = [
+  const tabs = [
     { id: "status", label: "Status" },
-    { id: "models", label: "Models" },
     { id: "config", label: "Config" },
     { id: "performance", label: "Performance" },
     { id: "settings", label: "Warden" },
@@ -18,28 +16,23 @@
     { id: "changes", label: "Changes" },
     { id: "llama-swap", label: "llama-swap" },
   ] as const;
-  type Tab = (typeof allTabs)[number]["id"];
+  type Tab = (typeof tabs)[number]["id"];
 
-  // Under the one config, Config replaces Models (0022, 9).
-  let signed = $state(false);
-  const tabs = $derived(allTabs.filter((t) => t.id !== (signed ? "models" : "config")));
-
+  // #models was the model form's tab, which the one config's editor replaced
+  // (0022, 9).
   function fromHash(): Tab {
     const id = location.hash.slice(1);
-    return (allTabs.find((t) => t.id === id)?.id ?? "status") as Tab;
+    if (id === "models") return "config";
+    return (tabs.find((t) => t.id === id)?.id ?? "status") as Tab;
   }
   let tab = $state<Tab>(fromHash());
-  const shown = $derived(tab === "models" && signed ? "config" : tab === "config" && !signed ? "models" : tab);
 
   // llama-swap's own UI. Its fetches are absolute paths, so it is framed
   // rather than proxied under this origin (0005): from infermux-ui's second
   // listener, which adds the UI's key, or else from the daemon, which asks.
   let swapPort = $state("5001");
   api.state().then(
-    (s) => {
-      swapPort = s.swap_port || s.daemon_port || swapPort;
-      signed = s.signed_config;
-    },
+    (s) => (swapPort = s.swap_port || s.daemon_port || swapPort),
     () => {},
   );
   const swapUI = $derived(`${location.protocol}//${location.hostname}:${swapPort}/ui/`);
@@ -56,14 +49,14 @@
   });
 </script>
 
-<div class="mx-auto p-6 {tab === 'llama-swap' || shown === 'config' ? '' : 'max-w-7xl'}">
+<div class="mx-auto p-6 {tab === 'llama-swap' || tab === 'config' ? '' : 'max-w-7xl'}">
   <header class="mb-6 flex items-center gap-6 border-b border-neutral-800 pb-4">
     <h1 class="text-xl font-semibold tracking-tight text-neutral-100">InferMux</h1>
     <nav class="flex gap-1">
       {#each tabs as t}
         <a
           href={"#" + t.id}
-          class="rounded px-3 py-1 text-sm {shown === t.id ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-400 hover:text-neutral-200'}"
+          class="rounded px-3 py-1 text-sm {tab === t.id ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-400 hover:text-neutral-200'}"
           >{t.label}</a
         >
       {/each}
@@ -83,22 +76,20 @@
     </div>
   </header>
 
-  {#if shown === "status"}
+  {#if tab === "status"}
     <Status />
-  {:else if shown === "models"}
-    <Models />
-  {:else if shown === "config"}
+  {:else if tab === "config"}
     <!-- The editor is most of the bundle; it loads with this tab. -->
     {#await import("./routes/Config.svelte") then { default: Config }}
       <Config />
     {/await}
-  {:else if shown === "performance"}
+  {:else if tab === "performance"}
     <Performance />
-  {:else if shown === "settings"}
+  {:else if tab === "settings"}
     <Settings />
-  {:else if shown === "keys"}
+  {:else if tab === "keys"}
     <Keys />
-  {:else if shown === "changes"}
+  {:else if tab === "changes"}
     <Changes />
   {/if}
   {#if swapOpened}

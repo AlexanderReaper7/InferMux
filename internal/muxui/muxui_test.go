@@ -23,22 +23,6 @@ const base = `macros:
 healthCheckTimeout: 600
 `
 
-const qwen = `# Qwen, the everyday model.
-models:
-  qwen:
-    cmd: |
-      ${llama-server}
-        --port ${PORT}
-        --model GGUF
-        --ctx-size 65536
-        -fa on
-        --jinja
-        --temp -0.5
-    proxy: http://127.0.0.1:${PORT}
-    env:
-      - CUDA_VISIBLE_DEVICES=0 # keep
-`
-
 type fixture struct {
 	store *Store
 	gguf  string
@@ -50,153 +34,25 @@ func newFixture(t *testing.T) fixture {
 	gguf := filepath.Join(dir, "gguf", "qwen.gguf")
 	os.MkdirAll(filepath.Dir(gguf), 0o755)
 	os.WriteFile(gguf, []byte("GGUF"), 0o644)
-	other := filepath.Join(dir, "gguf", "other.gguf")
-	os.WriteFile(other, []byte("GGUF"), 0o644)
-	models := filepath.Join(dir, "models")
-	os.MkdirAll(models, 0o755)
-	os.WriteFile(filepath.Join(models, "qwen.yaml"), []byte(strings.ReplaceAll(qwen, "GGUF", gguf)), 0o644)
+	os.WriteFile(filepath.Join(dir, "gguf", "other.gguf"), []byte("GGUF"), 0o644)
 	os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(base), 0o644)
 	os.WriteFile(filepath.Join(dir, "warden.yaml"), []byte("# the warden\nhost: here\nkeys_file: keys.yaml\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "keys.yaml"), []byte("keys:\n  episteme-batch:\n    sha256: "+warden.HashKey("k")+"\n    class: batch\n"), 0o644)
 	return fixture{
-		store: &Store{ModelsDir: models, WardenFile: filepath.Join(dir, "warden.yaml"),
+		// nixcfg's copy of the one config, written by a Publish; none yet.
+		store: &Store{SignedConfig: filepath.Join(dir, "infermux"), WardenFile: filepath.Join(dir, "warden.yaml"),
 			BaseConfig: filepath.Join(dir, "base.yaml"), GGUFDirs: []string{filepath.Join(dir, "gguf")}},
 		gguf: gguf,
 	}
 }
 
-func (f fixture) model(t *testing.T, name string) Model {
+// write puts a file in nixcfg's copy, as a Publish does.
+func (f fixture) write(t *testing.T, name, text string) {
 	t.Helper()
-	models, err := f.store.Models()
-	if err != nil {
+	path := filepath.Join(f.store.SignedConfig, name)
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
 		t.Fatal(err)
-	}
-	for _, m := range models {
-		if m.Name == name {
-			return m
-		}
-	}
-	t.Fatalf("no model %s in %+v", name, models)
-	return Model{}
-}
-
-func (f fixture) file(t *testing.T, name string) string {
-	t.Helper()
-	raw, err := os.ReadFile(filepath.Join(f.store.ModelsDir, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(raw)
-}
-
-func str(s string) *string { return &s }
-
-func TestACmdInTheUIsFormSplitsIntoFlags(t *testing.T) {
-	f := newFixture(t)
-	m := f.model(t, "qwen")
-	if m.Raw || m.Runtime != "llama-server" || m.GGUF != f.gguf || len(m.Flags) != 4 {
-		t.Fatalf("%+v", m)
-	}
-	if m.Flags[2].Name != "--jinja" || m.Flags[2].Value != nil || *m.Flags[3].Value != "-0.5" {
-		t.Fatalf("flags %+v", m.Flags)
-	}
-}
-
-func TestEveryOtherCmdIsRawText(t *testing.T) {
-	for _, cmd := range []string{
-		"/bin/llama-server --port ${PORT} --model x.gguf",   // no runtime macro
-		"${llama-server} --model x.gguf",                    // no port
-		"${llama-server} --port ${PORT} --model x.gguf pos", // a positional
-		"${llama-server} --port ${PORT}\n# note\n--model x.gguf",
-	} {
-		if _, _, _, ok := parseCmd(cmd); ok {
-			t.Errorf("parsed %q", cmd)
-		}
-	}
-}
-
-func TestRenderingParsesBackToTheSameFlags(t *testing.T) {
-	flags := []Flag{{"--ctx-size", str("262144")}, {"--jinja", nil}, {"--chat-template-kwargs", str(`{"enable_thinking": false}`)}, {"--temp", str("-1")}}
-	runtime, gguf, got, ok := parseCmd(renderCmd("bonsai-server", "/srv/a b.gguf", flags))
-	if !ok || runtime != "bonsai-server" || gguf != "/srv/a b.gguf" || len(got) != len(flags) {
-		t.Fatalf("%v %s %s %+v", ok, runtime, gguf, got)
-	}
-	for i := range flags {
-		if got[i].Name != flags[i].Name || (got[i].Value == nil) != (flags[i].Value == nil) ||
-			(got[i].Value != nil && *got[i].Value != *flags[i].Value) {
-			t.Errorf("flag %d: %+v != %+v", i, got[i], flags[i])
-		}
-	}
-}
-
-func TestAnEditKeepsCommentsAndKeysTheUIDoesNotEdit(t *testing.T) {
-	f := newFixture(t)
-	m := f.model(t, "qwen")
-	m.Flags[0].Value = str("131072")
-	ttl := 900
-	m.TTL = &ttl
-	if err := f.store.SaveModel("qwen", m); err != nil {
-		t.Fatal(err)
-	}
-	out := f.file(t, "qwen.yaml")
-	for _, want := range []string{"# Qwen, the everyday model.", "CUDA_VISIBLE_DEVICES=0", "# keep", "--ctx-size 131072", "ttl: 900"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("lost %q:\n%s", want, out)
-		}
-	}
-}
-
-func TestAnEditLlamaSwapWouldRefuseIsNotWritten(t *testing.T) {
-	f := newFixture(t)
-	before := f.file(t, "qwen.yaml")
-	m := f.model(t, "qwen")
-	m.Raw, m.Cmd = true, "${llama-server} --port ${PORT} --model x.gguf ${no-such-macro}"
-	if err := f.store.SaveModel("qwen", m); err == nil {
-		t.Fatal("an unknown macro was written")
-	}
-	if f.file(t, "qwen.yaml") != before {
-		t.Fatal("the file changed")
-	}
-	m = f.model(t, "qwen")
-	m.Flags = append(m.Flags, Flag{"--port", str("8080")})
-	if err := f.store.SaveModel("qwen", m); err == nil {
-		t.Fatal("--port as a flag was taken")
-	}
-}
-
-func TestCreateRenameAndDelete(t *testing.T) {
-	f := newFixture(t)
-	other := filepath.Join(filepath.Dir(f.gguf), "other.gguf")
-	m := Model{Name: "other", Runtime: "llama-server", GGUF: other, Flags: []Flag{{"--jinja", nil}}}
-	if err := f.store.SaveModel("", m); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.store.SaveModel("", m); err == nil {
-		t.Fatal("created twice")
-	}
-	m = f.model(t, "other")
-	m.Name = "renamed"
-	if err := f.store.SaveModel("other", m); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(f.store.ModelsDir, "other.yaml")); !os.IsNotExist(err) {
-		t.Fatal("the old file is still there")
-	}
-	if !strings.Contains(f.file(t, "renamed.yaml"), "renamed:") {
-		t.Fatal("not renamed")
-	}
-	if err := f.store.SaveModel("renamed", Model{Name: "qwen", Runtime: "llama-server", GGUF: other}); err == nil {
-		t.Fatal("renamed onto an existing model")
-	}
-	if err := f.store.DeleteModel("renamed"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(f.store.ModelsDir, "renamed.yaml")); !os.IsNotExist(err) {
-		t.Fatal("an empty file was left")
-	}
-	ggufs, _ := f.store.GGUFs()
-	if len(ggufs) != 2 || len(ggufs[1].UsedBy) != 1 || ggufs[1].UsedBy[0] != "qwen" {
-		t.Fatalf("%+v", ggufs)
 	}
 }
 
@@ -288,7 +144,8 @@ func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
 		t.Skip("no git")
 	}
 	f := newFixture(t)
-	repo := filepath.Dir(f.store.ModelsDir)
+	f.write(t, "models/qwen.yaml", "cmd: x\n")
+	repo := f.store.repoDir()
 	git := func(args ...string) string {
 		out, err := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=t", "-c", "user.email=t@t"}, args...)...).CombinedOutput()
 		if err != nil {
@@ -302,16 +159,12 @@ func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
 	os.WriteFile(filepath.Join(repo, "base.yaml"), []byte(base+"# the user's own edit\n"), 0o644)
 	git("add", "base.yaml") // staged by the user, not for the UI to commit
 
-	m := f.model(t, "qwen")
-	m.Description = "everyday"
-	if err := f.store.SaveModel("qwen", m); err != nil {
-		t.Fatal(err)
-	}
+	f.write(t, "models/qwen.yaml", "cmd: x\ndescription: everyday\n")
 	st, err := f.store.Git()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(st.Changes) != 1 || !strings.Contains(st.Diff, "+    description: everyday") {
+	if len(st.Changes) != 1 || !strings.Contains(st.Diff, "+description: everyday") {
 		t.Fatalf("%+v", st)
 	}
 	os.Setenv("GIT_AUTHOR_NAME", "t")
@@ -324,7 +177,7 @@ func TestACommitTakesInferMuxsFilesAndNothingElse(t *testing.T) {
 	if staged := git("diff", "--cached", "--name-only"); strings.TrimSpace(staged) != "base.yaml" {
 		t.Fatalf("the user's staged file was touched: %q", staged)
 	}
-	if files := git("show", "--name-only", "--format="); strings.TrimSpace(files) != "models/qwen.yaml" {
+	if files := git("show", "--name-only", "--format="); strings.TrimSpace(files) != "infermux/models/qwen.yaml" {
 		t.Fatalf("committed %q", files)
 	}
 }
@@ -335,7 +188,7 @@ func TestTheUIAnswersOnLoopbackAndTakesOnlyMarkedSameOriginWrites(t *testing.T) 
 	f := newFixture(t)
 	h := Handler(f.store, &Builder{}, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "", "")
 	do := func(method, host string, header map[string]string) int {
-		req := httptest.NewRequest(method, "/api/models/qwen", strings.NewReader("{}"))
+		req := httptest.NewRequest(method, "/api/keys/episteme-batch", strings.NewReader("{}"))
 		req.Host = host
 		for k, v := range header {
 			req.Header.Set(k, v)
@@ -511,59 +364,25 @@ func TestAFailedPrepareIsAFailedBuild(t *testing.T) {
 
 func TestIntentToAddMakesANewModelVisibleToGit(t *testing.T) {
 	f := newFixture(t)
-	repo := filepath.Dir(f.store.ModelsDir)
+	f.write(t, "models/qwen.yaml", "cmd: x\n")
+	repo := f.store.repoDir()
 	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "start"}} {
 		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %s", args, out)
 		}
 	}
-	m := f.model(t, "qwen")
-	m.Name = "fresh"
-	if err := f.store.SaveModel("", m); err != nil {
-		t.Fatal(err)
-	}
-	if out, _ := f.store.git("ls-files", "--", f.store.ModelsDir); strings.Contains(out, "fresh") {
+	f.write(t, "models/fresh.yaml", "cmd: x\n")
+	if out, _ := f.store.git("ls-files", "--", f.store.SignedConfig); strings.Contains(out, "fresh") {
 		t.Fatalf("tracked before: %q", out)
 	}
 	if err := f.store.IntentToAdd(); err != nil {
 		t.Fatal(err)
 	}
-	if out, _ := f.store.git("ls-files", "--", f.store.ModelsDir); !strings.Contains(out, "fresh.yaml") {
+	if out, _ := f.store.git("ls-files", "--", f.store.SignedConfig); !strings.Contains(out, "fresh.yaml") {
 		t.Fatalf("not tracked after: %q", out)
 	}
 	// Only the path is recorded: the content is still the user's to commit.
 	if staged, _ := f.store.git("diff", "--cached", "--name-only"); strings.Contains(staged, "fresh") {
 		t.Fatalf("content staged: %q", staged)
-	}
-}
-
-func TestAModelSaveMakesTheLastBuildStale(t *testing.T) {
-	f := newFixture(t)
-	b := &Builder{Installable: "flake#unit", run: func([]string, io.Writer, io.Writer) error { return nil }}
-	h := Handler(f.store, b, &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, "", "")
-	b.Start()
-	for b.State().Running {
-		time.Sleep(time.Millisecond)
-	}
-	if b.State().Stale {
-		t.Fatal("stale before any change")
-	}
-	m := f.model(t, "qwen")
-	m.Description = "changed"
-	body, _ := json.Marshal(m)
-	req := httptest.NewRequest("PUT", "/api/models/qwen", strings.NewReader(string(body)))
-	req.Host = "127.0.0.1:5010"
-	req.Header.Set("X-InferMux", "1")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("save: %d %s", rec.Code, rec.Body)
-	}
-	if !b.State().Stale {
-		t.Fatal("not stale after a save")
-	}
-	b.Start()
-	if b.State().Stale {
-		t.Fatal("a new build is still stale")
 	}
 }

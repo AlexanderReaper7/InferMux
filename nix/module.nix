@@ -1,15 +1,17 @@
 # InferMux as a system service: llama-swap's router with the warden in front.
 # `settings` is llama-swap's config.yaml as an attribute set: what Nix owns, such
 # as the runtimes' store paths as macros. `configDir` is a directory outside the
-# store with `models/` and `warden.yaml`, which the web UI edits and the daemon
-# reloads without a rebuild (0005). Without it, `warden` is the warden's file.
+# store with `warden.yaml`, which the web UI edits and the daemon reloads
+# without a rebuild (0005). Without it, `warden` is the warden's file.
 # The model servers run as children of this unit, so they share its sandbox and
 # its cgroup, which is what makes their GPU work ours.
 #
 # With `signedConfig.trustedKeys` set, the one config (0022) decides the
-# models, their places and the other hosts instead: the daemon keeps it under
-# its state directory, takes it from the other hosts, and derives its own
-# part into /var/lib/infermux/derived. `configDir`'s `models/` is then unused.
+# models, their places and the other hosts: the daemon keeps it under its
+# state directory, takes it from the other hosts, and derives its own part
+# into /var/lib/infermux/derived. The web UI edits only the one config.
+# Without it, the daemon reads llama-swap's files from `configDir`'s
+# `models/`, and there is no UI.
 self:
 {
   config,
@@ -300,10 +302,9 @@ in
         example = "/home/alice/.config/infermux/config-key.age";
         description = ''
           The key that signs the one config, encrypted with a passphrase by
-          `infermux-config keygen`, readable by `ui.user`. With
-          `signedConfig.trustedKeys` set, the UI edits `signedConfig.seed` in
-          place of `configDir`'s `models/`, and Publish asks for the
-          passphrase to sign (0022, 9).
+          `infermux-config keygen`, readable by `ui.user`. The UI edits
+          `signedConfig.seed`, and Publish asks for the passphrase to sign
+          (0022, 9).
         '';
       };
       daemonKeyFile = lib.mkOption {
@@ -323,23 +324,13 @@ in
           pinentry, where a signed commit would otherwise fail. Decision 0008.
         '';
       };
-      hfDir = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        example = "/srv/models/hf";
-        description = ''
-          Where a model's files named on Hugging Face (`metadata.hf`) are
-          downloaded to, as org/repo/file.gguf, writable by `ui.user`. The
-          daemon must be able to read it. null: a model cannot name one.
-          Decision 0012.
-        '';
-      };
       hfTokenFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = ''
-          A file, readable by `ui.user`, with a Hugging Face token for gated
-          and private repos. Sent to huggingface.co only, not to its CDN.
+          A file, readable by `ui.user`, with a Hugging Face token, for Add
+          model's lookup of a file's SHA-256 in gated and private repos. Sent
+          to huggingface.co only.
         '';
       };
 
@@ -421,8 +412,8 @@ in
           message = "services.infermux.ui needs services.infermux.configDir: the UI edits those files.";
         }
         {
-          assertion = cfg.ui.enable && signed -> cfg.signedConfig.seed != null && cfg.ui.configKey != null;
-          message = "services.infermux.ui with the one config needs signedConfig.seed, the copy it edits, and ui.configKey, the key Publish signs with.";
+          assertion = cfg.ui.enable -> signed && cfg.signedConfig.seed != null && cfg.ui.configKey != null;
+          message = "services.infermux.ui edits the one config: it needs signedConfig.trustedKeys, signedConfig.seed, the copy it edits, and ui.configKey, the key Publish signs with.";
         }
         {
           assertion = cfg.signedConfig.seed != null -> signed;
@@ -578,21 +569,11 @@ in
               "-daemon"
               "http://${cfg.listen}"
             ]
-            ++ (
-              if signed then
-                [
-                  "-signed-config"
-                  cfg.signedConfig.seed
-                  "-config-key"
-                  cfg.ui.configKey
-                ]
-              else
-                [
-                  "-models-dir"
-                  modelsDir
-                ]
-            )
             ++ [
+              "-signed-config"
+              cfg.signedConfig.seed
+              "-config-key"
+              cfg.ui.configKey
               "-warden-config"
               wardenFile
               "-base-config"
@@ -621,10 +602,6 @@ in
             ++ lib.optionals (cfg.ui.daemonKeyFile != null) [
               "-daemon-key-file"
               cfg.ui.daemonKeyFile
-            ]
-            ++ lib.optionals (cfg.ui.hfDir != null) [
-              "-hf-dir"
-              cfg.ui.hfDir
             ]
             ++ lib.optionals (cfg.ui.hfTokenFile != null) [
               "-hf-token-file"

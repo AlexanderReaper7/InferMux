@@ -323,8 +323,8 @@ func TestAKeyAllowedNoModelStaysThatWay(t *testing.T) {
 func TestTheKeysFilesAreCommittedWithTheRest(t *testing.T) {
 	f := newFixture(t)
 	withSops(t, f)
-	repo := filepath.Dir(f.store.ModelsDir)
-	for _, args := range [][]string{{"init", "-q"}, {"add", "models", "warden.yaml", "base.yaml", "gguf"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "start"}} {
+	repo := f.store.repoDir()
+	for _, args := range [][]string{{"init", "-q"}, {"add", "warden.yaml", "base.yaml", "gguf"}, {"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "start"}} {
 		if out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %s", args, out)
 		}

@@ -136,7 +136,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	}
 	var one *oneConfig
 	if *flagConfigTrustedKeys != "" {
-		if err := checkOneConfig(cfg); err != nil {
+		if err := cfg.CheckOneConfig(); err != nil {
 			slog.Error("the warden config does not fit the one config", "warden-config", path, "error", err)
 			os.Exit(1)
 		}
@@ -315,7 +315,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			return
 		}
 		if one != nil {
-			if err := checkOneConfig(cfg); err != nil {
+			if err := cfg.CheckOneConfig(); err != nil {
 				log.Warnf("Warden settings not reloaded: %v", err)
 				return
 			}
@@ -367,20 +367,6 @@ func jobsFile() string {
 		return filepath.Join(dir, "jobs.json")
 	}
 	return ""
-}
-
-// checkOneConfig refuses the warden settings the one config replaced, so a
-// host cannot route by two tables at once (0022).
-func checkOneConfig(cfg warden.Config) error {
-	switch {
-	case cfg.Host == "":
-		return errors.New("host is needed: it names this host's part of the config")
-	case len(cfg.Remotes) > 0:
-		return errors.New("remotes come from the config's hosts; remove them here and set remote_key_file")
-	case cfg.FailoverFile != "":
-		return errors.New("failover_file is replaced by the config's balance and failover lanes")
-	}
-	return nil
 }
 
 // devicesOf is each local model's devices as the warden measures them: the

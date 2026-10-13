@@ -13,7 +13,6 @@
       const ui = await api.state();
       cfg = ui.warden;
       cfg.consumers ??= [];
-      cfg.remotes ??= [];
       path = ui.paths.warden_file;
       lists = {
         our_units: (cfg.our_units ?? []).join("\n"),
@@ -195,7 +194,7 @@
         <label class="flex flex-col gap-1">
           <span class="label">This host</span>
           <input bind:value={cfg.host} />
-          <span class="text-xs text-neutral-500">Its models are &lt;host&gt;/&lt;model&gt; to a key's allow list.</span>
+          <span class="text-xs text-neutral-500">Names this host's part of the one config, and its models are &lt;host&gt;/&lt;model&gt; to a key's allow list.</span>
         </label>
         <label class="flex flex-col gap-1">
           <span class="label">Keys file, empty for no keys</span>
@@ -203,22 +202,6 @@
           <span class="text-xs text-neutral-500">Relative to this file. With it, every request but the health checks needs a key.</span>
         </label>
       </div>
-      <table class="mt-4 w-full text-sm">
-        <thead class="text-left text-neutral-500">
-          <tr><th class="py-1 font-normal">Remote host</th><th class="font-normal">URL</th><th class="font-normal">Key file</th><th></th></tr>
-        </thead>
-        <tbody>
-          {#each cfg.remotes ?? [] as r, i}
-            <tr>
-              <td class="py-1 pr-2"><input class="w-full" bind:value={r.name} /></td>
-              <td class="pr-2"><input class="w-full" bind:value={r.url} /></td>
-              <td class="pr-2"><input class="w-full" bind:value={r.key_file} /></td>
-              <td><button class="text-neutral-500 hover:text-red-400" onclick={() => cfg!.remotes!.splice(i, 1)}>✕</button></td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-      <button class="btn mt-2" onclick={() => cfg!.remotes!.push({ name: "", url: "", key_file: "" })}>Add remote host</button>
     </section>
 
     <section class="card lg:col-span-2">

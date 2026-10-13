@@ -210,7 +210,7 @@ func (s *Store) hfFile(source string) (string, int64, error) {
 	}
 	d := s.HF
 	if d == nil {
-		d = &Downloads{}
+		d = &HuggingFace{}
 	}
 	tag, size, err := d.etag(source)
 	if err != nil {
@@ -321,8 +321,8 @@ func (s *Store) host() (string, error) {
 	return cfg.Host, nil
 }
 
-// configRoutes are /api/config/*, set when the UI edits the one config.
-func configRoutes(mux *http.ServeMux, store *Store, d daemonClient) {
+// configRoutes are /api/config/*, the one config's editor (0022, 9).
+func configRoutes(mux *http.ServeMux, store *Store, build *Builder, d daemonClient) {
 	mux.HandleFunc("GET /api/config/schema", func(rw http.ResponseWriter, r *http.Request) {
 		reply(rw, map[string]any{"main": placement.Schema(), "model": placement.ModelSchema()})
 	})
@@ -350,6 +350,7 @@ func configRoutes(mux *http.ServeMux, store *Store, d daemonClient) {
 		case err != nil:
 			fail(rw, err)
 		default:
+			build.Outdated()
 			reply(rw, res)
 		}
 	})

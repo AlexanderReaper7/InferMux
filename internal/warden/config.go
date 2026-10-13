@@ -9,6 +9,7 @@
 package warden
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -302,6 +303,20 @@ func LoadConfig(path string) (Config, error) {
 		return cfg, fmt.Errorf("%s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// CheckOneConfig refuses the settings the one config replaced, so a host
+// cannot route by two tables at once (0022).
+func (c Config) CheckOneConfig() error {
+	switch {
+	case c.Host == "":
+		return errors.New("host is needed: it names this host's part of the config")
+	case len(c.Remotes) > 0:
+		return errors.New("remotes come from the config's hosts; remove them here and set remote_key_file")
+	case c.FailoverFile != "":
+		return errors.New("failover_file is replaced by the config's balance and failover lanes")
+	}
+	return nil
 }
 
 // check refuses a number no one could mean, rather than quietly running on

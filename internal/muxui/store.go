@@ -8,12 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 
-	"github.com/mostlygeek/llama-swap/internal/config"
 	"github.com/mostlygeek/llama-swap/internal/warden"
 	"gopkg.in/yaml.v3"
 )
@@ -22,7 +20,6 @@ import (
 // written that llama-swap's or the warden's own loader refuses: a bad edit
 // fails here, not as a reload the daemon logs and ignores.
 type Store struct {
-	ModelsDir  string   // llama-swap's -config-dir
 	WardenFile string   // the warden's -warden-config
 	BaseConfig string   // llama-swap's -config, from Nix: the runtimes' macros and global settings
 	GGUFDirs   []string // where to look for model files
@@ -41,34 +38,20 @@ type Store struct {
 	// empty: for a host with no session to show a pinentry (0008).
 	CommitPassphrase bool
 	GPG              string
-	// HF downloads a model's files from Hugging Face when it is saved (0012).
-	// Nil: a model cannot name a Hugging Face source.
-	HF *Downloads
+	// HF is where Add model reads a Hugging Face file's SHA-256; nil asks
+	// huggingface.co with no token.
+	HF *HuggingFace
 	// SignedConfig is nixcfg's copy of the one config, which the daemons
 	// start from, and ConfigKey the key that signs it, encrypted with a
-	// passphrase (0022). Set, the UI edits the one config, and ModelsDir
-	// may be empty.
+	// passphrase (0022).
 	SignedConfig string
 	ConfigKey    string
 
 	mu sync.Mutex
 }
 
-// ErrNotFound is a model that is not in any file.
-var ErrNotFound = errors.New("no such model")
-
-func (s *Store) Models() ([]Model, error) {
-	// Under the one config the models are in its files, which the browser
-	// reads from the daemon.
-	if s.ModelsDir == "" {
-		return []Model{}, nil
-	}
-	files, err := readModelFiles(s.ModelsDir)
-	if err != nil {
-		return nil, err
-	}
-	return listModels(files), nil
-}
+// ErrNotFound is a key that is not in the keys file.
+var ErrNotFound = errors.New("not found")
 
 // Runtimes are the global macros of the Nix-generated config: the runtimes a
 // model's cmd can start with, by name, with what they expand to.
@@ -87,221 +70,6 @@ func (s *Store) Runtimes() (map[string]string, error) {
 		doc.Macros = map[string]string{}
 	}
 	return doc.Macros, nil
-}
-
-// SaveModel creates a model (original empty) or replaces one, renaming it if
-// m.Name differs from original. A new model gets a file of its own.
-func (s *Store) SaveModel(original string, m Model) error {
-	if err := checkName(m.Name); err != nil {
-		return err
-	}
-	if m.HF != nil && len(m.HF.sources()) == 0 {
-		m.HF = nil
-	}
-	if m.HF != nil {
-		if s.HF == nil {
-			return fmt.Errorf("this UI has no download directory for Hugging Face files")
-		}
-		if err := fromHF(&m, s.HF); err != nil {
-			return err
-		}
-	} else if !m.Raw && filepath.IsAbs(m.GGUF) {
-		if _, err := os.Stat(m.GGUF); err != nil {
-			return fmt.Errorf("the GGUF: %w", err)
-		}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	files, err := readModelFiles(s.ModelsDir)
-	if err != nil {
-		return err
-	}
-	byFile := map[string]modelFile{}
-	where := map[string]string{} // model name -> file
-	for _, f := range files {
-		byFile[f.name] = f
-		if models := mappingValue(f.root(), "models", false); models != nil {
-			for i := 0; i+1 < len(models.Content); i += 2 {
-				where[models.Content[i].Value] = f.name
-			}
-		}
-	}
-	if m.Name != original {
-		if _, taken := where[m.Name]; taken {
-			return fmt.Errorf("a model named %s already exists", m.Name)
-		}
-	}
-
-	changed := map[string][]byte{}
-	var node *yaml.Node
-	target := m.Name + ".yaml"
-	if original == "" {
-		if _, exists := byFile[target]; exists {
-			return fmt.Errorf("%s already exists", target)
-		}
-		f := modelFile{name: target, doc: &yaml.Node{}}
-		node = &yaml.Node{Kind: yaml.MappingNode}
-		f.models().Content = append(f.models().Content, &yaml.Node{Kind: yaml.ScalarNode, Value: m.Name}, node)
-		byFile[target] = f
-	} else {
-		name, ok := where[original]
-		if !ok {
-			return ErrNotFound
-		}
-		f := byFile[name]
-		models := f.models()
-		for i := 0; i+1 < len(models.Content); i += 2 {
-			if models.Content[i].Value == original {
-				models.Content[i].Value = m.Name
-				node = models.Content[i+1]
-			}
-		}
-		target = name
-		// A file named after its only model follows the model's name.
-		if m.Name != original && name == original+".yaml" && len(models.Content) == 2 {
-			if _, exists := byFile[m.Name+".yaml"]; exists {
-				return fmt.Errorf("%s.yaml already exists", m.Name)
-			}
-			changed[name] = nil
-			delete(byFile, name)
-			target = m.Name + ".yaml"
-			f.name = target
-			byFile[target] = f
-		}
-	}
-	if err := encodeModel(node, m); err != nil {
-		return err
-	}
-	out, err := byFile[target].bytes()
-	if err != nil {
-		return err
-	}
-	changed[target] = out
-	if err := s.apply(files, changed); err != nil {
-		return err
-	}
-	if m.HF != nil {
-		s.HF.Fetch(m.HF.sources()...)
-	}
-	return nil
-}
-
-func (s *Store) DeleteModel(name string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	files, err := readModelFiles(s.ModelsDir)
-	if err != nil {
-		return err
-	}
-	for _, f := range files {
-		models := mappingValue(f.root(), "models", false)
-		if models == nil || !deleteKey(models, name) {
-			continue
-		}
-		changed := map[string][]byte{}
-		if len(models.Content) == 0 && len(f.root().Content) == 2 {
-			changed[f.name] = nil // the file held nothing else
-		} else {
-			out, err := f.bytes()
-			if err != nil {
-				return err
-			}
-			changed[f.name] = out
-		}
-		return s.apply(files, changed)
-	}
-	return ErrNotFound
-}
-
-// apply validates the models directory as it would be after the change, with
-// llama-swap's loader and the Nix base config, then writes it. A nil content
-// deletes the file.
-func (s *Store) apply(files []modelFile, changed map[string][]byte) error {
-	tmp, err := os.MkdirTemp("", "infermux-ui-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmp)
-	models := filepath.Join(tmp, "models")
-	if err := os.Mkdir(models, 0o755); err != nil {
-		return err
-	}
-	for _, f := range files {
-		if _, ok := changed[f.name]; ok {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(s.ModelsDir, f.name))
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(models, f.name), withoutDaemonEnv(raw), 0o644); err != nil {
-			return err
-		}
-	}
-	for name, raw := range changed {
-		if raw == nil {
-			continue
-		}
-		if err := os.WriteFile(filepath.Join(models, name), withoutDaemonEnv(raw), 0o644); err != nil {
-			return err
-		}
-	}
-	base, err := os.ReadFile(s.BaseConfig)
-	if err != nil {
-		return err
-	}
-	baseCopy := filepath.Join(tmp, "config.yaml")
-	if err := os.WriteFile(baseCopy, withoutDaemonEnv(base), 0o644); err != nil {
-		return err
-	}
-	cfg, err := config.LoadConfigSources(baseCopy, models)
-	if err != nil {
-		return fmt.Errorf("llama-swap would refuse this: %w", err)
-	}
-	// llama-swap takes a group member no model has, and the model it meant
-	// then swaps with everything.
-	for id, g := range cfg.Groups {
-		for _, member := range g.Members {
-			if _, ok := cfg.RealModelName(member); !ok {
-				return fmt.Errorf("group %s names %s, which is not a model", id, member)
-			}
-		}
-	}
-	names := make([]string, 0, len(changed))
-	for name := range changed {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	// Writes before deletions, so a rename never leaves the model in no file.
-	for _, name := range names {
-		if raw := changed[name]; raw != nil {
-			if err := writeAtomic(filepath.Join(s.ModelsDir, name), raw); err != nil {
-				return err
-			}
-		}
-	}
-	for _, name := range names {
-		if changed[name] == nil {
-			if err := os.Remove(filepath.Join(s.ModelsDir, name)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// writeAtomic replaces path in one rename. The temporary name does not end in
-// .yaml, so the daemon's directory watcher never reads a half-written file.
-// daemonEnv is llama-swap's ${env.NAME}.
-var daemonEnv = regexp.MustCompile(`\$\{env\.[a-zA-Z_][a-zA-Z0-9_]*\}`)
-
-// withoutDaemonEnv fills every ${env.NAME} with a placeholder, for the check
-// only. The daemon's environment is not the UI's: a peer's key reaches the
-// daemon alone, and the UI never holds it. A name missing from the daemon's
-// environment fails at the daemon's reload instead.
-func withoutDaemonEnv(raw []byte) []byte {
-	return daemonEnv.ReplaceAll(raw, []byte("infermux-ui-placeholder"))
 }
 
 // writeAtomic replaces the file at path, or the file a symlink there points
@@ -367,7 +135,11 @@ func (s *Store) SaveWarden(cfg warden.Config) error {
 	defer os.Remove(tmp.Name())
 	tmp.Write(buf.Bytes())
 	tmp.Close()
-	if _, err := warden.LoadConfig(tmp.Name()); err != nil {
+	loaded, err := warden.LoadConfig(tmp.Name())
+	if err == nil {
+		err = loaded.CheckOneConfig()
+	}
+	if err != nil {
 		return fmt.Errorf("the warden would refuse this: %w", err)
 	}
 	return writeAtomic(s.WardenFile, buf.Bytes())
@@ -391,7 +163,7 @@ func mergeNode(old, next *yaml.Node) *yaml.Node {
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(next.Content); i += 2 {
 			key, value := next.Content[i], next.Content[i+1]
-			if v := mappingValue(old, key.Value, false); v != nil {
+			if v := mappingValue(old, key.Value); v != nil {
 				setValueNode(old, key.Value, mergeNode(v, value))
 			} else {
 				old.Content = append(old.Content, key, value)
@@ -433,7 +205,7 @@ func sameItem(a, b *yaml.Node) bool {
 	case yaml.ScalarNode:
 		return a.Value == b.Value
 	case yaml.MappingNode:
-		an, bn := mappingValue(a, "name", false), mappingValue(b, "name", false)
+		an, bn := mappingValue(a, "name"), mappingValue(b, "name")
 		return an != nil && bn != nil && an.Value == bn.Value
 	}
 	return false
@@ -442,11 +214,11 @@ func sameItem(a, b *yaml.Node) bool {
 // named is whether an item can only be matched by its name, which keeps a
 // removed consumer's comment from landing on the next one by position.
 func named(n *yaml.Node) bool {
-	return n.Kind == yaml.ScalarNode || (n.Kind == yaml.MappingNode && mappingValue(n, "name", false) != nil)
+	return n.Kind == yaml.ScalarNode || (n.Kind == yaml.MappingNode && mappingValue(n, "name") != nil)
 }
 
 // setValueNode replaces a key's value node in place, comments travelling with
-// the node rather than being copied the way setValue copies them.
+// the node rather than being copied from the old value.
 func setValueNode(m *yaml.Node, key string, v *yaml.Node) {
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value == key {
@@ -456,31 +228,24 @@ func setValueNode(m *yaml.Node, key string, v *yaml.Node) {
 	}
 }
 
-// GGUF is a model file on disk and the models that use it.
+// mappingValue is key's value in the mapping m, nil when it has none.
+func mappingValue(m *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// GGUF is a model file on disk.
 type GGUF struct {
-	Path   string   `json:"path"`
-	Bytes  int64    `json:"bytes"`
-	UsedBy []string `json:"used_by"`
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
 }
 
 // GGUFs lists the .gguf files up to three levels under each GGUF directory.
 func (s *Store) GGUFs() ([]GGUF, error) {
-	models, err := s.Models()
-	if err != nil {
-		return nil, err
-	}
-	used := map[string][]string{}
-	for _, m := range models {
-		if m.Raw {
-			continue
-		}
-		used[m.GGUF] = append(used[m.GGUF], m.Name)
-		for _, f := range m.Flags {
-			if f.Value != nil && strings.HasSuffix(*f.Value, ".gguf") {
-				used[*f.Value] = append(used[*f.Value], m.Name)
-			}
-		}
-	}
 	out := []GGUF{}
 	for _, root := range s.GGUFDirs {
 		filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -498,11 +263,7 @@ func (s *Store) GGUFs() ([]GGUF, error) {
 			if err != nil {
 				return nil
 			}
-			by := used[path]
-			if by == nil {
-				by = []string{}
-			}
-			out = append(out, GGUF{Path: path, Bytes: info.Size(), UsedBy: by})
+			out = append(out, GGUF{Path: path, Bytes: info.Size()})
 			return nil
 		})
 	}
@@ -527,35 +288,16 @@ type GitState struct {
 // from the repository sees them; Nix copies only what git tracks. The files'
 // content stays unstaged, and Commit adds it as before.
 func (s *Store) IntentToAdd() error {
-	if s.ModelsDir == "" {
-		return nil
-	}
-	_, err := s.git("add", "--intent-to-add", "--", s.ModelsDir)
+	_, err := s.git("add", "--intent-to-add", "--", s.SignedConfig)
 	return err
 }
 
-// paths is what Git shows and Commit commits. The keys' two files count once
-// they exist: git refuses a path that matches nothing. A models file that is a
-// symlink brings the file it points to, which may sit outside ModelsDir.
+// paths is what Git shows and Commit commits. The config's copy and the keys'
+// two files count once they exist: git refuses a path that matches nothing.
 func (s *Store) paths() []string {
 	paths := []string{s.WardenFile}
-	for _, dir := range []string{s.ModelsDir, s.SignedConfig} {
-		if _, err := os.Stat(dir); dir != "" && err == nil {
-			paths = append(paths, dir)
-		}
-	}
-	if entries, err := os.ReadDir(s.ModelsDir); err == nil {
-		for _, e := range entries {
-			if e.Type()&fs.ModeSymlink == 0 {
-				continue
-			}
-			if real, err := filepath.EvalSymlinks(filepath.Join(s.ModelsDir, e.Name())); err == nil {
-				paths = append(paths, real)
-			}
-		}
-	}
 	keys, _ := s.keysPath()
-	for _, p := range []string{keys, s.KeySecrets} {
+	for _, p := range []string{s.SignedConfig, keys, s.KeySecrets} {
 		if _, err := os.Stat(p); p != "" && err == nil {
 			paths = append(paths, p)
 		}
@@ -569,9 +311,6 @@ func (s *Store) git(args ...string) (string, error) {
 
 // repoDir is a directory inside the repository the UI edits.
 func (s *Store) repoDir() string {
-	if s.ModelsDir != "" {
-		return s.ModelsDir
-	}
 	return filepath.Dir(s.WardenFile)
 }
 

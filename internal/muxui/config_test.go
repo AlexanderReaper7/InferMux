@@ -108,8 +108,6 @@ func newConfigUI(t *testing.T) configUI {
 	}
 	f.store.ConfigKey = filepath.Join(dir, "config.key")
 	os.WriteFile(f.store.ConfigKey, encrypted, 0o600)
-	f.store.SignedConfig = filepath.Join(dir, "infermux")
-	f.store.ModelsDir = ""
 	d := newFakeDaemon(t, pub)
 	u, _ := url.Parse(d.URL)
 	return configUI{ui: ui{t: t, f: f, h: Handler(f.store, &Builder{}, u, "ui-key", "")}, daemon: d}
@@ -276,7 +274,7 @@ func TestHashAndHuggingFace(t *testing.T) {
 		}
 	}))
 	defer hf.Close()
-	u.f.store.HF = &Downloads{BaseURL: hf.URL}
+	u.f.store.HF = &HuggingFace{BaseURL: hf.URL}
 	code, out = u.call("GET", "/api/config/hf?source=org/repo/m.gguf", nil)
 	u.want(code, 200, out, "an LFS file")
 	if out["sha256"] != lfs || out["bytes"] != float64(123) {
@@ -289,19 +287,25 @@ func TestHashAndHuggingFace(t *testing.T) {
 	}
 }
 
-func TestNoConfigRoutesWithoutTheOneConfig(t *testing.T) {
-	u := newUI(t)
-	code, _ := u.call("POST", "/api/config/check", map[string]any{"files": map[string]string{}})
-	if code != http.StatusNotFound {
-		t.Errorf("check without the one config: %d", code)
+func TestAPublishMakesTheLastBuildStale(t *testing.T) {
+	u := newConfigUI(t)
+	b := &Builder{Installable: "flake#unit", run: func([]string, io.Writer, io.Writer) error { return nil }}
+	d, _ := url.Parse(u.daemon.URL)
+	u.h = Handler(u.f.store, b, d, "ui-key", "")
+	b.Start()
+	for b.State().Running {
+		time.Sleep(time.Millisecond)
 	}
-	_, out := u.call("GET", "/api/state", nil)
-	if out["signed_config"] != false {
-		t.Errorf("state %v", out["signed_config"])
+	if b.State().Stale {
+		t.Fatal("stale before any change")
 	}
-	c := newConfigUI(t)
-	_, out = c.call("GET", "/api/state", nil)
-	if out["signed_config"] != true || len(out["models"].([]any)) != 0 {
-		t.Errorf("state under the one config: %v", out)
+	code, out := u.call("POST", "/api/config/publish", map[string]any{"files": draft(u.f.gguf, ""), "base": "", "passphrase": "the passphrase"})
+	u.want(code, 200, out, "publish")
+	if !b.State().Stale {
+		t.Fatal("not stale after a Publish")
+	}
+	b.Start()
+	if b.State().Stale {
+		t.Fatal("a new build is still stale")
 	}
 }
