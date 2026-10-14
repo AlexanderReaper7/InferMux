@@ -26,7 +26,26 @@ import (
 
 type nopLog struct{}
 
-func (nopLog) Warnf(string, ...any) {}
+func (nopLog) Debugf(string, ...any) {}
+func (nopLog) Warnf(string, ...any)  {}
+
+// lines records each line the handler logs, by its level.
+type lines struct {
+	mu          sync.Mutex
+	debug, warn []string
+}
+
+func (l *lines) Debugf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.debug = append(l.debug, fmt.Sprintf(format, args...))
+}
+
+func (l *lines) Warnf(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warn = append(l.warn, fmt.Sprintf(format, args...))
+}
 
 // places answers each model name with its status, records what arrived, and
 // sets a header of its own on every answer, so a test sees whether a dropped
@@ -513,6 +532,45 @@ func TestTheFailoverLane(t *testing.T) {
 	h.Set(map[string][]Place{"m": {{Place: "zbox"}, {Place: "strix"}, {Place: "strix/m@cpu", Failover: true, BatchOnly: true}}})
 	if rw := post(t, h, "m", nil); rw.Code != 502 || fmt.Sprint(p.attempts) != "[zbox/m m]" {
 		t.Fatalf("attempts %v status %d", p.attempts, rw.Code)
+	}
+}
+
+// A place at its limit is logged at debug and every other failure at WARN:
+// the zbox's capacity answer is the balance working, one line per request
+// that finds its slot taken (0019).
+func TestACapacityAnswerIsLoggedAtDebug(t *testing.T) {
+	lanes := map[string][]Place{"m": {
+		{Place: "zbox", MaxInflight: 1},
+		{Place: "strix", MaxInflight: 1, OnlyIfIdle: true},
+		{Place: "strix/m@cpu", Failover: true},
+	}}
+	toStrix := "Failover: zbox/m answered %d, trying m"
+	toCPU := "Failover: m answered 503, the last balance place; trying the failover lane at m@cpu"
+	for _, tc := range []struct {
+		name        string
+		status      map[string]int
+		busy        map[string]string
+		debug, warn []string
+	}{
+		{"at its limit", nil, map[string]string{"zbox/m": "capacity"}, []string{fmt.Sprintf(toStrix, 503)}, nil},
+		{"at its limit, then a yielded card", nil, map[string]string{"zbox/m": "capacity", "m": "yielded"}, []string{fmt.Sprintf(toStrix, 503)}, nil},
+		{"down", map[string]int{"zbox/m": 502}, nil, nil, []string{fmt.Sprintf(toStrix, 502)}},
+		{"timed out", map[string]int{"zbox/m": 504}, nil, nil, []string{fmt.Sprintf(toStrix, 504)}},
+		{"refusing", map[string]int{"zbox/m": 503}, nil, nil, []string{fmt.Sprintf(toStrix, 503)}},
+		{"down, then a card at its limit", map[string]int{"zbox/m": 502}, map[string]string{"m": "capacity"}, []string{toCPU}, []string{fmt.Sprintf(toStrix, 502)}},
+		{"down, then a yielded card", map[string]int{"zbox/m": 502}, map[string]string{"m": "yielded"}, nil, []string{fmt.Sprintf(toStrix, 502), toCPU}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &lines{}
+			h := New(&busyPlaces{places: places{status: tc.status}, busy: tc.busy}, "strix", log)
+			h.Set(lanes)
+			if rw := post(t, h, "m", nil); rw.Code != 200 {
+				t.Fatalf("status %d", rw.Code)
+			}
+			if fmt.Sprint(log.debug) != fmt.Sprint(tc.debug) || fmt.Sprint(log.warn) != fmt.Sprint(tc.warn) {
+				t.Fatalf("debug %q warn %q, want %q and %q", log.debug, log.warn, tc.debug, tc.warn)
+			}
+		})
 	}
 }
 

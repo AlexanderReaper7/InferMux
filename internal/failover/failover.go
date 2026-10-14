@@ -30,6 +30,7 @@ import (
 
 // Logger is the part of llama-swap's proxy log this writes to.
 type Logger interface {
+	Debugf(format string, args ...any)
 	Warnf(format string, args ...any)
 }
 
@@ -153,11 +154,17 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 				copy := place
 				queue = &copy
 			}
+			// A place at its limit is the balance working, not a failure,
+			// and its host's /warden/requests counts each one (0019).
+			logf := h.log.Warnf
+			if held.header.Get(BusyHeader) == "capacity" {
+				logf = h.log.Debugf
+			}
 			switch {
 			case i+1 < len(lane):
-				h.log.Warnf("Failover: %s answered %d, trying %s", h.name(place.Place, model), held.status, h.name(lane[i+1].Place, model))
+				logf("Failover: %s answered %d, trying %s", h.name(place.Place, model), held.status, h.name(lane[i+1].Place, model))
 			case len(next) > 0 && queue == nil:
-				h.log.Warnf("Failover: %s answered %d, the last balance place; trying the failover lane at %s", h.name(place.Place, model), held.status, h.name(next[0].Place, model))
+				logf("Failover: %s answered %d, the last balance place; trying the failover lane at %s", h.name(place.Place, model), held.status, h.name(next[0].Place, model))
 			}
 		}
 		return false, queue
