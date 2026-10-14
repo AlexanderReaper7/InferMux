@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mostlygeek/llama-swap/internal/drain"
 	"github.com/mostlygeek/llama-swap/internal/failover"
 	"github.com/mostlygeek/llama-swap/internal/warden"
 )
@@ -770,6 +771,33 @@ func TestADrainLetsTheRunningAttemptFinishAndStartsNoOther(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if s.Attempting() != 0 || m.attempts() != 1 || waiting.Snapshot(false).State != Queued {
 		t.Fatalf("attempting %d, %d attempts, the new job %s", s.Attempting(), m.attempts(), waiting.Snapshot(false).State)
+	}
+}
+
+// sol, review 11: a runner that wait let go, held off the CPU until Drain
+// returned and the stop saw no attempt running, starts none after it.
+func TestADrainBetweenWaitAndAttemptStartsNothing(t *testing.T) {
+	calls := 0
+	s := newStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[]}`))
+	}))
+	// No runner of its own: the test is the runner, one step at a time.
+	j := &Job{id: "r11", client: "episteme", path: "/v1/chat/completions", model: "qwen", kind: chat, request: []byte(chatBody), auth: http.Header{}, state: Queued, changed: make(chan struct{}), nudge: make(chan struct{}, 1)}
+	if !s.wait(j) {
+		t.Fatal("the job may not go")
+	}
+	s.Drain()
+	if !drain.Wait(time.Second, s.Attempting) {
+		t.Fatalf("attempting %d after Drain", s.Attempting())
+	}
+	goes := s.attempt(j)
+	if calls != 0 {
+		t.Fatalf("%d attempt(s) sent after the drain saw none running", calls)
+	}
+	if !goes {
+		t.Fatal("the runner stopped instead of waiting for Stop")
 	}
 }
 

@@ -44,7 +44,8 @@ func (s *Store) wait(j *Job) bool {
 		now := s.now()
 		switch {
 		case s.draining.Load():
-			// Until Stop: the attempt would be cut.
+			// Until Stop: the attempt would be cut. begin is what holds
+			// an attempt that this let go just before Drain.
 		case j.auth == nil && s.keysRequired():
 			// Read back after a restart: the client's key comes with its
 			// next request for the job (Rekey).
@@ -73,6 +74,11 @@ func (s *Store) wait(j *Job) bool {
 // attempt is one try at the rest of the job's reply. It is false when the
 // runner should stop.
 func (s *Store) attempt(j *Job) bool {
+	if !s.begin() {
+		// Drain came after wait: the next wait holds the job until Stop.
+		return true
+	}
+	defer s.attempting.Add(-1)
 	ctx, stop := context.WithCancelCause(s.base)
 	defer stop(nil)
 	j.mu.Lock()
@@ -108,9 +114,7 @@ func (s *Store) attempt(j *Job) bool {
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "127.0.0.1:0"
 	out := &attemptWriter{job: j, header: http.Header{}, store: s}
-	s.attempting.Add(1)
 	broke := serve(s.Serve, out, req)
-	s.attempting.Add(-1)
 	cause := context.Cause(ctx)
 
 	j.mu.Lock()

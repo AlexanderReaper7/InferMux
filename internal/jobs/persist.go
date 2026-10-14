@@ -37,7 +37,25 @@ type savedJob struct {
 
 // Drain starts no new attempt from now on and lets the ones running go on,
 // for a deploy's stop to wait for (0026). Stop pauses what is still running.
-func (s *Store) Drain() { s.draining.Store(true) }
+func (s *Store) Drain() {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	s.draining.Store(true)
+}
+
+// begin counts an attempt about to start, or refuses it once Drain has
+// begun. The check and the count are one step under drainMu: a runner that
+// wait let go just before Drain either is counted before Drain returns, or
+// starts nothing (sol, review 11).
+func (s *Store) begin() bool {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	if s.draining.Load() {
+		return false
+	}
+	s.attempting.Add(1)
+	return true
+}
 
 // Attempting is how many attempts are running.
 func (s *Store) Attempting() int { return int(s.attempting.Load()) }

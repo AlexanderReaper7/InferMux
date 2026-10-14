@@ -115,7 +115,9 @@ type Store struct {
 	Limit int
 
 	// draining: a deploy's stop waits for the attempts running and starts
-	// no new one (0026). attempting is how many run.
+	// no new one (0026). attempting is how many run. begin and Drain take
+	// drainMu, so no attempt starts uncounted once Drain has returned.
+	drainMu    sync.Mutex
 	draining   atomic.Bool
 	attempting atomic.Int64
 
