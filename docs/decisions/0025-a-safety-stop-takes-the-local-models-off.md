@@ -1,7 +1,7 @@
 # 0025. A safety stop takes the local models off and leaves the daemon up
 
 - Date: 2026-10-14
-- Status: accepted; built and tested 2026-10-14, not yet deployed (Verification, below)
+- Status: accepted; built 2026-10-14 and running on the zbox since (nixcfg `dbdb36f`), the off file set by hand only (Verification, below)
 - Amends [0004](0004-infermux-request-priority.md): a second exception to "the user's own request is never killed". Keeps [0009](0009-the-gate-is-for-this-hosts-card.md) (another host's and a cloud's requests pass), [0016](0016-a-model-fails-over-between-places.md) (a 503 fails over) and [0023](0023-a-batch-request-is-a-job-paused-mid-inference.md) (a job's request is paused, not lost).
 
 ## Context
@@ -42,4 +42,4 @@ Tests, run 2026-10-14:
 - nixcfg's `tests/zbox-quiet-hours.py`, 11 tests: the file written at a thermal pause and removed at the resume and by day, the daemon left up, `prepare` at night and by day, the 10 s fallback stop, and the cgroup count leaving out the daemon.
 - Five Go mutations each failed them: no off check in the gate, only batch cancelled, no backstop, a cancel with the hand-cancel's device, and no wake when back on. So did seven of the controller: no wait for the models, `prepare` writing nothing, `prepare` removing nothing, a resume leaving the file, a thermal pause stopping the daemon, the daemon counted as a model, and the daytime cleanup leaving the file.
 
-Not deployed. To watch on the zbox: a local request refused with 503 while the file is there and a cloud chat passing, the models stopping within a second, a thermal pause at night that leaves the daemon up, and a restart at night that starts no model.
+Live on the zbox, 2026-10-14 by day, with the file written by hand ([verification.md](../verification.md)): Octen stopped 0.7 s after the write, a request for `immich-ml` got 503 `off` with the file's text, one for Octen went on to strix through failover, a cloud chat answered 200, a model started by a GET to `/upstream/` stopped at the next read, and the models were on 0.06 s after the file went. Not seen: the controller's own night, a thermal pause, a restart at night, and the fallback stop.
