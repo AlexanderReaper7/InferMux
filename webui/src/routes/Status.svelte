@@ -46,6 +46,16 @@
 {:else if !s}
   <div class="text-neutral-500">Loading…</div>
 {:else}
+  {#if s.off}
+    <section
+      class="mb-4 rounded-lg border border-red-900 bg-red-950/40 px-5 py-3"
+      title="a safety stop: every request for a local model is refused, another host's and a cloud's pass (0025)"
+    >
+      <div class="font-semibold text-red-300">Local models off</div>
+      <div class="text-neutral-300">{s.off.reason}</div>
+      <div class="text-sm text-neutral-500">since {ago(s.off.since)}</div>
+    </section>
+  {/if}
   <section
     class="mb-6 rounded-lg border p-5 {s.verdict.yielded
       ? 'border-amber-800 bg-amber-950/40'

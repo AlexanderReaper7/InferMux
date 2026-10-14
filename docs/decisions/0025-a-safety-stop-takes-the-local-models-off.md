@@ -30,7 +30,7 @@ The agent listed three options on 2026-10-14: A, take the zbox's local devices o
 - strix sees a 503 from the zbox at night instead of a host that does not answer. Both fail over (0016), and the zbox's models stay listed on strix either way.
 - Immich gets the 503 through its adapter (0013) where before it got the adapter's error for a stopped daemon. Both are 5xx.
 - Consumers hear nothing of it: off is not a verdict, and the verdicts and their announcements go on as before. A host with consumers that set `offFile` would leave them unpaused while their batch requests get 503. Not built, because the zbox, the one host with a safety stop, has no consumers.
-- `/warden/verdict` shows `off` with its reason and since. The UI does not show it.
+- `/warden/verdict` shows `off` with its reason and since, and the Status page shows it above the verdict as a red notice with the file's text and since when. The notice is the coordinating session's call, 2026-10-14: small, and in the UI only.
 - A deploy still stops the daemon and cuts a cloud job, whose continuation is 0023's open choice. The zbox's `TimeoutStopSec=5` still cuts a request in flight after 5 s.
 
 ## Verification

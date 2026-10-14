@@ -129,6 +129,8 @@ export interface VerdictState {
   placement: Record<string, string[]> | null;
   // the jobs this host holds (0023), finished ones for ten minutes
   jobs?: { counts: Record<string, number>; paused_reasons: string[] };
+  // a safety stop's off file (0025), null while the local models are on
+  off?: { reason: string; since: string } | null;
 }
 
 export interface Consumer {

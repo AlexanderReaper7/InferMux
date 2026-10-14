@@ -237,7 +237,7 @@ def main():
     daemon_log = open(OUT / "daemon.log", "w")
     daemon = subprocess.Popen(
         [BIN / "infermux", "-listen", "127.0.0.1:5101", "-config", base, "-config-dir", root / "derived", "-warden-config", cfg / "warden.yaml",
-         "-config-trusted-keys", root / "trusted.pub", "-config-state", root / "state", "-config-seed", signed],
+         "-config-trusted-keys", root / "trusted.pub", "-config-state", root / "state", "-config-seed", signed, "-off-file", root / "off"],
         stdout=daemon_log, stderr=subprocess.STDOUT, env=env,
     )
     ui = subprocess.Popen(
@@ -251,7 +251,7 @@ def main():
         if not wait_for(lambda: http("GET", DAEMON + "/warden/verdict")[0] == 200 and http("GET", UI + "/api/state")[0] == 200, 20):
             print("the stack did not come up; see", OUT)
             return 1
-        run(cfg, signed)
+        run(cfg, signed, root / "off")
     finally:
         ui.terminate()
         daemon.terminate()
@@ -280,7 +280,7 @@ def config_state():
     return json.loads(http("GET", DAEMON + "/warden/config/state")[1])
 
 
-def run(cfg, signed):
+def run(cfg, signed, off):
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         # No key: llama-swap's UI comes through infermux-ui's second listener,
@@ -339,6 +339,17 @@ def run(cfg, signed):
         check("status shows the verdict", visible(page.get_by_text("RESUME", exact=True)))
         check("status lists GPU processes", visible(page.get_by_role("columnheader", name="Process")))
         shot("status")
+
+        # --- A safety stop: the local models off (0025) ------------------------
+        off.write_text("too hot: e2e\n")
+        page.get_by_text("Local models off").wait_for(timeout=10000)
+        check("status shows the local models off with the file's text", visible(page.get_by_text("too hot: e2e")))
+        status, body = http("POST", DAEMON + "/v1/chat/completions", {"model": "alpha", "max_tokens": 1, "messages": []})
+        check("a local request is refused while they are off", status == 503, f"{status} {body[:200]}")
+        shot("status-off")
+        off.unlink()
+        page.get_by_text("Local models off").wait_for(state="hidden", timeout=10000)
+        check("the notice goes with the file", not visible(page.get_by_text("Local models off")))
 
         # --- The signed config runs ---------------------------------------------
         st = config_state()

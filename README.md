@@ -170,7 +170,7 @@ With `-off-file` (the module's `offFile`), this host's local models are off whil
 - Every model stops at once, without waiting for interactive quiet. One started past the gate, by a GET to `/upstream/<model>/`, stops at the next read.
 - Another host's model and a cloud's pass, and so does a job following one.
 
-Consumers hear nothing of it. `/warden/verdict` shows it as `off`, and the UI does not show it. The zbox's quiet-hours controller writes the file at 22:00 and on a thermal pause, and removes it when inference resumes.
+Consumers hear nothing of it. `/warden/verdict` shows it as `off`, and Status as a notice with the file's text and since when. The zbox's quiet-hours controller writes the file at 22:00 and on a thermal pause, and removes it when inference resumes.
 
 ## Jobs
 
