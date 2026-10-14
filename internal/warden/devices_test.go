@@ -207,6 +207,52 @@ func TestDisablingTheWardenLetsTheCPUsBatchThrough(t *testing.T) {
 	}
 }
 
+// The consumers hear a pause while either device is yielded, and a pause
+// handed from the GPU to the CPU keeps the start it was announced with.
+func TestTheConsumersHearTheCPUsVerdict(t *testing.T) {
+	h, cpu := placed(t)
+	h.reading = busy(60, "blender")
+	h.w.Tick()
+	h.reading = quiet()
+	cpu.ForeignPercent = f64(80)
+	cpu.Culprits = []string{"SvtAv1EncApp"}
+	h.at(10 * time.Second).w.Tick()
+	if len(h.posts) != 1 || h.posts[0]["action"] != "pause" {
+		t.Fatalf("posts %v", h.posts)
+	}
+	start := *formatTime(&t0)
+	// The GPU's quiet is over and the CPU is still busy: the reannouncement
+	// is the same pause, from the same start.
+	h.at(320 * time.Second).w.Tick()
+	if h.w.State().Verdict.Yielded {
+		t.Fatal("the GPU did not resume")
+	}
+	if len(h.posts) != 2 || h.posts[1]["action"] != "pause" || *h.posts[1]["since"].(*string) != start || !strings.Contains(h.posts[1]["reason"].(string), "SvtAv1EncApp") {
+		t.Fatalf("posts %v", h.posts)
+	}
+	cpu.ForeignPercent = f64(5)
+	h.at(330 * time.Second).w.Tick()
+	h.at(460 * time.Second).w.Tick()
+	if len(h.posts) != 3 || h.posts[2]["action"] != "resume" {
+		t.Fatalf("posts %v", h.posts)
+	}
+
+	// The CPU alone yields, and is heard.
+	cpu.ForeignPercent = f64(80)
+	h.at(470 * time.Second).w.Tick()
+	if len(h.posts) != 4 || h.posts[3]["action"] != "pause" || !strings.Contains(h.posts[3]["reason"].(string), "foreign CPU load") {
+		t.Fatalf("posts %v", h.posts)
+	}
+	// Disabled, the warden lifts the pause it announced.
+	cfg := h.w.config()
+	cfg.Policy.Enabled = false
+	h.w.Reload(cfg)
+	h.at(480 * time.Second).w.Tick()
+	if len(h.posts) != 5 || h.posts[4]["action"] != "resume" {
+		t.Fatalf("posts %v", h.posts)
+	}
+}
+
 func TestOutsideTheOneConfigTheCPUIsNotMeasured(t *testing.T) {
 	h := newHarness(t, nil)
 	h.w.cpuProbe = func() (CPUResources, error) { t.Fatal("measured"); return CPUResources{}, nil }

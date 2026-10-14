@@ -245,5 +245,6 @@ func (w *Warden) disabledCPU() {
 	if was {
 		w.traffic.resume(DeviceCPU)
 		w.log.Infof("CPU verdict: RESUME - the warden is disabled")
+		w.announce()
 	}
 }

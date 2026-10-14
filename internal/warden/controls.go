@@ -61,6 +61,7 @@ func (w *Warden) SetManual(action string) (Verdict, error) {
 
 	w.log.Infof("Verdict set by hand: %s", action)
 	w.act(before, after)
+	w.announce()
 	return after, nil
 }
 

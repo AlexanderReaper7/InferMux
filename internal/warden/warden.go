@@ -88,6 +88,8 @@ type Warden struct {
 	remotes     func() any
 	jobs        func() any
 	quietLogged map[string]bool
+	// announced is what the consumers were last told, for its start.
+	announced Verdict
 
 	stop chan struct{}
 	done chan struct{}
@@ -204,6 +206,8 @@ func (w *Warden) Tick() Verdict {
 		w.disabledCPU()
 		return w.disabledTick()
 	}
+	// After the CPU's tick: the consumers hear both devices (0022).
+	defer w.announce()
 	defer w.cpuTick(cfg)
 
 	res, err := w.probe()
@@ -286,8 +290,23 @@ func (w *Warden) act(before, after Verdict) {
 		w.mu.Unlock()
 	}
 	w.settle(DeviceGPU)
+}
 
-	w.announcer.sync(after)
+// announce keeps the consumers told: a pause while either device is yielded,
+// the GPU's reason first (0022). The start moves only with the action, so a
+// pause handed from one device to the other keeps the one the consumer shows.
+func (w *Warden) announce() {
+	w.mu.Lock()
+	v := w.verdict
+	if !v.Yielded && w.placement != nil && w.cpu.verdict.Yielded {
+		v = w.cpu.verdict
+	}
+	if w.announced.Since != nil && w.announced.Action() == v.Action() {
+		v.Since = w.announced.Since
+	}
+	w.announced = v
+	w.mu.Unlock()
+	w.announcer.sync(v)
 }
 
 // disabledTick measures nothing. Consumers a pause was announced to are told
@@ -301,6 +320,7 @@ func (w *Warden) disabledTick() Verdict {
 	w.mu.Unlock()
 	if before.Yielded {
 		w.act(before, after)
+		w.announce()
 	}
 	return after
 }
