@@ -372,14 +372,27 @@ func (w *attemptWriter) Flush() {
 // chunk is the part of an OpenAI stream chunk a job reads.
 type chunk struct {
 	Choices []struct {
-		Text  string `json:"text"`
-		Delta struct {
-			Content   string          `json:"content"`
-			Reasoning string          `json:"reasoning_content"`
-			ToolCalls json.RawMessage `json:"tool_calls"`
-		} `json:"delta"`
+		Text         string  `json:"text"`
+		Delta        delta   `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
+}
+
+// delta is a chat chunk's piece of the message. llama-server sends the
+// reasoning as reasoning_content, OpenRouter as reasoning (2026-10-14).
+type delta struct {
+	Content          string          `json:"content"`
+	ReasoningContent string          `json:"reasoning_content"`
+	Reasoning        string          `json:"reasoning"`
+	ToolCalls        json.RawMessage `json:"tool_calls"`
+}
+
+// thought is the delta's reasoning under either name.
+func (d delta) thought() string {
+	if d.ReasoningContent != "" {
+		return d.ReasoningContent
+	}
+	return d.Reasoning
 }
 
 // event reads one line of the stream.
@@ -434,12 +447,13 @@ func (w *attemptWriter) add(raw []byte) {
 	j := w.job
 	for _, choice := range c.Choices {
 		d := choice.Delta
-		if choice.Text == "" && d.Content == "" && d.Reasoning == "" {
+		thought := d.thought()
+		if choice.Text == "" && d.Content == "" && thought == "" {
 			continue
 		}
 		j.reply.Text += choice.Text
 		j.reply.Content += d.Content
-		j.reply.Reasoning += d.Reasoning
+		j.reply.Reasoning += thought
 		j.reply.Tokens++
 		w.progress = true
 	}

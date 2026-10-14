@@ -185,7 +185,7 @@ func heard(j *Job) (reasoning, content string, states []string) {
 			var c chunk
 			json.Unmarshal(e.Data, &c)
 			for _, choice := range c.Choices {
-				reasoning += choice.Delta.Reasoning
+				reasoning += choice.Delta.thought()
 				content += choice.Delta.Content + choice.Text
 			}
 		case "state":
@@ -471,6 +471,83 @@ func TestAStreamThatKeepsBreakingWhileItMovesIsNotGivenUp(t *testing.T) {
 	until(t, j, Done)
 	if _, content, _ := heard(j); content != words("w", 6) || m.attempts() != 5 {
 		t.Fatalf("heard %q in %d attempts", content, m.attempts())
+	}
+}
+
+// TestAnOpenRouterThoughtIsKeptWhenTheStreamBreaks replays a stream
+// OpenRouter sent on 2026-10-14, which calls the reasoning reasoning where
+// llama-server calls it reasoning_content. Attempts 1 to 3 each break after
+// one more piece of the thought; three without progress would fail the job.
+func TestAnOpenRouterThoughtIsKeptWhenTheStreamBreaks(t *testing.T) {
+	backoffUnit = time.Millisecond
+	t.Cleanup(func() { backoffUnit = time.Second })
+	raw, err := os.ReadFile("testdata/openrouter-nemotron.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ends[k] is the event after data line k+1, and thoughts[k] the
+	// reasoning up to there, read without the package's chunk.
+	events := strings.SplitAfter(string(raw), "\n\n")
+	var ends []int
+	var thoughts []string
+	thought, answer := "", ""
+	for i, e := range events {
+		payload, ok := strings.CutPrefix(strings.TrimSpace(e), "data: ")
+		if !ok || payload == "[DONE]" {
+			continue
+		}
+		var c struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					Reasoning string `json:"reasoning"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &c); err != nil {
+			t.Fatal(err)
+		}
+		for _, choice := range c.Choices {
+			thought += choice.Delta.Reasoning
+			answer += choice.Delta.Content
+		}
+		ends = append(ends, i+1)
+		thoughts = append(thoughts, thought)
+	}
+	if answer == "" || thoughts[2] == thought {
+		t.Fatalf("the capture has no thought past %q before its answer %q", thoughts[2], answer)
+	}
+	m := &model{t: t}
+	m.answer = func(n int, rw http.ResponseWriter, r *http.Request) bool {
+		rw.Header().Set("Content-Type", "text/event-stream")
+		from, to := 0, len(events)
+		if n > 1 {
+			from = ends[n-2]
+		}
+		if n <= 3 {
+			to = ends[n-1]
+		}
+		for _, e := range events[from:to] {
+			rw.Write([]byte(e))
+		}
+		if n <= 3 {
+			panic(http.ErrAbortHandler)
+		}
+		return true
+	}
+	s := newStore(t, m)
+	j := create(t, s, "/v1/chat/completions", chatBody)
+	until(t, j, Done)
+	if reasoning, content, _ := heard(j); reasoning != thought || content != answer {
+		t.Fatalf("heard %q %q", reasoning, content)
+	}
+	for n := 2; n <= 4; n++ {
+		next := m.body(n)
+		msgs := next["messages"].([]any)
+		last := msgs[len(msgs)-1].(map[string]any)
+		if last["reasoning_content"] != thoughts[n-2] || next["continue_final_message"] != "reasoning_content" || next["max_tokens"] != float64(101-n) {
+			t.Fatalf("attempt %d continued with %v", n, next)
+		}
 	}
 }
 

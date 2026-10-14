@@ -62,6 +62,13 @@ llama.cpp v0.6.0's server on strix's CPU, Qwen3.5-0.8B-Q8_0 and then Qwen3.5-4B-
   - Paused at reasoning chunk 40 (131 characters in): the reasoning is identical up to character 456, then takes another path to the same content.
   - SIGTERM at reasoning chunk 60 (182 characters in): exit 0, `jobs.json` 20 316 bytes, mode 0600, without the key. After the restart the job was paused "InferMux restarted; waiting for its client to come back with its key", went on when the client asked for it, and ended "17 times 23 is 391." The reasoning differs from character 193, at about the cut.
 
+## Measured 2026-10-14
+
+OpenRouter, the one config's only cloud, through strix. The nemotron stream is `internal/jobs/testdata/openrouter-nemotron.sse`.
+
+- **OpenRouter streams the reasoning as `reasoning`**, with the same text again in `reasoning_details`; `nvidia/nemotron-3-ultra-550b-a55b:free` and `openrouter/free` (routed to `dots-studio/dots-3-note-preview:free`) both did. Both llama-server builds the config runs, llama.cpp 0.6.0 and PrismML's fork for Bonsai, have only `reasoning_content`. A job reads either name, llama-server's first.
+- **OpenRouter does not continue a prefill.** It accepted the continuation with 200 either way, but in the reasoning (`continue_final_message: "reasoning_content"`, or `"reasoning"` with the reasoning under that name) both models thought again from the start. In the content, after "17 × 3 =", `nemotron-3-ultra` treated the prefill as an earlier turn and answered "340 + 51 = **391**.", and `openrouter/free`, routed to `nvidia/nemotron-3.5-lightning:free`, thought again until `max_tokens`.
+
 ## Calls the agent made while building, for the user to review
 
 - **Pause and resume carry the text only; no KV file in the first build.** The measurement above shows the restore buys nothing on the models that are paused. Dropped with it: `--slot-save-path`, the tmpfs under `/run/infermux`, and deleting KV files under the RAM floor. On `SIGTERM` the jobs' text is all that is written. A plain transformer would gain from the file; it can be added for one when one is paused.
@@ -87,6 +94,7 @@ llama.cpp v0.6.0's server on strix's CPU, Qwen3.5-0.8B-Q8_0 and then Qwen3.5-4B-
 - A job's events have no byte limit. A long reply is kept chunk by chunk until the job has been finished for 10 minutes.
 - The verdict's `cancelled_batch` counts a paused job's attempt as cancelled.
 - The `usage` chunk a job relays covers its last attempt only.
+- A job continued at a cloud place repeats itself. OpenRouter does not continue a prefill (measured 2026-10-14), so a client hears the cut reply and then a new one, reasoning and all.
 - Each pause logs Go's "suppressing panic for copyResponse error in test". An in-process request has no `http.ServerContextKey`, so `httputil.ReverseProxy` returns where a served request would panic with `http.ErrAbortHandler`. Setting the key would make the attempt take the panic path, but `stats.Recorder.Wrap` adds its row after `next` returns rather than in a defer, so the paused attempt would vanish from `/warden/requests`. That is already true of every request whose client disconnects mid-stream. The real fix is both: the recorder records in a defer, and the attempt carries the key.
 
 ## Consequences
