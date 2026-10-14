@@ -28,19 +28,9 @@ let
     fileset = lib.fileset.unions [
       ../go.mod
       ../go.sum
-      ../llama-swap.go
-      ../llama-swap_test.go
-      ../infermux.go
-      ../infermux_config.go
-      ../infermux_config_test.go
-      ../infermux_control.go
-      ../infermux_control_test.go
-      ../infermux_jobs_test.go
-      ../infermux_loadbalance_test.go
-      ../infermux_off.go
-      ../infermux_off_test.go
-      ../infermux_stream_test.go
-      ../infermux_test.go
+      # Every Go file by its extension, the root's included, so a new one
+      # is never left out of the build and its tests.
+      (lib.fileset.fileFilter (file: file.hasExt "go") ../.)
       ../config-schema.json
       ../config.example.yaml
       ../warden.example.yaml
