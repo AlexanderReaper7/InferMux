@@ -21,4 +21,3 @@ The facts follow what the static catalog had: the context length, image input wh
 
 - The first `/v1/models` after a start, and the first after an hour, waits for OpenRouter's list, up to 10 s.
 - A peer that is not OpenRouter-compatible is listed without facts, as before.
-- The opencode plugin lists peer models from these facts and does not ask them for `/props`.
