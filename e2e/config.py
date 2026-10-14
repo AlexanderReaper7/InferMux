@@ -114,6 +114,30 @@ def overflowing(pg):
         .map((c) => `${c.querySelector("h2").textContent}: ${c.scrollWidth} > ${c.clientWidth}`)""")
 
 
+def wraps(pg, path):
+    """For each element of the side panels that shows path, the characters
+    its lines end in where they wrap."""
+    return pg.evaluate("""(path) => [...document.querySelectorAll(".card *")]
+        .filter((e) => e.textContent.includes(path) && ![...e.children].some((c) => c.textContent.includes(path)))
+        .map((e) => {
+            let text = "", last = null, ends = "";
+            const walk = document.createTreeWalker(e, NodeFilter.SHOW_TEXT);
+            for (let n = walk.nextNode(); n; n = walk.nextNode())
+                for (let i = 0; i < n.length; i++) {
+                    const r = document.createRange();
+                    r.setStart(n, i);
+                    r.setEnd(n, i + 1);
+                    const top = r.getClientRects()[0]?.top;
+                    if (top !== undefined) {
+                        if (last !== null && top > last + 1) ends += text.at(-1);
+                        last = top;
+                    }
+                    text += n.data[i];
+                }
+            return ends;
+        })""", path)
+
+
 def publish_as_zbox(signed, key, other, edit):
     """Another host's Publish: a copy of the running version, edited, signed
     and posted to this daemon as the other daemon would."""
@@ -289,6 +313,9 @@ def run(root, cfg, signed, gguf, key):
         publish()
         pg.wait_for_selector("text=Revision 2 runs here", timeout=15000)
         check("the side panels hold their paths", not overflowing(pg), overflowing(pg))
+        ends = wraps(pg, str(signed))
+        # The temporary root's name has hyphens; the real path has none.
+        check("the notice and nixcfg's copy wrap the path between names", len(ends) == 2 and all(ends) and set("".join(ends)) <= {"/", "-", " "}, ends)
         st = state()
         check("the daemon runs revision 2", st["current"]["revision"] == 2 and "beta" in st["routes"], st)
         m = manifest(signed)

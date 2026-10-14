@@ -215,7 +215,7 @@
   // Without -config-passphrase-command, Publish needs the passphrase typed.
   const signable = $derived(!!ui?.config_passphrase || !!passphrase);
   let publishing = $state(false);
-  let notice = $state<string | null>(null);
+  let notice = $state<{ text: string; dir: string } | null>(null);
   let publishError = $state<string | null>(null);
   let merge = $state<{ other: Record<string, string>; label: string; kind: "stale" | "lost" } | null>(null);
   const results: Record<Published["result"], string> = {
@@ -246,7 +246,7 @@
       localStorage.removeItem(draftKey);
       merge = null;
       copy = await api.configCopy();
-      notice = `Revision ${res.published.revision} ${results[res.result]}. nixcfg's copy in ${copy.dir} is written; Commit records it.`;
+      notice = { text: `Revision ${res.published.revision} ${results[res.result]}.`, dir: copy.dir };
     } catch (e) {
       const m = (e as Error).message;
       if (m.startsWith("409:")) {
@@ -407,6 +407,8 @@
     <div class="mt-1 text-xs text-neutral-500">Ctrl-Space completes; hovering a key shows what it does.</div>
   </div>
 
+  <!-- A path breaks after a slash, and inside a name only if one name is wider than the panel. -->
+  {#snippet path(p: string)}{#each p.split("/") as part, i}{#if i > 0}/<wbr />{/if}{part}{/each}{/snippet}
   <div class="space-y-4 wrap-break-word">
     <div class="card">
       <h2 class="mb-2 font-medium">Publish</h2>
@@ -424,7 +426,7 @@
         <button class="btn-primary" disabled={!dirty || !!checked?.error || !signable || publishing} onclick={() => publish(false)}>Publish</button>
       </div>
       <div class="mt-1 text-xs text-neutral-500">Signs the draft on this host. The daemon runs it and sends it to the other hosts.</div>
-      {#if notice}<div class="mt-2 text-sm text-emerald-300">{notice}</div>{/if}
+      {#if notice}<div class="mt-2 text-sm text-emerald-300">{notice.text} nixcfg's copy in {@render path(notice.dir)} is written; Commit records it.</div>{/if}
       {#if publishError}<div class="mt-2 text-sm whitespace-pre-wrap text-red-300">{publishError}</div>{/if}
     </div>
 
@@ -449,7 +451,7 @@
 
     <div class="card">
       <h2 class="mb-2 font-medium">nixcfg's copy</h2>
-      <div class="font-mono text-xs text-neutral-500">{copy?.dir}</div>
+      <div class="font-mono text-xs text-neutral-500">{@render path(copy?.dir ?? "")}</div>
       <div class="mt-1 text-sm text-neutral-400">
         {copy?.copy ? `Holds ${version(copy.copy)}.` : "None yet."}
         {#if copy?.copy && copy.copy.hash === runningHash}<span class="text-emerald-300">The running version.</span>{/if}
