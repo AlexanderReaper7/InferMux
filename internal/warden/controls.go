@@ -128,11 +128,12 @@ func (w *Warden) Reload(cfg Config) {
 	w.mu.Lock()
 	old := w.cfg
 	w.cfg = cfg
-	if !slices.Equal(old.OurUnits, cfg.OurUnits) || !slices.Equal(old.DesktopProcesses, cfg.DesktopProcesses) ||
-		!slices.Equal(old.PriorityProcesses, cfg.PriorityProcesses) {
+	// A probe given to NewWithProbes stays.
+	if w.given.GPU == nil && (!slices.Equal(old.OurUnits, cfg.OurUnits) || !slices.Equal(old.DesktopProcesses, cfg.DesktopProcesses) ||
+		!slices.Equal(old.PriorityProcesses, cfg.PriorityProcesses)) {
 		w.probe, w.freshProbe = newProbe(cfg), newProbe(cfg)
 	}
-	if !slices.Equal(old.OurUnits, cfg.OurUnits) || !slices.Equal(old.CPU.PriorityProcesses, cfg.CPU.PriorityProcesses) || old.CPU.WindowSeconds != cfg.CPU.WindowSeconds {
+	if w.given.CPU == nil && (!slices.Equal(old.OurUnits, cfg.OurUnits) || !slices.Equal(old.CPU.PriorityProcesses, cfg.CPU.PriorityProcesses) || old.CPU.WindowSeconds != cfg.CPU.WindowSeconds) {
 		w.cpuProbe = newCPUProbe(cfg)
 	}
 	if old.ComfyUIURL != cfg.ComfyUIURL {

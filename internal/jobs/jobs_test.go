@@ -801,6 +801,36 @@ func TestADrainBetweenWaitAndAttemptStartsNothing(t *testing.T) {
 	}
 }
 
+// sol, review 12: Drain does not return while a runner is between begin's
+// check and its count, so the stop that waits on Attempting sees the attempt.
+func TestADrainWaitsForTheRunnerBetweenCheckAndCount(t *testing.T) {
+	inside, release := make(chan struct{}), make(chan struct{})
+	checked = func() { close(inside); <-release }
+	t.Cleanup(func() { checked = nil })
+	s := &Store{}
+	begun := make(chan bool, 1)
+	go func() { begun <- s.begin() }()
+	<-inside
+	drained := make(chan struct{})
+	go func() { s.Drain(); close(drained) }()
+	select {
+	case <-drained:
+		n := s.Attempting()
+		close(release)
+		<-begun
+		t.Fatalf("Drain returned with the runner between check and count, attempting %d", n)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if !<-begun {
+		t.Fatal("the runner checked before Drain was refused")
+	}
+	<-drained
+	if s.Attempting() != 1 {
+		t.Fatalf("attempting %d after Drain", s.Attempting())
+	}
+}
+
 // The API, through the warden's key check, which names the client.
 func api(t *testing.T, s *Store) *httptest.Server {
 	s.Client = func(r *http.Request) string { return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") }

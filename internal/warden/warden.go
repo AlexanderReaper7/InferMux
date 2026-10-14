@@ -68,6 +68,8 @@ type Warden struct {
 	tickMu   sync.Mutex
 	probe    func() (Resources, error)
 	cpuProbe func() (CPUResources, error)
+	// given is what NewWithProbes was passed; a nil one is the host's.
+	given Probes
 
 	mu            sync.Mutex
 	cfg           Config
@@ -97,15 +99,38 @@ type Warden struct {
 	done chan struct{}
 }
 
+// Probes read the GPU and the CPU. A nil one is the host's own, NVML and
+// /proc. A test passes its own, so that what the host runs, a game on the
+// card, cannot yield the warden under it.
+type Probes struct {
+	GPU func() (Resources, error)
+	CPU func() (CPUResources, error)
+}
+
 // New builds a warden over the given models. It does nothing until Start.
 func New(cfg Config, models Models, log Logger) *Warden {
+	return NewWithProbes(cfg, models, log, Probes{})
+}
+
+// NewWithProbes is New reading the GPU and the CPU through p.
+func NewWithProbes(cfg Config, models Models, log Logger, p Probes) *Warden {
+	probe, fresh := p.GPU, p.GPU
+	if probe == nil {
+		// Two: NVML gives each reader the samples since its own last call.
+		probe, fresh = newProbe(cfg), newProbe(cfg)
+	}
+	cpuProbe := p.CPU
+	if cpuProbe == nil {
+		cpuProbe = newCPUProbe(cfg)
+	}
 	w := &Warden{
 		cfg:         cfg,
 		models:      models,
 		log:         log,
-		probe:       newProbe(cfg),
-		cpuProbe:    newCPUProbe(cfg),
-		freshProbe:  newProbe(cfg),
+		probe:       probe,
+		cpuProbe:    cpuProbe,
+		freshProbe:  fresh,
+		given:       p,
 		now:         time.Now,
 		announcer:   newAnnouncer(cfg.Consumers, log),
 		own:         initialVerdict(),

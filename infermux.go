@@ -190,7 +190,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	if one != nil && *flagCPUSocket != "" {
 		runner.ask(*flagCPUSocket)
 	}
-	w := warden.New(runner.add(cfg), activeModels{server: active, host: cfg.Host, remote: remotes}, log)
+	w := warden.NewWithProbes(runner.add(cfg), activeModels{server: active, host: cfg.Host, remote: remotes}, log, probes)
 	// A model that stops before it is ready, most often a start that failed,
 	// leaves a line saying what held the card (0016, 3).
 	unsubscribe := event.On(func(e swaputil.ProcessStateChangeEvent) {
@@ -401,6 +401,10 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		w.Stop()
 	}
 }
+
+// probes are the warden's readings of the GPU and the CPU: the host's own,
+// NVML and /proc, unless a test sets its own.
+var probes warden.Probes
 
 // A deploy's stop waits up to drainTimeout for the requests running (0026).
 // The unit's TimeoutStopSec is above it, the jobs' 10 s and llama-swap's own

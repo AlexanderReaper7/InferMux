@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/configstore"
+	"github.com/mostlygeek/llama-swap/internal/placement"
 )
 
 // fakeDaemon keeps the versions it was given, checked with the trusted key,
@@ -148,8 +149,8 @@ func TestCheckIsTheDaemonsLoader(t *testing.T) {
 		t.Errorf("a placement error: %v", out["error"])
 	}
 	// A macro this host's base config does not define, which llama-swap
-	// refuses when it loads the part; ${env.VAR} reads as a placeholder,
-	// since the UI has not the daemon's environment.
+	// refuses when it loads the part. A cloud that reads the environment is
+	// left to the daemon, since the UI has not the daemon's environment.
 	macro := draft(u.f.gguf, "clouds:\n  c:\n    url: https://c.example\n    api_key: ${env.INFERMUX_TEST_UNSET}\n    models: [m]\n")
 	if _, out = u.call("POST", "/api/config/check", map[string]any{"files": macro}); out["error"] != nil {
 		t.Fatalf("an env macro: %v", out["error"])
@@ -171,6 +172,33 @@ func TestCheckIsTheDaemonsLoader(t *testing.T) {
 	if p, _ := out["error"].(map[string]any); p == nil || !strings.Contains(p["message"].(string), "here: qwen on here/gpu: env sets CUDA_VISIBLE_DEVICES") {
 		t.Errorf("a host's error: %v", out["error"])
 	}
+}
+
+// The UI accepts every part the daemon loads: a typed field set from the
+// environment, which no stand-in for its value would decode into (sol,
+// review 12, M1; 0022, 11).
+func TestCheckAcceptsATypedFieldFromTheEnvironment(t *testing.T) {
+	t.Setenv("INFERMUX_TEST_TTL", "30")
+	u := newConfigUI(t)
+	files := draft(u.f.gguf, "")
+	files["models/qwen.yaml"] += "ttl: ${env.INFERMUX_TEST_TTL}\n"
+	cfg, _, err := placement.Parse(toBytes(files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := cfg.Derive("here")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := part.LoadsWith(u.f.store.BaseConfig, true); err != nil {
+		t.Fatalf("the daemon's load: %v", err)
+	}
+	os.Unsetenv("INFERMUX_TEST_TTL") // the UI runs without the daemon's environment
+	if _, out := u.call("POST", "/api/config/check", map[string]any{"files": files}); out["error"] != nil {
+		t.Errorf("Check refused a part the daemon loads: %v", out["error"])
+	}
+	code, out := u.call("POST", "/api/config/publish", map[string]any{"files": files, "base": "", "passphrase": "the passphrase"})
+	u.want(code, http.StatusOK, out, "Publish of a part the daemon loads")
 }
 
 func TestPublishTakesThePassphraseFromTheCommandWhenTheBrowserSendsNone(t *testing.T) {

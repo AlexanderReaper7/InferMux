@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -650,5 +651,28 @@ func TestAPauseCarriesItsStartTime(t *testing.T) {
 	h.at(reannounceInterval).w.Tick()
 	if len(h.posts) != 2 || *h.posts[0]["since"].(*string) != *h.posts[1]["since"].(*string) {
 		t.Fatalf("since moved: %v", h.posts)
+	}
+}
+
+// The probes given to NewWithProbes are what the loop, /warden/resources and
+// the CPU's tick read, and a reload that builds the host's anew for others
+// keeps them (sol, review 12, M2).
+func TestTheGivenProbesOutlastAReload(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Keys = testKeys()
+	gpu := func() (Resources, error) { return Resources{VRAMTotalMB: 4321}, nil }
+	cpu := func() (CPUResources, error) { return CPUResources{Cores: 77}, nil }
+	w := NewWithProbes(cfg, &fakeModels{running: map[string]string{}}, nopLog{}, Probes{GPU: gpu, CPU: cpu})
+	next := cfg
+	next.OurUnits = append(slices.Clone(cfg.OurUnits), "other.service")
+	next.CPU.WindowSeconds++
+	for _, when := range []string{"at the start", "after a reload"} {
+		loop, _ := w.probe()
+		fresh, _ := w.freshProbe()
+		c, _ := w.cpuProbe()
+		if loop.VRAMTotalMB != 4321 || fresh.VRAMTotalMB != 4321 || c.Cores != 77 {
+			t.Fatalf("%s the warden reads %d, %d MB and %d cores, not the probes it was given", when, loop.VRAMTotalMB, fresh.VRAMTotalMB, c.Cores)
+		}
+		w.Reload(next)
 	}
 }

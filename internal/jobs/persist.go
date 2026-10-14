@@ -53,9 +53,16 @@ func (s *Store) begin() bool {
 	if s.draining.Load() {
 		return false
 	}
+	if checked != nil {
+		checked()
+	}
 	s.attempting.Add(1)
 	return true
 }
+
+// checked runs between begin's check and its count, where a test holds a
+// runner to show that Drain waits for it. It is nil outside the tests.
+var checked func()
 
 // Attempting is how many attempts are running.
 func (s *Store) Attempting() int { return int(s.attempting.Load()) }

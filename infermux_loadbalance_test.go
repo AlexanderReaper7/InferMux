@@ -307,8 +307,7 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 		t.Fatalf("a model that did not start: %d %q at %q, want the next place's 200", code, body, place)
 	}
 	<-served
-	// What held the card: NVML's reading where there is one, its error in
-	// the nix build's sandbox.
+	// What held the card, as the tests' GPU reads it (TestMain).
 	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(logged.String(), "<dies> stopped before it was ready; the card "); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("no line for what held the card in:\n%s", logged.String())

@@ -158,7 +158,7 @@ func check(files map[string][]byte) (*placement.Config, Check) {
 // base config, as the daemon loads it before it keeps a config: a macro this
 // host's Nix does not define fails here (0022, 11). Each other host's
 // daemon loads its own part. The UI has not the daemon's environment, which
-// holds the clouds' keys, so each ${env.VAR} reads as a placeholder.
+// holds the clouds' keys, so what reads it is left to the daemon (LoadsWith).
 func (s *Store) checkHere(files map[string][]byte) Check {
 	cfg, res := check(files)
 	if res.Error != nil {
