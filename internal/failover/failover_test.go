@@ -163,6 +163,59 @@ func TestAStreamPassesThrough(t *testing.T) {
 	}
 }
 
+// didNotStart is llama-swap's answer to a model that would not start, as the
+// deployed binary sent it on 2026-10-14 for a command that exits at once.
+const didNotStart = `{"src":"llama-swap","error":{"message":"unspecific error: upstream command exited prematurely","type":"server_error","param":null,"code":"internal_error"}}`
+
+// A model that does not start fails over: llama-swap answers it with a 500
+// of its own, and the model never had the request. A model's own 500 is the
+// client's, since retrying it elsewhere would run the request twice (0016, 3).
+func TestAModelThatDoesNotStartFailsOver(t *testing.T) {
+	long := strings.Repeat("x", 100<<10)
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        string
+		both        bool
+		attempts    []string
+		code        int
+	}{
+		{"llama-swap's JSON", "application/json", didNotStart, false, []string{"zbox/embed", "embed"}, 200},
+		{"llama-swap's text", "text/plain", "llama-swap: unspecific error: upstream command exited prematurely", false, []string{"zbox/embed", "embed"}, 200},
+		{"llama-swap's HTML", "text/html", "<html><body><h1>llama-swap</h1><p>unspecific error: upstream command exited prematurely</p></body></html>", false, []string{"zbox/embed", "embed"}, 200},
+		{"a model's own 500", "application/json", `{"error":{"code":500,"message":"failed to decode image","type":"server_error"}}`, false, []string{"zbox/embed"}, 500},
+		{"llama-swap's other 500", "application/json", `{"src":"llama-swap","error":{"message":"streaming unsupported","type":"server_error","param":null,"code":"internal_error"}}`, false, []string{"zbox/embed"}, 500},
+		{"a long 500 passes whole", "text/plain", long, false, []string{"zbox/embed"}, 500},
+		{"the last place's is the client's", "application/json", didNotStart, true, []string{"zbox/embed", "embed"}, 500},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts []string
+			next := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				model, _ := swaputil.ExtractModel(r)
+				attempts = append(attempts, model)
+				if model == "zbox/embed" || tc.both {
+					rw.Header().Set("Content-Type", tc.contentType)
+					rw.WriteHeader(http.StatusInternalServerError)
+					io.WriteString(rw, tc.body[:len(tc.body)/2])
+					io.WriteString(rw, tc.body[len(tc.body)/2:])
+					return
+				}
+				io.WriteString(rw, "from "+model)
+			})
+			rw := post(t, newHandler(next), "embed", nil)
+			if fmt.Sprint(attempts) != fmt.Sprint(tc.attempts) || rw.Code != tc.code {
+				t.Fatalf("attempts %v status %d, want %v and %d", attempts, rw.Code, tc.attempts, tc.code)
+			}
+			if tc.code == 500 && (rw.Body.String() != tc.body || rw.Header().Get("Content-Type") != tc.contentType) {
+				t.Fatalf("the 500 reached the client as %q %.80q", rw.Header().Get("Content-Type"), rw.Body.String())
+			}
+			if tc.code == 200 && rw.Body.String() != "from embed" {
+				t.Fatalf("body %q: the dropped attempt's body reached the client", rw.Body.String())
+			}
+		})
+	}
+}
+
 // The zbox is off: the remote router answers 502 and the local model serves.
 func TestAnOfflineHostFailsOverToTheLocalModel(t *testing.T) {
 	gone := httptest.NewServer(http.NotFoundHandler())

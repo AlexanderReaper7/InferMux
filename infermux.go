@@ -18,11 +18,13 @@ import (
 
 	"github.com/mostlygeek/llama-swap/internal/catalog"
 	"github.com/mostlygeek/llama-swap/internal/cpurun"
+	"github.com/mostlygeek/llama-swap/internal/event"
 	"github.com/mostlygeek/llama-swap/internal/failover"
 	"github.com/mostlygeek/llama-swap/internal/fetch"
 	"github.com/mostlygeek/llama-swap/internal/jobs"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/placement"
+	"github.com/mostlygeek/llama-swap/internal/process"
 	"github.com/mostlygeek/llama-swap/internal/remote"
 	"github.com/mostlygeek/llama-swap/internal/server"
 	"github.com/mostlygeek/llama-swap/internal/stats"
@@ -183,6 +185,13 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		runner.ask(*flagCPUSocket)
 	}
 	w := warden.New(runner.add(cfg), activeModels{server: active, host: cfg.Host, remote: remotes}, log)
+	// A model that stops before it is ready, most often a start that failed,
+	// leaves a line saying what held the card (0016, 3).
+	unsubscribe := event.On(func(e swaputil.ProcessStateChangeEvent) {
+		if e.OldState == string(process.StateStarting) && e.NewState == string(process.StateStopped) {
+			go w.NotStarted(e.ProcessName)
+		}
+	})
 	w.ReportRemotes(func() any { return remotes.get().State() })
 	codex, err := catalog.Codex(w.FilterModels(remotes), *flagCodexPrompt)
 	if err != nil {
@@ -350,6 +359,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		go (&configwatcher.DirWatcher{Path: absolute(configDir), OnChange: reload}).Run(ctx)
 	}
 	return func() {
+		unsubscribe()
 		stopControl()
 		if err := jobStore.Stop(10 * time.Second); err != nil {
 			log.Warnf("Jobs not written: %v", err)

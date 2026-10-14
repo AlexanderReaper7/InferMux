@@ -7,13 +7,15 @@
 //
 // An attempt that is not the last one fails over when it answers 502, 503 or
 // 504: the place is offline or unreachable (remote answers 502 for both), its
-// model would not start, its warden refused, or it timed out. Nothing of that
-// answer reaches the client. Any other answer is the client's.
+// warden refused, or it timed out. It also fails over on llama-swap's own 500
+// for a model that would not start (notStarted). Nothing of that answer
+// reaches the client. Any other answer is the client's.
 package failover
 
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -144,6 +146,7 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			held := &heldWriter{rw: rw, header: http.Header{}, final: last && i == len(lane)-1}
 			held.header.Set(PlaceHeader, h.where(place.Place, model))
 			h.next.ServeHTTP(held, attempt)
+			held.finish()
 			if !held.failed {
 				return true, nil
 			}
@@ -216,10 +219,33 @@ func failsOver(status int) bool {
 	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
 }
 
+// notStarted is llama-swap's own 500 for an error it has no status for, which
+// on a model's way means the model never had the request: it did not start,
+// or the router was shutting down. llama-swap sets no header for it, so the
+// body decides, in each of the three forms its SendResponse writes; the
+// deployed binary sent the JSON one on 2026-10-14 for a command that exits.
+// A model's own 500 carries no "src", and is never retried elsewhere.
+func notStarted(header http.Header, body []byte) bool {
+	const unclassified = "unspecific error: "
+	switch contentType := header.Get("Content-Type"); {
+	case strings.HasPrefix(contentType, "text/plain"):
+		return bytes.HasPrefix(body, []byte("llama-swap: "+unclassified))
+	case strings.HasPrefix(contentType, "text/html"):
+		return bytes.HasPrefix(body, []byte("<html><body><h1>llama-swap</h1><p>"+unclassified))
+	}
+	var envelope swaputil.ErrorEnvelope
+	return json.Unmarshal(body, &envelope) == nil && envelope.Src == "llama-swap" && strings.HasPrefix(envelope.Error.Message, unclassified)
+}
+
+// heldBodyLimit is more than any llama-swap error body. A 500 longer than
+// this is no answer of llama-swap's and passes through.
+const heldBodyLimit = 64 << 10
+
 // heldWriter holds an attempt's headers until its status is known. A status
 // that fails over is dropped with its body; any other is written to the
 // client, and from then on everything passes straight through, a stream
-// chunk by chunk.
+// chunk by chunk. A 500 is held with its body until finish, which tells
+// llama-swap's notStarted from the model's own.
 type heldWriter struct {
 	rw        http.ResponseWriter
 	header    http.Header
@@ -227,6 +253,8 @@ type heldWriter struct {
 	failed    bool
 	committed bool
 	final     bool
+	held      bool
+	body      []byte
 }
 
 func (w *heldWriter) Header() http.Header {
@@ -245,6 +273,10 @@ func (w *heldWriter) WriteHeader(status int) {
 		w.failed = true
 		return
 	}
+	if !w.final && status == http.StatusInternalServerError {
+		w.held = true
+		return
+	}
 	w.commit()
 	w.rw.WriteHeader(status)
 }
@@ -256,6 +288,27 @@ func (w *heldWriter) commit() {
 	w.committed = true
 }
 
+// pass writes a held 500 to the client: it was the model's own.
+func (w *heldWriter) pass() {
+	w.held = false
+	w.commit()
+	w.rw.WriteHeader(w.status)
+	w.rw.Write(w.body)
+	w.body = nil
+}
+
+// finish decides a held 500 once the attempt has returned.
+func (w *heldWriter) finish() {
+	if !w.held {
+		return
+	}
+	if notStarted(w.header, w.body) {
+		w.held, w.failed = false, true
+		return
+	}
+	w.pass()
+}
+
 func (w *heldWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
@@ -263,12 +316,22 @@ func (w *heldWriter) Write(b []byte) (int, error) {
 	if w.failed {
 		return len(b), nil
 	}
+	if w.held {
+		if len(w.body)+len(b) <= heldBodyLimit {
+			w.body = append(w.body, b...)
+			return len(b), nil
+		}
+		w.pass()
+	}
 	return w.rw.Write(b)
 }
 
 func (w *heldWriter) Flush() {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
+	}
+	if w.held {
+		w.pass()
 	}
 	if f, ok := w.rw.(http.Flusher); ok && !w.failed {
 		f.Flush()

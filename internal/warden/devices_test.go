@@ -2,6 +2,7 @@ package warden
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -212,5 +213,49 @@ func TestOutsideTheOneConfigTheCPUIsNotMeasured(t *testing.T) {
 	h.w.Tick()
 	if h.w.State().CPU != nil {
 		t.Fatal("a CPU state outside the one config")
+	}
+}
+
+// warnings records the warden's warnings.
+type warnings struct {
+	nopLog
+	lines []string
+}
+
+func (l *warnings) Warnf(format string, args ...any) {
+	l.lines = append(l.lines, fmt.Sprintf(format, args...))
+}
+
+// A model that stops before it is ready leaves a line naming what held the
+// card at that moment, read fresh, and a model on the CPU alone leaves none.
+func TestAModelThatDoesNotStartLogsWhatHeldTheCard(t *testing.T) {
+	h := newHarness(t, nil)
+	log := &warnings{}
+	h.w.log = log
+	h.w.SetPlacement(Placement{"qwen": {DeviceGPU}, "embed": {DeviceCPU}})
+	h.w.probe = func() (Resources, error) { return quiet(), nil } // the loop's, not read here
+	h.w.freshProbe = func() (Resources, error) {
+		r := quiet()
+		r.VRAMUsedMB, r.VRAMTotalMB = 9300, 10240
+		r.Processes = []Process{
+			{Name: "Xwayland", VRAMMB: 310, Desktop: true},
+			{Name: "nvidia-smi", VRAMMB: 0},
+			{Name: "python3", Unit: "comfyui.service", VRAMMB: 8800},
+			{Name: "llama-server", Unit: "infermux.service", VRAMMB: 190, Ours: true},
+		}
+		return r, nil
+	}
+	h.w.NotStarted("embed")
+	h.w.NotStarted("qwen")
+	want := "<qwen> stopped before it was ready; the card had 9300 of 10240 MB in use: python3 8800 MB (comfyui.service, foreign), Xwayland 310 MB (desktop), llama-server 190 MB (infermux.service, ours)"
+	if len(log.lines) != 1 || log.lines[0] != want {
+		t.Fatalf("logged %q\nwant %q", log.lines, want)
+	}
+
+	log.lines = nil
+	h.w.freshProbe = func() (Resources, error) { return Resources{}, errors.New("NVML: unknown error") }
+	h.w.NotStarted("qwen")
+	if len(log.lines) != 1 || !strings.Contains(log.lines[0], "could not be read: NVML: unknown error") {
+		t.Fatalf("logged %q", log.lines)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -676,6 +677,49 @@ func (w *Warden) status(mux *http.ServeMux) {
 		}
 		writeJSON(rw, http.StatusOK, res)
 	})
+}
+
+// NotStarted logs what held the card when a model on it stopped before it
+// was ready, which is most often a start that failed for want of VRAM. The
+// probe is a fresh one: the loop's last reading can be from before the swap
+// that stopped the previous model.
+func (w *Warden) NotStarted(model string) {
+	if !slices.Contains(w.devices(model), DeviceGPU) {
+		return
+	}
+	w.mu.Lock()
+	probe := w.freshProbe
+	w.mu.Unlock()
+	res, err := probe()
+	if err != nil {
+		w.log.Warnf("<%s> stopped before it was ready; the card could not be read: %v", model, err)
+		return
+	}
+	w.log.Warnf("<%s> stopped before it was ready; the card had %s", model, holders(res))
+}
+
+// holders is a reading's VRAM and the processes holding it, the most first.
+func holders(res Resources) string {
+	procs := slices.Clone(res.Processes)
+	slices.SortStableFunc(procs, func(a, b Process) int { return b.VRAMMB - a.VRAMMB })
+	var held []string
+	for _, p := range procs {
+		if p.VRAMMB == 0 {
+			continue
+		}
+		whose := "foreign"
+		switch {
+		case p.Ours:
+			whose = "ours"
+		case p.Desktop:
+			whose = "desktop"
+		}
+		if p.Unit != "" {
+			whose = p.Unit + ", " + whose
+		}
+		held = append(held, fmt.Sprintf("%s %d MB (%s)", p.Name, p.VRAMMB, whose))
+	}
+	return fmt.Sprintf("%d of %d MB in use: %s", res.VRAMUsedMB, res.VRAMTotalMB, orNone(strings.Join(held, ", ")))
 }
 
 func writeJSON(rw http.ResponseWriter, status int, body any) {

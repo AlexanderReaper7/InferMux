@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -206,4 +208,104 @@ func TestProxy_OverflowSkipsYieldedGPU(t *testing.T) {
 			t.Fatalf("after %s got %d %q, want %q", tc.action, code, body, tc.want)
 		}
 	}
+}
+
+// A model whose command exits before it is ready fails over to the next
+// place, through a real llama-swap and its own answer to the failed start. A
+// model that answers 500 itself had the request, so the client gets that 500
+// and the next place gets nothing (0016, 3).
+func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
+	served := make(chan string, 4)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			served <- "up"
+			w.Write([]byte("up"))
+		}
+	}))
+	defer backend.Close()
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":{"code":500,"message":"failed to decode image","type":"server_error"}}`))
+		}
+	}))
+	defer broken.Close()
+	dir := t.TempDir()
+	t.Setenv("STATE_DIRECTORY", dir)
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	write("failover.yaml", "embed: [{place: test/dies}, {place: test/up}]\nown: [{place: test/broken}, {place: test/up}]\n")
+	wfile := write("warden.yaml", "host: test\nfailover_file: failover.yaml\npolicy:\n  enabled: false\n")
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(fmt.Sprintf("healthCheckTimeout: 15\nperformance:\n  disabled: true\nmodels:\n  dies:\n    cmd: \"false\"\n    proxy: http://127.0.0.1:9\n  up:\n    cmd: sleep 3600\n    proxy: %s\n  broken:\n    cmd: sleep 3600\n    proxy: %s\n", backend.URL, broken.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.New("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	logged := &lockedBuffer{}
+	logs := logmon.NewGroup(logged, true, false, false)
+	srv, err := server.New(cfg, logs, nil, st, server.BuildInfo{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Shutdown(5 * time.Second)
+	httpServer := &http.Server{Handler: srv}
+	defer startWarden(wfile, "", "", httpServer, func() *server.Server { return srv }, logs.ProxyLogs)()
+	front := httptest.NewServer(httpServer.Handler)
+	defer front.Close()
+	post := func(model string) (int, string, string) {
+		resp, err := http.Post(front.URL+"/v1/embeddings", "application/json", strings.NewReader(fmt.Sprintf(`{"model":%q,"input":["hello"]}`, model)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(raw), resp.Header.Get(failover.PlaceHeader)
+	}
+	if code, body, place := post("embed"); code != 200 || body != "up" || place != "test/up" {
+		t.Fatalf("a model that did not start: %d %q at %q, want the next place's 200", code, body, place)
+	}
+	<-served
+	// What held the card: NVML's reading where there is one, its error in
+	// the nix build's sandbox.
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(logged.String(), "<dies> stopped before it was ready; the card "); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no line for what held the card in:\n%s", logged.String())
+		}
+	}
+	if code, body, _ := post("own"); code != 500 || !strings.Contains(body, "failed to decode image") {
+		t.Fatalf("a model's own 500: %d %q, want it as the model sent it", code, body)
+	}
+	select {
+	case <-served:
+		t.Fatal("a model's own 500 was sent on to the next place")
+	default:
+	}
+}
+
+// lockedBuffer is the proxy log, read while the server writes it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
