@@ -323,7 +323,9 @@ type attemptWriter struct {
 func (w *attemptWriter) Header() http.Header { return w.header }
 
 func (w *attemptWriter) WriteHeader(status int) {
-	if w.status != 0 {
+	// A 1xx is followed by the attempt's answer, and a job has no client to
+	// pass it on to.
+	if w.status != 0 || (status < 200 && status != http.StatusSwitchingProtocols) {
 		return
 	}
 	w.status = status

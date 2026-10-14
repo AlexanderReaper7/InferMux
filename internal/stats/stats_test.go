@@ -186,6 +186,21 @@ func TestAFailedRequestKeepsItsStatus(t *testing.T) {
 	}
 }
 
+// A 1xx is not the reply's status: the one after it is recorded.
+func TestTheStatusAfterA1xxIsRecorded(t *testing.T) {
+	c := &clock{t: time.Unix(1000, 0)}
+	rec := recorder(c)
+	h := rec.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.WriteHeader(http.StatusContinue)
+		rw.WriteHeader(http.StatusBadGateway)
+		io.WriteString(rw, `{"error":"x"}`)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"qwen"}`)))
+	if r := rec.Recent()[0]; r.Status != 502 {
+		t.Errorf("%+v", r)
+	}
+}
+
 func TestTheSummaryCountsSuccessesAndWeighsTokens(t *testing.T) {
 	ok := func(ttft, prefill, decode float64, prompt, cached int) Request {
 		return Request{Model: "m", Status: 200, TTFTMs: &ttft, PrefillMs: &prefill, DecodePerSecond: &decode, PromptTokens: &prompt, CachedTokens: &cached}

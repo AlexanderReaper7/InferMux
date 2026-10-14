@@ -239,7 +239,8 @@ type watcher struct {
 }
 
 func (w *watcher) WriteHeader(code int) {
-	if w.status == 0 {
+	// A 1xx is followed by the reply's own status.
+	if w.status == 0 && (code >= 200 || code == http.StatusSwitchingProtocols) {
 		w.status = code
 	}
 	w.ResponseWriter.WriteHeader(code)

@@ -509,7 +509,10 @@ type trackedWriter struct {
 }
 
 func (t *trackedWriter) WriteHeader(code int) {
-	t.started = true
+	// A 1xx is followed by the reply's own status, which can still be ours.
+	if code >= 200 || code == http.StatusSwitchingProtocols {
+		t.started = true
+	}
 	t.ResponseWriter.WriteHeader(code)
 }
 

@@ -483,6 +483,42 @@ func TestACancelledBatchRequestIsA503NotAnEmpty200(t *testing.T) {
 	}
 }
 
+// A 100 Continue or a model's 103 is not the reply: a batch request cancelled
+// after one still has its status to give, the 503, rather than a broken
+// connection.
+func TestACancelledBatchRequestAfterA1xxIsA503(t *testing.T) {
+	h := newHarness(t, nil)
+	inside := make(chan struct{})
+	front := httptest.NewServer(h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.WriteHeader(http.StatusContinue)
+		close(inside)
+		<-r.Context().Done()
+	})))
+	defer front.Close()
+	type answer struct {
+		code int
+		err  error
+	}
+	done := make(chan answer)
+	go func() {
+		req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/chat/completions", strings.NewReader(`{"model":"qwen"}`))
+		req.Header.Set("Authorization", "Bearer batch-key")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			done <- answer{err: err}
+			return
+		}
+		resp.Body.Close()
+		done <- answer{code: resp.StatusCode}
+	}()
+	<-inside
+	h.reading = busy(60)
+	h.w.Tick()
+	if a := <-done; a.err != nil || a.code != http.StatusServiceUnavailable {
+		t.Fatalf("%d %v, want 503", a.code, a.err)
+	}
+}
+
 func TestABatchRequestCancelledByHandWaitsBeforeItIsSentAgain(t *testing.T) {
 	h := newHarness(t, nil)
 	inside := make(chan struct{})

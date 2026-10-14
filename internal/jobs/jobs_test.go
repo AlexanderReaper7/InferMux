@@ -222,6 +222,21 @@ func TestAJobRunsToTheEnd(t *testing.T) {
 	}
 }
 
+// A 1xx before the reply, a 100 Continue or a model's 103, is not the
+// attempt's answer: the reply after it is.
+func TestAJobRunsPastA1xx(t *testing.T) {
+	m := &model{t: t, words: 5, place: "strix"}
+	s := newStore(t, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.WriteHeader(http.StatusEarlyHints)
+		m.ServeHTTP(rw, r)
+	}))
+	j := create(t, s, "/v1/chat/completions", chatBody)
+	until(t, j, Done)
+	if _, content, _ := heard(j); content != words("w", 5) {
+		t.Fatalf("heard %q", content)
+	}
+}
+
 func TestAPausedJobContinuesWhereItStopped(t *testing.T) {
 	m := &model{t: t, words: 10}
 	m.onToken = func(n int, word string, r *http.Request) {
