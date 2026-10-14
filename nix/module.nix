@@ -108,6 +108,16 @@ let
       "${cfg.configDir}/warden.yaml"
     else
       yaml.generate "warden.yaml" cfg.warden;
+  # The build fails here, not at the daemon's next start (0022, 11).
+  loadsCheck =
+    let
+      check = cfg.signedConfig.buildCheck;
+    in
+    pkgs.runCommand "infermux-config-loads-${check.host}" { } ''
+      ${lib.getExe' cfg.package "infermux-config"} verify -trusted-keys ${trustedKeys} \
+        -host ${lib.escapeShellArg check.host} -config ${baseConfig} ${check.config}
+      touch $out
+    '';
 in
 {
   options.services.infermux = {
@@ -183,6 +193,33 @@ in
           it is newer than the one the daemon keeps, and ignored when older.
           Bound in read-only. A string, not a path, so Nix never copies it
           into the store.
+        '';
+      };
+      buildCheck = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.submodule {
+            options = {
+              config = lib.mkOption {
+                type = lib.types.path;
+                description = "The signed config directory, as a path, so the build reads the copy it deploys with: the seed's, from the flake.";
+              };
+              host = lib.mkOption {
+                type = lib.types.str;
+                description = "This host's name in it, `warden.yaml`'s `host`.";
+              };
+            };
+          }
+        );
+        default = null;
+        example = lib.literalExpression ''{ config = ./infermux/config; host = "strix"; }'';
+        description = ''
+          A signed config this host's build must load. The build fails
+          unless it verifies against `trustedKeys` and `host`'s part of it
+          loads with `settings`, as llama-swap loads the derived file with
+          `-config` at start, before the warden runs (0022, 11). It is
+          loaded without the daemon's environment, as the UI's Check loads
+          it, so what reads `''${env.VAR}` is left out. It checks this copy,
+          not a newer version the daemon keeps.
         '';
       };
       fetchDirs = lib.mkOption {
@@ -450,7 +487,13 @@ in
           assertion = cfg.signedConfig.fetchDirs != [ ] -> signed;
           message = "services.infermux.signedConfig.fetchDirs needs signedConfig.trustedKeys: the files and their SHA-256 come from the signed config.";
         }
+        {
+          assertion = cfg.signedConfig.buildCheck != null -> signed;
+          message = "services.infermux.signedConfig.buildCheck needs signedConfig.trustedKeys to check it against.";
+        }
       ];
+
+      system.checks = lib.optional (cfg.signedConfig.buildCheck != null) loadsCheck;
 
       environment.systemPackages =
         lib.optional signed configTool ++ lib.optional (cfg.controlGroup != null) holdTool;

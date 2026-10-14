@@ -1,11 +1,12 @@
 // infermux-config makes and signs InferMux's one config (0022) from a
 // terminal: the key, the first signature of a hand-written config, a check of
-// a bundle against the trusted keys, and a host's part as it would run. The
+// a bundle against the trusted keys and, in a host's build, of its part
+// against the host's -config (0022, 11), and a host's part as it would run. The
 // UI's Publish does the signing in normal use.
 //
 //	infermux-config keygen -out config-key.age
 //	infermux-config sign -key config-key.age -host strix <dir>
-//	infermux-config verify -trusted-keys <file> <dir>
+//	infermux-config verify -trusted-keys <file> [-host strix -config <file>] <dir>
 //	infermux-config derive -host strix <dir>
 //
 // The passphrase is read from INFERMUX_CONFIG_PASSPHRASE, or the terminal.
@@ -146,9 +147,11 @@ func sign(args []string) error {
 func verify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	keys := fs.String("trusted-keys", "", "the public keys, one a line")
+	host := fs.String("host", "", "with -config, the host whose part to load")
+	base := fs.String("config", "", "the host's llama-swap -config, which its part must load with, as llama-swap loads both at start; without the daemon's environment, as the UI's Check")
 	fs.Parse(args)
-	if *keys == "" || fs.NArg() != 1 {
-		return errors.New("verify -trusted-keys <file> <dir>")
+	if *keys == "" || fs.NArg() != 1 || (*host == "") != (*base == "") {
+		return errors.New("verify -trusted-keys <file> [-host <name> -config <file>] <dir>")
 	}
 	trusted, err := configstore.ReadKeys(*keys)
 	if err != nil {
@@ -168,6 +171,15 @@ func verify(args []string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("signed, but does not load: %w", err)
+	}
+	if *host != "" {
+		part, err := cfg.Derive(*host)
+		if err == nil {
+			err = part.LoadsWith(*base, false)
+		}
+		if err != nil {
+			return fmt.Errorf("signed, but %s's part does not load with %s: %w", *host, *base, err)
+		}
 	}
 	fmt.Printf("revision %d by %s at %s: verified\n", m.Revision, m.Host, m.Time.Format(time.RFC3339))
 	return nil

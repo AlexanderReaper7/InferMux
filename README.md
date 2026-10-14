@@ -207,10 +207,13 @@ services.infermux = {
     trustedKeys = [ "q6NnXhYc3E5gq0n2m8l0Z8m0g6Yy3eJmWm4mVq3Zr2Q= the user's config key" ];
     seed = "/home/alice/nixcfg/infermux/config";   # nixcfg's copy, used when newer than the daemon's
     fetchDirs = [ "/srv/models" ];                  # where a model's missing file may be fetched to
+    buildCheck = { config = ./infermux/config; host = "strix"; };   # the same copy, from the flake
   };
   ui.configKey = "/home/alice/.config/infermux/config-key.age";
 };
 ```
+
+With `buildCheck`, the build fails when this host's part of that copy does not load with `settings`, as llama-swap loads the derived file with `-config` at start. The daemon would otherwise exit at its next start and restart without end. It checks the copy, not a newer version the daemon keeps (0022, 11).
 
 The UI's Config tab edits the YAML with completion and hover from the schema, checks the draft with the daemons' own loader as it is typed, and shows where each model would run. It loads this host's part with this host's runtimes, so a model that names a runtime the host lacks fails the check and Publish. A model or cloud that reads `${env.VAR}`, directly or through a YAML alias, is left to the daemon, which has the environment (0022, 11). Publish asks for the key's passphrase, signs the draft and hands it to this host's daemon. With `ui.configPassphraseCommand`, an executable that prints the passphrase, such as `secret-tool lookup service infermux-config` against the user's keyring, Publish asks for none, and whoever reaches that host's UI can sign a config every host runs. Once the daemon runs it, the UI writes nixcfg's copy, which Changes commits. A draft made from an older version than the one running gets a side-by-side comparison instead: build on the running version, or publish over it, which every host then shows as a conflict until it is dismissed.
 

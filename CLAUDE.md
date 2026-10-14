@@ -42,7 +42,7 @@ This file is rules and navigation only.
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/ ./cmd/infermux-config/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build && bun test)   # the frontend; bun runs webui/test
 nix develop -c go test -short ./internal/server/ ./internal/process/ .  # upstream's tests where we touch it
 nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_control.go infermux_control_test.go infermux_loadbalance_test.go infermux_off.go infermux_off_test.go infermux_stream_test.go infermux_jobs_test.go infermux_drain_test.go infermux_main_test.go infermux_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs internal/hold internal/drain cmd internal/server/warden.go internal/server/warden_test.go internal/process/warden.go internal/process/warden_test.go
