@@ -19,10 +19,10 @@ var envMacro = regexp.MustCompile(`\$\{env\.([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 //
 // With env false the caller has not the daemon's environment, which holds
 // the clouds' keys. llama-swap pastes each ${env.VAR} into the text before
-// it parses, so no stand-in fits every field it can sit in. The part is
-// loaded without its models, groups and clouds that read the environment, and
-// not at all when base reads it: the daemon loads those before it keeps the
-// config.
+// it parses, so no stand-in fits every field it can sit in. The part's
+// aliases are resolved, and it is loaded without its models, groups and
+// clouds that then read the environment, and not at all when base reads it:
+// the daemon loads those before it keeps the config.
 func (p *Part) LoadsWith(base string, env bool) error {
 	part := p.LlamaSwap
 	if !env {
@@ -82,10 +82,15 @@ func nodeReadsEnv(n *yaml.Node) bool {
 // withoutEnv is the part without each model, group and cloud that reads the
 // environment. Derive writes nothing else at the top.
 func withoutEnv(part []byte) ([]byte, error) {
+	// llama-swap decodes the config into plain values too, which refuses an
+	// anchor that holds itself and aliasing past yaml.v3's limit, both of which
+	// resolve would follow without end.
+	var plain any
 	var doc yaml.Node
-	if err := yaml.Unmarshal(part, &doc); err != nil || len(doc.Content) == 0 {
+	if yaml.Unmarshal(part, &plain) != nil || yaml.Unmarshal(part, &doc) != nil || len(doc.Content) == 0 {
 		return part, nil // llama-swap's load says what is wrong
 	}
+	resolve(&doc)
 	top := doc.Content[0]
 	for i := 1; i < len(top.Content); i += 2 {
 		entries := top.Content[i]
@@ -101,4 +106,17 @@ func withoutEnv(part []byte) ([]byte, error) {
 		entries.Content = kept
 	}
 	return yaml.Marshal(&doc)
+}
+
+// resolve puts in place of each alias the node it names, as llama-swap's
+// plain decode does, so that an entry reads what its aliases name and one
+// kept needs no anchor in one left out (sol, review 13).
+func resolve(n *yaml.Node) {
+	for i, c := range n.Content {
+		if c.Kind == yaml.AliasNode {
+			c = c.Alias
+			n.Content[i] = c
+		}
+		resolve(c)
+	}
 }

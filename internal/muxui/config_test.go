@@ -182,6 +182,26 @@ func TestCheckAcceptsATypedFieldFromTheEnvironment(t *testing.T) {
 	u := newConfigUI(t)
 	files := draft(u.f.gguf, "")
 	files["models/qwen.yaml"] += "ttl: ${env.INFERMUX_TEST_TTL}\n"
+	u.acceptsWhatTheDaemonLoads(t, files)
+}
+
+// And a model on two devices whose first place holds an anchor that reads
+// the environment, named by an alias in the second, whose ttl is its own
+// (sol, review 13).
+func TestCheckAcceptsAnAliasAcrossPlaces(t *testing.T) {
+	t.Setenv("INFERMUX_TEST_TTL", "30")
+	u := newConfigUI(t)
+	files := draft(u.f.gguf, "")
+	files["infermux.yaml"] = "hosts:\n  here:\n    devices:\n      cpu: {kind: cpu}\n      gpu: {kind: gpu}\nbalance:\n  qwen:\n    - place: here/cpu\n    - place: here/gpu\n      ttl: 60\n"
+	files["models/qwen.yaml"] += "ttl: &ttl ${env.INFERMUX_TEST_TTL}\nmetadata:\n  x: *ttl\n"
+	u.acceptsWhatTheDaemonLoads(t, files)
+}
+
+// acceptsWhatTheDaemonLoads loads the draft's part for here as the daemon
+// does, with INFERMUX_TEST_TTL set, then has the UI check and publish it
+// without the variable, as the UI runs.
+func (u *configUI) acceptsWhatTheDaemonLoads(t *testing.T, files map[string]string) {
+	t.Helper()
 	cfg, _, err := placement.Parse(toBytes(files))
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +213,7 @@ func TestCheckAcceptsATypedFieldFromTheEnvironment(t *testing.T) {
 	if err := part.LoadsWith(u.f.store.BaseConfig, true); err != nil {
 		t.Fatalf("the daemon's load: %v", err)
 	}
-	os.Unsetenv("INFERMUX_TEST_TTL") // the UI runs without the daemon's environment
+	os.Unsetenv("INFERMUX_TEST_TTL")
 	if _, out := u.call("POST", "/api/config/check", map[string]any{"files": files}); out["error"] != nil {
 		t.Errorf("Check refused a part the daemon loads: %v", out["error"])
 	}
