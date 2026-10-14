@@ -1,7 +1,7 @@
 # 0023. A batch request is a job that InferMux pauses mid-inference and resumes
 
 - Date: 2026-10-10
-- Status: built 2026-10-11 (`internal/jobs`), not deployed; Episteme does not send jobs yet
+- Status: built 2026-10-11 (`internal/jobs`), running on both hosts since 2026-10-14 (`/warden/jobs` answers); Episteme does not send jobs yet
 - Would replace [0001](0001-the-warden-decides-and-says-so.md)'s pause and resume pushed to consumers, for first-party consumers. Replaces item 4 of [0022](0022-one-signed-config-placed-by-device.md)'s "The warden covers every device". Keeps [0004](0004-infermux-request-priority.md): the user's own request is never killed, and now never paused.
 
 ## Context
@@ -94,4 +94,4 @@ llama.cpp v0.6.0's server on strix's CPU, Qwen3.5-0.8B-Q8_0 and then Qwen3.5-4B-
 - Once Episteme sends jobs, the warden stops pushing to consumers. `consumers` in `warden.yaml`, and CLAUDE.md's rules "A pause is a message, not a lease" and "An announcement must be idempotent at the other end", retire with it, and so does 0001's residual risk: a held job leaves no state at the consumer.
 - Episteme changes its client to the job envelope. That is work in Episteme's repository.
 - A crash, an OOM kill, a `SIGKILL` or a power cut loses the jobs in memory, since only a shutdown signal writes them. The consumer finds its job id unknown and submits the request again. A job's text up to the crash is lost with it.
-- Resuming at another place needs only the lanes, which `failover.yaml` provides today, so this does not have to wait for 0022.
+- Resuming at another place needs only the lanes, which the one config's `balance` and `failover` provide (0022).

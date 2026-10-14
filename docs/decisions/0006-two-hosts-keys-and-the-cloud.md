@@ -2,6 +2,7 @@
 
 - Date: 2026-10-03
 - Status: accepted; every milestone built by 2026-10-03: 1 to 6 here, 7 replaced by [0008](0008-the-zbox-has-its-own-ui.md), 8 as [0012](0012-a-model-names-its-gguf-on-hugging-face.md), 9 here, 10 replaced by [0011](0011-the-cpu-embedder-is-a-peer.md), 11 as [0013](0013-immich-ml-under-the-zbox-through-an-adapter.md)
+- Amended by [0022](0022-one-signed-config-placed-by-device.md) on 2026-10-14: groups are in the one config (item 9).
 - Rule: InferMux runs on every host with a card (reaperboi, zbox). Each is a front door, each warden judges only its own card, and InferMux itself routes a request for the other host's models there, over the tailnet's HTTPS, with the client's key untouched. Every client has a key; `keys.yaml` holds its SHA-256, its class and the models it may use, and both hosts read the same file. llama-swap's own `peers:` carries only OpenRouter.
 - Keeps 0001 (the machine that measures decides: each warden decides for its own card only) and 0004 (the user's own request is never killed: a forwarded request counts on both hosts it passes through).
 
@@ -34,7 +35,7 @@ Later milestones, decided now:
 
 7. *Replaced by 0008: the zbox has its own UI and checkout.* **The zbox runs infermux-ui as an agent,** without git and without the web app. The desktop's UI holds every host's files in the one nixcfg checkout and sends a zbox file to it on save. A zbox edit therefore needs the desktop on.
 8. **A model file may name its GGUF on Hugging Face** as `metadata.hf`, the path is derived under `/srv/models/hf/`, and the host that runs the model downloads it on save, with progress in the UI. Local-only GGUFs keep a plain path.
-9. **Groups are a per-host text file,** edited in the UI's text editor. *Built 2026-10-03* as `routing.yaml` in the models directory, because llama-swap now keeps groups under `routing.router`, where a matrix can stand instead. The user kept it after the embedder left the zbox's card (0011), with no model yet to put in a group. The UI refuses a group member that names no model, which llama-swap's loader allows.
+9. **Groups are in the one config** (0022, 3), edited in the Config tab with the rest of it, where a group is a placement label. The one config's loader refuses a group member that names no model, which llama-swap's loader allows.
 10. *Replaced by 0011: the embedder is a peer of its own unit.* **The desktop embedder moves under InferMux** on the CPU, and `never_unload` in `warden.yaml` keeps a yield from stopping it. Rejected: inferring "CPU only" from `--device none` in the command.
 11. *Built in 0013.* **Immich ML runs under the zbox's InferMux,** natively from nixpkgs built at the Immich server's tag, reached as `/upstream/immich-ml/predict`, so the zbox's card has one scheduler. Immich's requests are interactive. The 4B embedder takes turns with it on the card; a swap waits for in-flight requests (`internal/router/base.go`). Nothing runs on the zbox's CPU, a dual core. The rest of the zbox's layout waits for the semantic search project.
 

@@ -2,13 +2,14 @@
 
 - Date: 2026-10-09
 - Status: accepted
+- Amended by [0022](0022-one-signed-config-placed-by-device.md) on 2026-10-14: the CPU place is strix's `cpu` device in Octen's `failover` lane, not the `embed-cpu` peer (item 1).
 - Amends [0019](0019-model-overflow-uses-destination-capacity.md). Keeps [0017](0017-a-priority-process-takes-the-card.md).
 
 On 2026-10-09 at 13:08 the warden yielded strix's card to Warframe and unloaded the 35B. At 13:10 `semsearch-index-code.timer` started, the zbox answered 503 at `max_inflight: 1`, and `failover.yaml` overflowed the embedder to strix's `only_if_idle` place. `only_if_idle` only looked for other InferMux model requests, not for a game on the card. The `semsearch` key is `class: interactive`, so the warden's pause did not refuse it either. Bulk indexing loaded 5.8 GB under the game, and the timer would repeat it every 15 minutes while the zbox was busy.
 
 The user was offered three fixes and chose both halves:
 
-1. A batch key for indexing. Indexing is refused during a pause and overflows to `embed-cpu`, while queries keep the interactive key. This needs the client to send a different key for indexing, which hister's `document_api_key` does.
+1. A batch key for indexing. Indexing is refused during a pause and moves on to strix's CPU, Octen's `failover` lane (0022), while queries keep the interactive key. This needs the client to send a different key for indexing, which hister's `document_api_key` does.
 2. `only_if_idle` also respects the warden's yield. `Admission.begin` asks `Warden.Yielded()` and refuses an only-if-idle request for this host's GPU, whatever its key, with busy reason `yielded`. Failover moves on to the next place.
 
 Either half alone leaves a gap. The key alone fixes SemSearch but not the next interactive client that bulk-loads through overflow. The admission check alone covers every client, but an indexer with an interactive key still competes with queries at the zbox.

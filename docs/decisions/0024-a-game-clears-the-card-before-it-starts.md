@@ -1,7 +1,7 @@
 # 0024. A game clears the card before it starts, through a keyless control socket
 
 - Date: 2026-10-12
-- Status: accepted; built and tested 2026-10-12, not deployed or watched
+- Status: accepted; built and tested 2026-10-12, running on strix by 2026-10-14 (the socket is `infermux:users` 0660 and answers the user without a key); no launch through `infermux-hold` watched yet
 - Keeps [0004](0004-infermux-request-priority.md) (an interactive request in flight is never unloaded under) and [0017](0017-a-priority-process-takes-the-card.md) (reloads during a yield stay allowed).
 
 ## Context

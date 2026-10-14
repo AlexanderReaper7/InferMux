@@ -1,7 +1,7 @@
 # 0011. The CPU embedder is a peer of its own unit
 
 - Date: 2026-10-03
-- Status: accepted
+- Status: replaced by [0022](0022-one-signed-config-placed-by-device.md) on 2026-10-14. A CPU model is a local model on a host's `cpu` device, under the warden's CPU rules, started by `infermux-cpu` in the root `idle.slice`. `llama-embed.service` and the `embed-cpu` peer are gone; Octen's CPU place is strix's `cpu` in the failover lane, for batch keys. The reasoning below is why the warden's rules had to become per device first.
 - Rule: A model that never touches the card runs as its own systemd unit and is a llama-swap peer in a model file (`proxy: http://127.0.0.1:<port>`), not a local model. The warden sees only local models (0009), so it never stops, counts or gates it.
 - Replaces 0006, 10 (the embedder moves under InferMux, kept by `never_unload` in warden.yaml).
 

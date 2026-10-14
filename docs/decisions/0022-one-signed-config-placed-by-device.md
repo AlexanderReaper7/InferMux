@@ -1,8 +1,8 @@
 # 0022. One signed config for every host, with models placed on devices
 
 - Date: 2026-10-10
-- Status: proposed; nothing built
-- Would replace [0016](0016-a-model-fails-over-between-places.md) and [0019](0019-model-overflow-uses-destination-capacity.md)'s `failover.yaml`, [0011](0011-the-cpu-embedder-is-a-peer.md), and parts of [0005](0005-web-ui-and-config-outside-nix.md) and [0008](0008-the-zbox-has-its-own-ui.md). Keeps [0009](0009-the-gate-is-for-this-hosts-card.md), [0017](0017-a-priority-process-takes-the-card.md) and [0021](0021-overflow-never-takes-a-yielded-card.md).
+- Status: accepted; built 2026-10-11, and both hosts run it since 2026-10-14
+- Replaces [0011](0011-the-cpu-embedder-is-a-peer.md) and most of [0012](0012-a-model-names-its-gguf-on-hugging-face.md). Amends [0016](0016-a-model-fails-over-between-places.md) and [0019](0019-model-overflow-uses-destination-capacity.md) (`failover.yaml` is the lanes), [0005](0005-web-ui-and-config-outside-nix.md), [0006](0006-two-hosts-keys-and-the-cloud.md), [0008](0008-the-zbox-has-its-own-ui.md), [0013](0013-immich-ml-under-the-zbox-through-an-adapter.md) and [0021](0021-overflow-never-takes-a-yielded-card.md). Keeps [0009](0009-the-gate-is-for-this-hosts-card.md) and [0017](0017-a-priority-process-takes-the-card.md).
 
 ## Context
 
@@ -33,7 +33,7 @@ The user's choices, 2026-10-10:
 - **The config is a directory, signed as one unit:** `infermux.yaml` for hosts, devices, clouds, groups, `balance` and `failover`, and `models/<name>.yaml` for each definition, which keeps each model's dated notes in its own file. The signature covers a manifest of the revision, the timestamp, the host that published it, and the SHA-256 of every file.
 - **Each model records its GGUF's SHA-256 in the config.** A file fetched from another host is checked against what the user signed. Without it a compromised host could hand llama.cpp's parser a crafted file, which is what forced verification is meant to prevent. The add-model command fills it in from Hugging Face's metadata or by hashing the local file.
 - **Another host first, then the source,** for a missing GGUF. The tailnet is closer than Hugging Face, and the hash makes the order safe.
-- **Editing is a draft; Publish signs and pushes.** Validation runs on the draft. The private key is age-encrypted with a passphrase (scrypt) in nixcfg, and the UI decrypts it in memory for one Publish with the passphrase from the browser. That works on the zbox, which has no age identity (0008).
+- **Editing is a draft; Publish signs and pushes.** Validation runs on the draft. The private key is age-encrypted with a passphrase (scrypt) in nixcfg, and the UI decrypts it in memory for one Publish. The passphrase is random and lives in the user's login keyring on strix. strix's UI reads it there through `ui.configPassphraseCommand`; the zbox's UI, with no keyring (0008), asks the browser for it. The user, 2026-10-14: "If infermux needs a new key then just make one. Just put it password less onto my keyring." The cost is that whoever reaches strix's UI can sign a config every host runs. A host without the passphrase still cannot sign (decision 10).
 - **A device decides its hardware by environment, not only by flags.** A GPU device sets `CUDA_VISIBLE_DEVICES=<index>` and a CPU device sets it empty and adds `--device none -ngl 0`, so a stray `-ngl 99` in a model cannot reach a card it was not placed on. This answers 0011's objection to CPU models under InferMux, that a GPU model filed under the CPU by mistake would hide from the warden. The empty variable also covers raw commands such as the reranker and immich-ml.
 - **The warden's rules apply per device, not per host.** 0011's three rules (unload on a yield, free VRAM read only with nothing loaded, batch refused in a pause) were why a CPU model could not live under InferMux: they treated every local model as the card's tenant. Per device, a GPU yield unloads and gates only that GPU's models, and the VRAM rule stays a GPU rule. The CPU's own rules are in "The warden covers every device" below; this paragraph, as first written, gave the CPU none.
 - **CPU devices run their servers in an idle slice at the root of the cgroup tree,** through `Delegate=` on `infermux.service` or a transient unit. Not `cpu-inference.slice` as nixcfg names it today: systemd reads a dash in a slice name as nesting, so it is `_cpu.slice/cpu-inference.slice`, and its `cpu.idle` ranks it only inside `cpu.slice`, which competes with `user.slice` at weight 100. Measured 2026-10-10 with a busy loop in each, both pinned to core 23 for 10 s: in `cpu-inference.slice` 23% of the core against 76% in `user.slice`; in a slice at the root set to `CPUWeight=idle`, 0% against 98%.
@@ -78,17 +78,17 @@ Defaults the agent chose, open to change:
 
 ## Build order
 
-0. Remove `/etc/systemd/system.control/llama-embed.service` and its wants link, so the Nix unit and its idle slice apply. Done 2026-10-10, the user agreeing; the file is kept in `~/Projects/scratch/system.control-backup-2026-10-10/`. After a restart the embedder runs from the Nix unit in `cpu-inference.slice` at nice 19, but its threads are `SCHED_OTHER`, not the unit's `CPUSchedulingPolicy=idle`, and the slice is nested (above). Moving the slice to the root is nixcfg's fix and does not wait for the rest.
+0. Remove `/etc/systemd/system.control/llama-embed.service` and its wants link, so the Nix unit and its idle slice apply. Done 2026-10-10, the user agreeing; the file is kept in `~/Projects/scratch/system.control-backup-2026-10-10/`. After a restart the embedder runs from the Nix unit in `cpu-inference.slice` at nice 19, but its threads are `SCHED_OTHER`, not the unit's `CPUSchedulingPolicy=idle`, and the slice is nested (above). The root `idle.slice` replaced it in phase 8.
 1. The config format, its loader and each host's derivation, as pure Go: llama-swap models and groups, the two lanes, the warden's scope. Tested against today's files translated by hand.
 2. Signing and verification, the trusted keys in the Nix module, the daemon's state directory, start from the nixcfg copy.
 3. Sync between the daemons: push on Publish, compare revisions on the discovery poll, last write wins with the backup and the warning.
-4. Devices: the environment and flags, the CPU device in the idle slice. Retire `llama-embed.service` and `embed-cpu`.
+4. Devices: the environment and flags, the CPU device in the idle slice. `llama-embed.service` and `embed-cpu` were retired in phase 8.
 5. The failover lane in `internal/failover`.
 6. Fetching a GGUF from a host or the source, checked against its hash.
-7. The editor: the schema, the validation endpoint, the add-model commands, Publish, the conflict warning. Remove the model form, Peers and Routing. Built 2026-10-11, except the removal, which waits for phase 8 (below).
-8. Move both hosts over, and add status lines to 0005, 0008, 0011, 0016 and 0019.
+7. The editor: the schema, the validation endpoint, the add-model commands, Publish, the conflict warning. Built 2026-10-11. The model form, Peers, Routing and Downloads were removed on 2026-10-14.
+8. Move both hosts over, and add status lines to 0005, 0008, 0011, 0016 and 0019. Done 2026-10-14: strix and the zbox run the one config, signed with the dedicated key. Both started from nixcfg's seed, and a Publish from strix's Config tab reached the zbox.
 
-The warden on every device (above) was built 2026-10-11, after phase 7, and is in use only under the one config.
+The warden on every device (above) was built 2026-10-11, after phase 7, and runs on both hosts with the one config.
 
 ## Calls the agent made while building, for the user to review
 

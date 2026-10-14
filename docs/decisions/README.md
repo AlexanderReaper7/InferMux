@@ -4,7 +4,7 @@ Why InferMux (llama-warden until 2026-10-03) is built the way it is. One file pe
 
 These are records, not instructions. The *rule* a decision produced lives in [CLAUDE.md](../../CLAUDE.md), which is read every session; the reasoning lives here, which is read when someone asks "why is this like this" or is about to undo it. Grep this directory before changing something that looks arbitrary.
 
-Nothing here is edited to reflect later changes. A decision that was replaced gets a `Status:` line pointing at the one that replaced it, and the old record stays, because the reason it was wrong is the useful part.
+A record says what is true now. A decision that changes is edited in place and gets an `Amended by` line in its header; one replaced whole gets a `Status:` line naming its replacement and keeps its reasoning, because the reason it was wrong is the useful part. Git keeps the earlier text ([ADR 0017](https://github.com/AlexanderReaper7/agents/blob/main/docs/adr/0017-records-describe-the-current-state.md) in the agents repository).
 
 | # | decision | date |
 |---|---|---|
@@ -18,18 +18,18 @@ Nothing here is edited to reflect later changes. A decision that was replaced ge
 | [0008](0008-the-zbox-has-its-own-ui.md) | The zbox has its own UI and nixcfg checkout; Commit can take the GPG passphrase | 2026-10-03 |
 | [0009](0009-the-gate-is-for-this-hosts-card.md) | The gate is for this host's card: another host's and the cloud's requests are not paused, cancelled or counted here | 2026-10-03 |
 | [0010](0010-a-peers-facts-from-its-own-list.md) | A cloud peer's facts come from the peer's own model list; T3's OpenRouter instance folds into Local Codex | 2026-10-03 |
-| [0011](0011-the-cpu-embedder-is-a-peer.md) | The CPU embedder is a peer of its own unit, not a local model the warden would stop, count or gate | 2026-10-03 |
-| [0012](0012-a-model-names-its-gguf-on-hugging-face.md) | A model names its GGUF on Hugging Face, and the UI downloads it from main | 2026-10-03 |
+| [0011](0011-the-cpu-embedder-is-a-peer.md) | Replaced by 0022: the CPU embedder is a peer of its own unit, not a local model the warden would stop, count or gate | 2026-10-03 |
+| [0012](0012-a-model-names-its-gguf-on-hugging-face.md) | Replaced by 0022 except the naming: a model names its GGUF on Hugging Face, and the UI downloads it from main | 2026-10-03 |
 | [0013](0013-immich-ml-under-the-zbox-through-an-adapter.md) | Immich ML runs under the zbox's InferMux, and an adapter gives Immich its key | 2026-10-03 |
 | [0014](0014-performance-measured-at-the-front-door.md) | Each host times the requests it serves, in memory, and the UI shows both hosts | 2026-10-04 |
 | [0015](0015-a-stuck-agent-is-noted-escalated-then-refused.md) | A stuck agent is noted, sent to a stronger model, then refused; the presets get Qwen's sampling | 2026-10-05 |
-| [0016](0016-a-model-fails-over-between-places.md) | A model fails over between places, listed in failover.yaml, on 502, 503 or 504 | 2026-10-06 |
+| [0016](0016-a-model-fails-over-between-places.md) | A model fails over between places, the one config's lanes, on 502, 503 or 504 | 2026-10-06 |
 | [0017](0017-a-priority-process-takes-the-card.md) | A priority process with a CUDA context takes the card: contention at any load, unloaded at once but never under a request | 2026-10-06 |
 | [0018](0018-streams-pass-through-and-a-session-is-interactive-while-data-moves.md) | Streams pass through unchanged, routed by model; a WebSocket session is interactive only while data moves, and is closed with a code before an unload | 2026-10-07 |
 | [0019](0019-model-overflow-uses-destination-capacity.md) | Any model can overflow at a destination request limit; embedding work tries zbox, an idle 3080, then CPU for batch keys | 2026-10-08 |
 | [0021](0021-overflow-never-takes-a-yielded-card.md) | Overflow never takes a yielded card, whatever the key; bulk indexing gets a batch key | 2026-10-09 |
-| [0022](0022-one-signed-config-placed-by-device.md) | Proposed: one signed config on every host, models placed on devices in balance and failover lanes, edited as YAML | 2026-10-10 |
-| [0023](0023-a-batch-request-is-a-job-paused-mid-inference.md) | Proposed: a batch request is a job InferMux pauses mid-inference and resumes; first-party consumers use a job envelope, nothing is pushed to them | 2026-10-10 |
+| [0022](0022-one-signed-config-placed-by-device.md) | One signed config on every host, models placed on devices in balance and failover lanes, edited as YAML | 2026-10-10 |
+| [0023](0023-a-batch-request-is-a-job-paused-mid-inference.md) | A batch request is a job InferMux pauses mid-inference and resumes; first-party consumers use a job envelope, nothing is pushed to them | 2026-10-10 |
 | [0024](0024-a-game-clears-the-card-before-it-starts.md) | A game clears the card before it starts: `infermux-hold` pauses and unloads through a keyless control socket, and refuses the launch if the card stays busy | 2026-10-12 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.
