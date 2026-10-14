@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"strconv"
@@ -143,8 +144,7 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 				swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
 				return true, nil
 			}
-			held := &heldWriter{rw: rw, header: http.Header{}, final: last && i == len(lane)-1}
-			held.header.Set(PlaceHeader, h.where(place.Place, model))
+			held := &heldWriter{rw: rw, header: http.Header{}, place: h.where(place.Place, model), final: last && i == len(lane)-1}
 			h.next.ServeHTTP(held, attempt)
 			if !held.failed {
 				return true, nil
@@ -183,8 +183,7 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
 			return
 		}
-		rw.Header().Set(PlaceHeader, h.where(queue.Place, model))
-		h.next.ServeHTTP(rw, attempt)
+		h.next.ServeHTTP(&heldWriter{rw: rw, header: http.Header{}, place: h.where(queue.Place, model), queued: true}, attempt)
 		return
 	}
 	rw.Header().Set("Retry-After", "1")
@@ -225,17 +224,27 @@ func failsOver(status int, header http.Header) bool {
 	return false
 }
 
-// heldWriter holds an attempt's headers until its status is known. A status
-// that fails over is dropped with its body; any other is written to the
-// client, and from then on everything passes straight through, a stream
-// chunk by chunk.
+// informational is a 1xx that another status follows. 101 is the last one.
+func informational(status int) bool {
+	return status >= 100 && status < 200 && status != http.StatusSwitchingProtocols
+}
+
+// heldWriter holds an attempt's headers until its status is known. A 1xx
+// passes on to the client as it comes, and the status after it decides
+// (RFC 9110, 15.2). A status that fails over is dropped with its body; any
+// other is written to the client with the place that gave it, and from then
+// on everything passes straight through, a stream chunk by chunk.
 type heldWriter struct {
 	rw        http.ResponseWriter
 	header    http.Header
+	place     string
 	status    int
 	failed    bool
 	committed bool
 	final     bool
+	// queued is the request waiting at a place at its limit: its answer is
+	// the client's, whatever it is.
+	queued bool
 }
 
 func (w *heldWriter) Header() http.Header {
@@ -249,8 +258,12 @@ func (w *heldWriter) WriteHeader(status int) {
 	if w.status != 0 {
 		return
 	}
+	if informational(status) {
+		w.inform(status)
+		return
+	}
 	w.status = status
-	if (!w.final && failsOver(status, w.header)) || (status == http.StatusServiceUnavailable && w.header.Get(BusyHeader) != "") {
+	if !w.queued && ((!w.final && failsOver(status, w.header)) || (status == http.StatusServiceUnavailable && w.header.Get(BusyHeader) != "")) {
 		w.failed = true
 		return
 	}
@@ -258,10 +271,21 @@ func (w *heldWriter) WriteHeader(status int) {
 	w.rw.WriteHeader(status)
 }
 
+// inform sends a 1xx with its own headers and leaves the client's as they
+// were for the answer. A ReverseProxy clears the attempt's headers after it,
+// so the place is set at commit, not before.
+func (w *heldWriter) inform(status int) {
+	h := w.rw.Header()
+	kept := h.Clone()
+	maps.Copy(h, w.header)
+	w.rw.WriteHeader(status)
+	clear(h)
+	maps.Copy(h, kept)
+}
+
 func (w *heldWriter) commit() {
-	for k, v := range w.header {
-		w.rw.Header()[k] = v
-	}
+	maps.Copy(w.rw.Header(), w.header)
+	w.rw.Header().Set(PlaceHeader, w.place)
 	w.committed = true
 }
 

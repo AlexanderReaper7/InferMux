@@ -233,10 +233,21 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 	}
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			// Reading the body sends the 100 Continue a request asked for.
 			model, _ := swaputil.ExtractModel(r)
-			if model == "marked" {
+			switch model {
+			case "marked":
 				w.Header().Set("X-InferMux-Not-Started", "true")
 				w.Header().Set("X-InferMux-Busy", "capacity")
+			case "continues":
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			case "trailing":
+				w.Header().Set("Trailer", "X-InferMux-Busy, X-Done")
+				w.Write([]byte("trailing"))
+				w.Header().Set("X-InferMux-Busy", "capacity")
+				w.Header().Set("X-Done", "yes")
+				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
@@ -253,9 +264,9 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 		}
 		return p
 	}
-	write("failover.yaml", "embed: [{place: test/dies}, {place: test/up}]\nown: [{place: test/broken}, {place: test/up}]\nmimics: [{place: test/mimic}, {place: test/up}]\nmarks: [{place: test/marked}, {place: test/up}]\n")
+	write("failover.yaml", "embed: [{place: test/dies}, {place: test/up}]\nown: [{place: test/broken}, {place: test/up}]\nmimics: [{place: test/mimic}, {place: test/up}]\nmarks: [{place: test/marked}, {place: test/up}]\ncontinued: [{place: test/continues}, {place: test/up}]\ntrailers: [{place: test/trailing}, {place: test/up}]\n")
 	wfile := write("warden.yaml", "host: test\nfailover_file: failover.yaml\npolicy:\n  enabled: false\n")
-	cfg, err := config.LoadConfigFromReader(strings.NewReader(fmt.Sprintf("healthCheckTimeout: 15\nperformance:\n  disabled: true\nmodels:\n  dies:\n    cmd: \"false\"\n    proxy: http://127.0.0.1:9\n  up:\n    cmd: sleep 3600\n    proxy: %s\n  broken:\n    cmd: sleep 3600\n    proxy: %s\n  mimic:\n    cmd: sleep 3600\n    proxy: %s\n  marked:\n    cmd: sleep 3600\n    proxy: %s\n", backend.URL, broken.URL, broken.URL, broken.URL)))
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(fmt.Sprintf("healthCheckTimeout: 15\nperformance:\n  disabled: true\nmodels:\n  dies:\n    cmd: \"false\"\n    proxy: http://127.0.0.1:9\n  up:\n    cmd: sleep 3600\n    proxy: %s\n  broken:\n    cmd: sleep 3600\n    proxy: %s\n  mimic:\n    cmd: sleep 3600\n    proxy: %s\n  marked:\n    cmd: sleep 3600\n    proxy: %s\n  continues:\n    cmd: sleep 3600\n    proxy: %s\n  trailing:\n    cmd: sleep 3600\n    proxy: %s\n", backend.URL, broken.URL, broken.URL, broken.URL, broken.URL, broken.URL)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,17 +286,23 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 	defer startWarden(wfile, "", "", httpServer, func() *server.Server { return srv }, logs.ProxyLogs)()
 	front := httptest.NewServer(httpServer.Handler)
 	defer front.Close()
-	var header http.Header
-	post := func(model string) (int, string, string) {
-		resp, err := http.Post(front.URL+"/v1/embeddings", "application/json", strings.NewReader(fmt.Sprintf(`{"model":%q,"input":["hello"]}`, model)))
+	var header, trailer http.Header
+	postWith := func(model string, extra http.Header) (int, string, string) {
+		req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/embeddings", strings.NewReader(fmt.Sprintf(`{"model":%q,"input":["hello"]}`, model)))
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range extra {
+			req.Header[k] = v
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(resp.Body)
-		header = resp.Header
+		header, trailer = resp.Header, resp.Trailer
 		return resp.StatusCode, string(raw), resp.Header.Get(failover.PlaceHeader)
 	}
+	post := func(model string) (int, string, string) { return postWith(model, nil) }
 	if code, body, place := post("embed"); code != 200 || body != "up" || place != "test/up" {
 		t.Fatalf("a model that did not start: %d %q at %q, want the next place's 200", code, body, place)
 	}
@@ -313,6 +330,17 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 			t.Errorf("%s: sent on to the next place", c.name)
 		default:
 		}
+	}
+	// A client that asks for 100 Continue gets it from InferMux, and the
+	// model is not asked: llama-swap would take its 100 for the status.
+	if code, body, place := postWith("continued", http.Header{"Expect": {"100-continue"}}); code != 200 || body != "up" || place != "test/up" {
+		t.Errorf("a 503 after a 100 Continue: %d %q at %q, want the next place's 200", code, body, place)
+	} else {
+		<-served
+	}
+	// A trailer named as InferMux's does not reach the client.
+	if code, body, _ := post("trailers"); code != 200 || body != "trailing" || trailer.Get("X-Done") != "yes" || trailer.Get("X-InferMux-Busy") != "" {
+		t.Errorf("a model's trailers: %d %q, trailers %v", code, body, trailer)
 	}
 }
 

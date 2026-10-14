@@ -8,8 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -259,6 +263,10 @@ func TestMarkSeesWhetherAModelHadTheRequest(t *testing.T) {
 		if res.Header.Get(BusyHeader) != "" || fmt.Sprint(res.Header.Values(PlaceHeader)) != "[zbox/embed]" {
 			t.Errorf("%s: InferMux's headers are %v", c.path, res.Header)
 		}
+		// After the answer, the headers read as they went out.
+		if after := rw.Header(); (after.Get(NotStartedHeader) != "") != c.marked || after.Get(BusyHeader) != "" || after.Get(PlaceHeader) != "zbox/embed" {
+			t.Errorf("%s: after the answer InferMux's headers are %v", c.path, after)
+		}
 	}
 }
 
@@ -505,5 +513,184 @@ func TestTheFailoverLane(t *testing.T) {
 	h.Set(map[string][]Place{"m": {{Place: "zbox"}, {Place: "strix"}, {Place: "strix/m@cpu", Failover: true, BatchOnly: true}}})
 	if rw := post(t, h, "m", nil); rw.Code != 502 || fmt.Sprint(p.attempts) != "[zbox/m m]" {
 		t.Fatalf("attempts %v status %d", p.attempts, rw.Code)
+	}
+}
+
+// A 1xx is not the answer: it passes on to the client, and the status after
+// it decides (RFC 9110, 15.2). A model can send 103, and any Go server sends
+// 100 Continue when it reads a body whose request said Expect: 100-continue.
+func TestAnInformationalAnswerIsPassedOn(t *testing.T) {
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Reading the body sends the 100 Continue the request asked for.
+		m, _ := swaputil.ExtractModel(r)
+		if m != "zbox/embed" {
+			io.WriteString(w, "from "+m)
+			return
+		}
+		if r.Header.Get("X-Hint") != "" {
+			w.Header().Set("Link", "</hint>; rel=preload")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.Header().Del("Link")
+		}
+		status, _ := strconv.Atoi(r.Header.Get("X-Status"))
+		w.WriteHeader(status)
+		io.WriteString(w, "model error")
+	}))
+	defer model.Close()
+	target, _ := url.Parse(model.URL)
+	// As llama-swap's process proxy, which passes a 1xx on as it comes.
+	front := httptest.NewServer(newHandler(Mark(httputil.NewSingleHostReverseProxy(target))))
+	defer front.Close()
+	for _, c := range []struct {
+		name         string
+		hint, expect string
+		status, want int
+		body, place  string
+	}{
+		{"103, then 503", "yes", "", 503, 200, "from embed", "reaperboi/embed"},
+		{"103, then 500", "yes", "", 500, 500, "model error", "zbox/embed"},
+		{"100 Continue, then 503", "", "100-continue", 503, 200, "from embed", "reaperboi/embed"},
+	} {
+		req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/embeddings", strings.NewReader(`{"model":"embed","input":["a"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Status", strconv.Itoa(c.status))
+		if c.hint != "" {
+			req.Header.Set("X-Hint", c.hint)
+		}
+		if c.expect != "" {
+			req.Header.Set("Expect", c.expect)
+		}
+		var informed []int
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{Got1xxResponse: func(code int, _ textproto.MIMEHeader) error {
+			informed = append(informed, code)
+			return nil
+		}}))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != c.want || string(raw) != c.body || resp.Header.Get(PlaceHeader) != c.place {
+			t.Errorf("%s: %d %q at %q, want %d %q at %q", c.name, resp.StatusCode, raw, resp.Header.Get(PlaceHeader), c.want, c.body, c.place)
+		}
+		if resp.Header.Get("Link") != "" {
+			t.Errorf("%s: the 103's header is on the answer", c.name)
+		}
+		if c.hint != "" && !slices.Contains(informed, http.StatusEarlyHints) {
+			t.Errorf("%s: the client saw %v, not the 103", c.name, informed)
+		}
+	}
+}
+
+// A ReverseProxy clears the headers it was given after it passes a 1xx on.
+// Through the remote router no Mark puts InferMux's back, and the answer
+// still names its place, at a place and where the request queues.
+func TestThePlaceOutlastsAnInformationalAnswer(t *testing.T) {
+	zbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Write([]byte(`{"data":[{"id":"embed","meta":{"llamaswap":{"type":"model"}}}]}`))
+			return
+		}
+		io.ReadAll(r.Body)
+		if r.Header.Get(MaxInflightHeader) != "" && r.Header.Get("X-Queue") != "" {
+			w.Header().Set(BusyHeader, "capacity")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		io.WriteString(w, "zbox")
+	}))
+	defer zbox.Close()
+	router, err := remote.New([]remote.Host{{Name: "zbox", URL: zbox.URL}}, &places{}, func(model string) bool { return model == "embed" }, "", remoteLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Poll("zbox")
+	h := New(router, "reaperboi", nopLog{})
+	h.Set(map[string][]Place{"embed": {{Place: "zbox", MaxInflight: 1}}})
+	front := httptest.NewServer(h)
+	defer front.Close()
+	for _, queue := range []bool{false, true} {
+		req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/embeddings", strings.NewReader(`{"model":"embed","input":["a"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Expect", "100-continue")
+		if queue {
+			req.Header.Set("X-Queue", "yes")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || string(raw) != "zbox" || resp.Header.Get(PlaceHeader) != "zbox/embed" {
+			t.Errorf("queued %v: %d %q at %q, want 200 \"zbox\" at zbox/embed", queue, resp.StatusCode, raw, resp.Header.Get(PlaceHeader))
+		}
+	}
+}
+
+// A model's trailers are its own. One named as an InferMux header does not
+// reach the client, declared or sent with net/http's TrailerPrefix, and it
+// does not make a model's 503 read as a place at its limit, which would keep
+// the request off the failover lane.
+func TestAModelCannotSendInferMuxTrailers(t *testing.T) {
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m, _ := swaputil.ExtractModel(r)
+		if m != "zbox/embed" {
+			io.WriteString(w, "from "+m)
+			return
+		}
+		w.Header().Set("Trailer", "X-InferMux-Busy, X-Done")
+		w.Header().Add("Trailer", "X-InferMux-Not-Started")
+		status, _ := strconv.Atoi(r.Header.Get("X-Status"))
+		w.WriteHeader(status)
+		io.WriteString(w, "model's")
+		w.Header().Set(BusyHeader, "capacity")
+		w.Header().Set(NotStartedHeader, "true")
+		w.Header().Set("X-Done", "yes")
+		if r.Header.Get("X-Undeclared") != "" {
+			w.Header().Set(http.TrailerPrefix+PlaceHeader, "elsewhere/embed")
+		}
+	}))
+	defer model.Close()
+	target, _ := url.Parse(model.URL)
+	h := New(Mark(httputil.NewSingleHostReverseProxy(target)), "reaperboi", nopLog{})
+	h.Set(map[string][]Place{"embed": {{Place: "zbox"}, {Place: "reaperboi", Failover: true}}})
+	front := httptest.NewServer(h)
+	defer front.Close()
+	for _, c := range []struct {
+		name       string
+		status     int
+		undeclared bool
+		want       string
+	}{
+		{"declared", 200, false, "model's"},
+		// With one undeclared, ReverseProxy sends them all with TrailerPrefix.
+		{"undeclared", 200, true, "model's"},
+		{"on a 503", 503, false, "from embed"},
+	} {
+		req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/embeddings", strings.NewReader(`{"model":"embed","input":["a"]}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Status", strconv.Itoa(c.status))
+		if c.undeclared {
+			req.Header.Set("X-Undeclared", "yes")
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if string(raw) != c.want {
+			t.Errorf("%s: %d %q, want %q", c.name, resp.StatusCode, raw, c.want)
+		}
+		for k := range resp.Trailer {
+			if isOurs(k) {
+				t.Errorf("%s: the client got the trailer %s: %v", c.name, k, resp.Trailer)
+			}
+		}
+		if c.status == 200 && resp.Trailer.Get("X-Done") != "yes" {
+			t.Errorf("%s: the model's own trailer is gone: %v", c.name, resp.Trailer)
+		}
 	}
 }
