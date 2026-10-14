@@ -126,7 +126,8 @@ func (a activeModels) qualifyHere(requested string) (string, bool, bool) {
 //
 // A job (0023) sends each attempt through the whole of it, failover first,
 // as a client would. The returned func writes the unfinished jobs to disk,
-// and is called on a shutdown signal before the server stops.
+// then ends the goroutines started here, the warden's loop last. It is
+// called on a shutdown signal before the server stops.
 func startWarden(path, configPath, configDir string, httpServer *http.Server, active func() *server.Server, log *logmon.Monitor) (stop func()) {
 	if path == "" {
 		return func() {}
@@ -163,7 +164,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			os.Exit(1)
 		}
 	}
-	ctx := context.Background()
+	// Cancelled by the returned stop: the remote hosts' polls, the config
+	// watchers and the one config's sync and fetches end with it.
+	ctx, cancel := context.WithCancel(context.Background())
 	local := func(model string) bool {
 		_, _, ok := active().QualifyModel(model)
 		return ok
@@ -364,6 +367,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		if err := jobStore.Stop(10 * time.Second); err != nil {
 			log.Warnf("Jobs not written: %v", err)
 		}
+		cancel()
+		// Waits for a tick in flight, after the jobs are written.
+		w.Stop()
 	}
 }
 

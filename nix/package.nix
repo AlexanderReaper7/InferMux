@@ -38,6 +38,7 @@ let
       ../infermux_jobs_test.go
       ../infermux_loadbalance_test.go
       ../infermux_stream_test.go
+      ../infermux_test.go
       ../config-schema.json
       ../config.example.yaml
       ../warden.example.yaml
