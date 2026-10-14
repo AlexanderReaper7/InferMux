@@ -43,6 +43,8 @@ func (s *Store) wait(j *Job) bool {
 		var timer <-chan time.Time
 		now := s.now()
 		switch {
+		case s.draining.Load():
+			// Until Stop: the attempt would be cut.
 		case j.auth == nil && s.keysRequired():
 			// Read back after a restart: the client's key comes with its
 			// next request for the job (Rekey).
@@ -106,7 +108,9 @@ func (s *Store) attempt(j *Job) bool {
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "127.0.0.1:0"
 	out := &attemptWriter{job: j, header: http.Header{}, store: s}
+	s.attempting.Add(1)
 	broke := serve(s.Serve, out, req)
+	s.attempting.Add(-1)
 	cause := context.Cause(ctx)
 
 	j.mu.Lock()

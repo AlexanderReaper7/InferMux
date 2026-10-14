@@ -483,6 +483,10 @@ func main() {
 				proxyLog.Infof("received signal %v, shutting down", sig)
 				watcherCancel()
 
+				// InferMux: a deploy's stop drains, then the unfinished jobs
+				// go to disk (infermux.go), all before the backstop's clock.
+				stopInferMux()
+
 				// Backstop against a stalled shutdown: force the process to
 				// exit once the whole graceful sequence has had its full budget.
 				// On Windows the Job Object reaps upstream processes on exit, so
@@ -492,9 +496,6 @@ func main() {
 					proxyLog.Warnf("graceful shutdown exceeded %v, forcing exit", shutdownTimeout)
 					os.Exit(1)
 				}()
-
-				// InferMux: the unfinished jobs go to disk first (infermux.go).
-				stopInferMux()
 
 				activeMu.RLock()
 				srv := activeSrv

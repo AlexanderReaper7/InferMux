@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -112,6 +113,11 @@ type Store struct {
 	// Limit is how many unfinished jobs the store holds before it refuses
 	// more with 429.
 	Limit int
+
+	// draining: a deploy's stop waits for the attempts running and starts
+	// no new one (0026). attempting is how many run.
+	draining   atomic.Bool
+	attempting atomic.Int64
 
 	mu       sync.Mutex
 	jobs     map[string]*Job

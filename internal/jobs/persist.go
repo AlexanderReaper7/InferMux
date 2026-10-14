@@ -35,6 +35,13 @@ type savedJob struct {
 	NotBefore time.Time       `json:"not_before,omitzero"`
 }
 
+// Drain starts no new attempt from now on and lets the ones running go on,
+// for a deploy's stop to wait for (0026). Stop pauses what is still running.
+func (s *Store) Drain() { s.draining.Store(true) }
+
+// Attempting is how many attempts are running.
+func (s *Store) Attempting() int { return int(s.attempting.Load()) }
+
 // Stop refuses new jobs, stops every attempt as a pause, waits up to timeout
 // for the runners, and writes the unfinished jobs to File. Then the event
 // streams end.

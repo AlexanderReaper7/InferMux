@@ -34,10 +34,7 @@ func init() { process.SetStartGate(gateStart) }
 var offWarden atomic.Pointer[warden.Warden]
 
 func gateStart(string) error {
-	if *flagOffFile == "" {
-		return nil
-	}
-	reason := offReason(*flagOffFile)
+	reason := offNow()
 	switch w := offWarden.Load(); {
 	case reason == "":
 		return nil
@@ -46,6 +43,15 @@ func gateStart(string) error {
 	default:
 		return warden.OffError{Reason: reason}
 	}
+}
+
+// offNow is why the local models are off by -off-file, "" when they are on
+// or there is no file.
+func offNow() string {
+	if *flagOffFile == "" {
+		return ""
+	}
+	return offReason(*flagOffFile)
 }
 
 // offReason is why the local models are off, "" when they are on. A file

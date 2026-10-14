@@ -742,6 +742,37 @@ func TestAShutdownWritesTheJobsAndTheyGoOnAfterTheRestart(t *testing.T) {
 	}
 }
 
+// A deploy's drain (0026): the attempt running finishes, and no new one
+// starts until the stop.
+func TestADrainLetsTheRunningAttemptFinishAndStartsNoOther(t *testing.T) {
+	inside := make(chan struct{})
+	release := make(chan struct{})
+	m := &model{t: t, words: 5}
+	m.onToken = func(n int, word string, r *http.Request) {
+		if n == 1 && word == "w2" {
+			close(inside)
+			<-release
+		}
+	}
+	s := newStore(t, m)
+	running := create(t, s, "/v1/chat/completions", chatBody)
+	<-inside
+	s.Drain()
+	waiting := create(t, s, "/v1/chat/completions", chatBody)
+	if s.Attempting() != 1 {
+		t.Fatalf("attempting %d", s.Attempting())
+	}
+	close(release)
+	until(t, running, Done)
+	if _, content, _ := heard(running); content != words("w", 5) {
+		t.Fatalf("heard %q", content)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if s.Attempting() != 0 || m.attempts() != 1 || waiting.Snapshot(false).State != Queued {
+		t.Fatalf("attempting %d, %d attempts, the new job %s", s.Attempting(), m.attempts(), waiting.Snapshot(false).State)
+	}
+}
+
 // The API, through the warden's key check, which names the client.
 func api(t *testing.T, s *Store) *httptest.Server {
 	s.Client = func(r *http.Request) string { return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") }

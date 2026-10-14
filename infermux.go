@@ -18,6 +18,7 @@ import (
 
 	"github.com/mostlygeek/llama-swap/internal/catalog"
 	"github.com/mostlygeek/llama-swap/internal/cpurun"
+	"github.com/mostlygeek/llama-swap/internal/drain"
 	"github.com/mostlygeek/llama-swap/internal/event"
 	"github.com/mostlygeek/llama-swap/internal/failover"
 	"github.com/mostlygeek/llama-swap/internal/fetch"
@@ -316,7 +317,10 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		offWarden.Store(w)
 		watchOff(ctx, *flagOffFile, w.SetOff)
 	}
-	httpServer.Handler = failovers
+	// Outermost, so a deploy's stop refuses every new request before
+	// anything starts work for it (0026).
+	drains := &drain.Drain{RetryAfter: drainRetryAfter}
+	httpServer.Handler = drains.Wrap(failovers)
 	w.Start()
 	stopControl := func() {}
 	if *flagControlSocket != "" {
@@ -370,16 +374,46 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		go (&configwatcher.DirWatcher{Path: absolute(configDir), OnChange: reload}).Run(ctx)
 	}
 	return func() {
+		// A deploy's stop lets the requests and job attempts running finish
+		// first (0026). With the local models off it is a safety stop's, the
+		// zbox's fallback, and cuts at once as before.
+		drains.Start()
+		if reason := offNow(); reason != "" {
+			log.Infof("Stopping without a drain, the local models are off: %s", reason)
+		} else {
+			jobStore.Drain()
+			if n, a := drains.Running(), jobStore.Attempting(); n > 0 || a > 0 {
+				log.Infof("Draining for up to %s: %d request(s), %d job attempt(s) running", drainTimeout, n, a)
+				if drain.Wait(drainTimeout, drains.Running, jobStore.Attempting) {
+					log.Infof("Drained")
+				} else {
+					log.Warnf("Drain ended with %d request(s), %d job attempt(s) still running: jobs pause, the rest are cut", drains.Running(), jobStore.Attempting())
+				}
+			}
+		}
 		unsubscribe()
 		stopControl()
 		if err := jobStore.Stop(10 * time.Second); err != nil {
 			log.Warnf("Jobs not written: %v", err)
 		}
+		// An idle session gets 1012 rather than a dropped connection (0018,
+		// 7), and then every request left ends.
+		w.CloseSessions(stream.ServiceRestart, "infermux: restarting")
+		drains.Cut()
 		cancel()
 		// Waits for a tick in flight, after the jobs are written.
 		w.Stop()
 	}
 }
+
+// A deploy's stop waits up to drainTimeout for the requests running (0026).
+// The unit's TimeoutStopSec is above it, the jobs' 10 s and llama-swap's own
+// 35 s (nix/module.nix).
+var drainTimeout = 40 * time.Second
+
+// drainRetryAfter is the Retry-After of a request refused while draining:
+// about how long a restart takes.
+const drainRetryAfter = 5
 
 // jobsFile is -jobs-file, or jobs.json in systemd's StateDirectory. Outside
 // both, an unfinished job is lost on shutdown, and the log says so.

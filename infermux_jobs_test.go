@@ -188,7 +188,10 @@ func TestProxy_AJobPausedByTheWardenGoesOnAfterTheResume(t *testing.T) {
 		t.Fatalf("continued with %v", continued)
 	}
 
-	// A shutdown with a job unfinished.
+	// A shutdown with a job unfinished, past a drain kept short (0026).
+	was := drainTimeout
+	drainTimeout = 100 * time.Millisecond
+	defer func() { drainTimeout = was }()
 	resp = do("POST", "/warden/jobs", "episteme-key", `{"path":"/v1/chat/completions","body":{"model":"gpu","messages":[{"role":"user","content":"forever"}],"max_tokens":1000}}`)
 	json.NewDecoder(resp.Body).Decode(&job)
 	until(job.ID, "running")

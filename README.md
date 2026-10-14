@@ -186,7 +186,11 @@ imx -XDELETE -H 'X-InferMux: cli' 127.0.0.1:5001/warden/jobs/job_...
 
 An event is `state` (queued, running with the place, paused with the reason, done, failed with the answer, cancelled), `chunk` (an OpenAI stream chunk, unchanged), or `response` (the whole answer of an embedding or rerank). Chat and completions always stream. A tool call is sent only whole, so a pause inside one drops it and the model writes it again. An embedding or rerank is never stopped inside: a yield lets it finish, and a job is refused before it starts like any batch request. A job refused by every place waits for a device here to resume, and asks again on its own at its Retry-After, at most 30 s apart, one job per model and key at a time. Another host's yield cuts the stream, and the job continues from what it had after 2 s. Three failures in a row without a new token fail it.
 
-A job belongs to the key that made it. It lives in memory and is kept 10 minutes after it ends. On SIGTERM InferMux writes the unfinished ones, never their keys, to `-jobs-file` or `$STATE_DIRECTORY/jobs.json`, and reads them back and deletes the file at start. A job read back waits for its key's next request to `/warden/jobs`. Status counts the jobs and says why the paused ones are.
+A job belongs to the key that made it. It lives in memory and is kept 10 minutes after it ends. On SIGTERM InferMux first drains (below), then writes the unfinished ones, never their keys, to `-jobs-file` or `$STATE_DIRECTORY/jobs.json`, and reads them back and deletes the file at start. A job read back waits for its key's next request to `/warden/jobs`. Status counts the jobs and says why the paused ones are.
+
+## A deploy's stop
+
+On SIGTERM InferMux answers every new request 503 with `"type":"draining"` and `Retry-After: 5`, and gives the ones running up to 40 s to finish (0026). A job still running then is paused and written, and the rest are cut. With the off file there it drains nothing. The unit is `KillMode=mixed` and `TimeoutStopSec=90`, so the SIGTERM is the daemon's alone and a stop can take up to 85 s.
 
 ## One config for every host
 

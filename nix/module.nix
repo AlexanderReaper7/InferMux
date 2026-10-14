@@ -517,6 +517,13 @@ in
           );
           Restart = "always";
           RestartSec = 5;
+          # A stop drains (0026): SIGTERM reaches only the daemon, which lets
+          # the requests running finish and then stops its llama-servers
+          # itself. Under control-group they died with the SIGTERM.
+          KillMode = "mixed";
+          # Above the longest stop: the drain's 40 s, the jobs' 10 s, and
+          # llama-swap's own shutdown, forced at 35 s.
+          TimeoutStopSec = 90;
           LoadCredential = lib.mapAttrsToList (name: path: "${name}:${path}") cfg.credentials;
         }
         // sandbox

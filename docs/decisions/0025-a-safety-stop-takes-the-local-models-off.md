@@ -2,6 +2,7 @@
 
 - Date: 2026-10-14
 - Status: accepted; built 2026-10-14 and running on the zbox since (nixcfg `dbdb36f`), the off file set by hand only (Verification, below); items 7, 8 and 9 rebuilt the same day after sol's review 10
+- Amended by [0026](0026-a-deploy-waits-for-the-requests-running.md): a deploy drains, so the zbox's `TimeoutStopSec=5` is gone and item 8's stop kills the models itself.
 - Amends [0004](0004-infermux-request-priority.md): a second exception to "the user's own request is never killed". Keeps [0009](0009-the-gate-is-for-this-hosts-card.md) (another host's and a cloud's requests pass), [0016](0016-a-model-fails-over-between-places.md) (a 503 fails over) and [0023](0023-a-batch-request-is-a-job-paused-mid-inference.md) (a job's request is paused, not lost).
 
 ## Context
@@ -21,7 +22,7 @@ The agent listed three options on 2026-10-14: A, take the zbox's local devices o
 5. **The controller says why in a file, `-off-file`, and InferMux reads it.** The agent chose the file over the control socket (0024) that option A named. A daemon restarted at 23:00, by a deploy or a crash, must start no model, so it has to be off before it takes its first request. A socket can only be called once the daemon listens, and a request can arrive in between. InferMux reads the file before it installs its handler and before the jobs read back from `jobs.json` start, then every second. The file's text is the reason the refusals and the log carry. A file that exists but cannot be read counts as off, because an unreadable file is no evidence that the stop is over.
 6. **The controller's `prepare` replaces the `ExecCondition`.** It is InferMux's `ExecStartPre` on the zbox, run as root. It writes the file before a start at night unless the controller's state says running, and removes it otherwise. The `ExecCondition` would have kept the whole daemon down at night.
 7. **No local model starts while off, whoever asks.** The warden's gate sees only inference requests, and a GET to `/upstream/<model>/` or to the model routes `/props`, `/v1/audio/voices` and `/sdapi/v1/loras`, preload, and a swap queued before the stop each start a model without it. So the start itself is gated, at the one place every start passes: the process's run loop in llama-swap's `internal/process`, a marked hook in an upstream file (`internal/process/warden.go`). The gate reads the off file itself at each start, so it holds from the moment the file is there and before the warden exists, which preload needs, since it starts as the server is made. A refused start never begins and answers whoever asked with the gate's own 503. The 1 s read stays as the backstop for a start that began before the file: each read while off stops any model running.
-8. **A model that runs anyway still stops the daemon.** For as long as the pause lasts, the controller looks at the unit's cgroup every second, and a model that has run there for 10 s stops the unit, as every stop did before. A controller that dies at night waits up to the same 10 s before it exits.
+8. **A model that runs anyway still stops the daemon.** For as long as the pause lasts, the controller looks at the unit's cgroup every second, and a model that has run there for 10 s stops the unit, as every stop did before. That stop kills the models itself and does not wait for the daemon, whose SIGTERM is its own since 0026. A controller that dies at night waits up to the same 10 s before it exits.
 9. **The controller's pauses and resumes and `prepare` take turns, under one `flock`.** `prepare` reads the controller's state and then sets the file from it, so without the lock a thermal pause between the two would have its file removed.
 
 ## Consequences
@@ -32,7 +33,7 @@ The agent listed three options on 2026-10-14: A, take the zbox's local devices o
 - Immich gets the 503 through its adapter (0013) where before it got the adapter's error for a stopped daemon. Both are 5xx.
 - Consumers hear nothing of it: off is not a verdict, and the verdicts and their announcements go on as before. A host with consumers that set `offFile` would leave them unpaused while their batch requests get 503. Not built, because the zbox, the one host with a safety stop, has no consumers.
 - `/warden/verdict` shows `off` with its reason and since, and the Status page shows it above the verdict as a red notice with the file's text and since when. The notice is the coordinating session's call, 2026-10-14: small, and in the UI only.
-- A deploy still stops the daemon and cuts a cloud job, whose continuation is 0023's open choice. The zbox's `TimeoutStopSec=5` still cuts a request in flight after 5 s.
+- A deploy still stops the daemon. It lets the requests running finish for up to 40 s first (0026), and then pauses a cloud job still running, whose continuation is 0023's open choice. A stop while off drains nothing.
 
 ## Verification
 

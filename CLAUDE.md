@@ -25,6 +25,7 @@ This file is rules and navigation only.
 | `internal/failover/` | ours: failure and capacity overflow between model destinations (0016, [0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md), 0021); admission counts each serving host's requests after authentication; `mark.go` marks llama-swap's own 500 for a request no model had, the one 500 that fails over |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
 | `internal/jobs/` | ours: the job envelope (0023); a batch request InferMux pauses mid-reply on a yield and continues from its text, each attempt sent through failover in-process; `/warden/jobs`; written to disk only on SIGTERM |
+| `internal/drain/` | ours: a deploy's stop (0026): the outermost handler, 503 `draining` for a new request, the running ones waited for up to 40 s, then cut |
 | `infermux_off.go`, `internal/warden/off.go` | ours: the off file a safety stop writes, read before the first request and every second; while it is there every local request is refused (0025) |
 | `infermux_control.go`, `internal/hold/`, `cmd/infermux-hold/` | ours: the keyless control socket, and the command that clears the card through it before a game starts (0024) |
 | `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
@@ -35,16 +36,16 @@ This file is rules and navigation only.
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build; the one config's YAML editor is CodeMirror (`src/lib/editor.ts`, `yamlschema.ts`), tested by bun in `test/` |
 | `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
 | `internal/process/warden.go`, `warden_test.go` | ours: the gate every start of a local model passes, set by `infermux_off.go` from the off file (0025); its one call is marked in upstream's `process_command.go`, in `run()` |
-| `llama-swap.go` | upstream's `main`, plus one flag and two calls: `startWarden`, and the stop it returns, first in the SIGTERM branch (0023) |
+| `llama-swap.go` | upstream's `main`, plus one flag and two calls: `startWarden`, and the stop it returns, first in the SIGTERM branch and before the backstop's clock (0023, 0026) |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build && bun test)   # the frontend; bun runs webui/test
 nix develop -c go test -short ./internal/server/ ./internal/process/ .  # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_control.go infermux_control_test.go infermux_loadbalance_test.go infermux_off.go infermux_off_test.go infermux_stream_test.go infermux_jobs_test.go infermux_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs internal/hold cmd internal/server/warden.go internal/server/warden_test.go internal/process/warden.go internal/process/warden_test.go
+nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_control.go infermux_control_test.go infermux_loadbalance_test.go infermux_off.go infermux_off_test.go infermux_stream_test.go infermux_jobs_test.go infermux_drain_test.go infermux_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs internal/hold internal/drain cmd internal/server/warden.go internal/server/warden_test.go internal/process/warden.go internal/process/warden_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the Go tests above and webui's
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
@@ -85,6 +86,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **Free VRAM is only read while no GPU model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001). A CPU model holds no VRAM (0022).
 - **A WebSocket counts toward the warden only while data frames cross** (0018). An open connection and a ping count for nothing. Anything that stops a model under a session closes it first with 1013 or 1012; the backend's death is a 1006 the client cannot tell from a crash.
 - **A writer of ours that records or acts on a status treats a 1xx other than 101 as interim** (0016). The status after it is the answer's. llama-swap's own writers keep the first status they see, so Mark removes `Expect` before the request reaches them.
+- **A stop's SIGTERM is the daemon's alone** (`KillMode=mixed`, 0026), so a deploy can drain. Whatever must take a model off the card at once kills the model, never only the unit; a stop while off drains nothing.
 - **A llama-swap config reload waits for quiet** (0005). It stops every model, so it goes through `WhenNoInteractive`, never `-watch-config`.
 - **The UI never pushes, and commits only when the user presses Commit** (0005).
 - **ComfyUI is contention, never ours.** It is not in `our_units` and it is not a consumer. It is a tenant the warden watches and frees (0002). `comfyui_unit` names it so the config loader refuses it in `our_units`.
