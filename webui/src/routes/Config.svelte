@@ -407,7 +407,7 @@
     <div class="mt-1 text-xs text-neutral-500">Ctrl-Space completes; hovering a key shows what it does.</div>
   </div>
 
-  <div class="space-y-4">
+  <div class="space-y-4 wrap-break-word">
     <div class="card">
       <h2 class="mb-2 font-medium">Publish</h2>
       <div class="mb-3 text-sm text-neutral-400">

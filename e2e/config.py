@@ -55,8 +55,10 @@ def setup(root: Path):
         (gguf / f"{name}.gguf").write_bytes(f"GGUF {name}".encode())
     key = root / "config-key.age"
     (root / "trusted.pub").write_text(tool("keygen", "-out", key))
-    cfg = root / "cfg"
-    signed = cfg / "infermux"
+    # nixcfg's own depth, so a path in the side panels runs as long without a
+    # hyphen to break at as the real one.
+    cfg = root / "user" / "Projects" / "nixcfg"
+    signed = cfg / "modules" / "nixos" / "llm" / "infermux" / "config"
     (signed / "models").mkdir(parents=True)
     (signed / "infermux.yaml").write_text(
         f"""# The e2e one config.
@@ -102,6 +104,14 @@ startPort: 15800
     subprocess.run(git + ["add", "-A"], check=True)
     subprocess.run(git + ["commit", "-qm", "start"], check=True)
     return cfg, signed, base, gguf, key
+
+
+def overflowing(pg):
+    """The side panels whose text runs past their right edge."""
+    return pg.evaluate("""() => [...document.querySelectorAll(".card")]
+        .filter((c) => ["Publish", "Check", "nixcfg's copy"].includes(c.querySelector("h2")?.textContent))
+        .filter((c) => c.scrollWidth > c.clientWidth)
+        .map((c) => `${c.querySelector("h2").textContent}: ${c.scrollWidth} > ${c.clientWidth}`)""")
 
 
 def publish_as_zbox(signed, key, other, edit):
@@ -278,6 +288,7 @@ def run(root, cfg, signed, gguf, key):
         check("a wrong passphrase publishes nothing", state()["current"]["revision"] == 1)
         publish()
         pg.wait_for_selector("text=Revision 2 runs here", timeout=15000)
+        check("the side panels hold their paths", not overflowing(pg), overflowing(pg))
         st = state()
         check("the daemon runs revision 2", st["current"]["revision"] == 2 and "beta" in st["routes"], st)
         m = manifest(signed)
@@ -352,7 +363,7 @@ def run(root, cfg, signed, gguf, key):
         pg.goto(UI + "/#changes")
         pg.wait_for_selector("text=Uncommitted", timeout=10000)
         ch = pg.locator(".card", has_text="Uncommitted").inner_text()
-        check("Changes lists nixcfg's copy", "infermux/manifest.json" in ch and "infermux/models/beta.yaml" in ch, ch)
+        check("Changes lists nixcfg's copy", "infermux/config/manifest.json" in ch and "infermux/config/models/beta.yaml" in ch, ch)
 
         # --- A model file's help: runtimes, and the K-V warning on its flag ----------------
         pg.goto(UI + "/#config")
