@@ -22,7 +22,7 @@ This file is rules and navigation only.
 | `infermux_config.go` | ours: the daemon's side of the one config: start, `/warden/config*`, push and poll between hosts |
 | `internal/cpurun/`, `cmd/infermux-cpu/` | ours: the runner that starts a CPU device's model servers in the root `idle.slice`, as its children rather than the daemon's (0022) |
 | `internal/fetch/` | ours: a local model's missing file, fetched from another host or Hugging Face and checked against the signed SHA-256; the gate that answers 503 until it is here (0022, 8) |
-| `internal/failover/` | ours: failure and capacity overflow between model destinations (0016, [0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md), 0021); admission counts each serving host's requests after authentication |
+| `internal/failover/` | ours: failure and capacity overflow between model destinations (0016, [0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md), 0021); admission counts each serving host's requests after authentication; `mark.go` marks llama-swap's own 500 for a request no model had, the one 500 that fails over |
 | `internal/catalog/` | ours: each local model's context, input and efforts, derived from its command and GGUF, a cloud peer's read from its own list, and Codex's catalog format (0007, 0010) |
 | `internal/jobs/` | ours: the job envelope (0023); a batch request InferMux pauses mid-reply on a yield and continues from its text, each attempt sent through failover in-process; `/warden/jobs`; written to disk only on SIGTERM |
 | `infermux_control.go`, `internal/hold/`, `cmd/infermux-hold/` | ours: the keyless control socket, and the command that clears the card through it before a game starts (0024) |

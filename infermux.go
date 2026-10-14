@@ -173,7 +173,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	}
 	command := func(id string) ([]string, bool) { return active().ModelCommand(id) }
 	peerModel := func(id string) (string, string, bool) { return active().PeerModel(id) }
-	enriched := catalog.Enrich(stream.Route(httpServer.Handler), &catalog.Deriver{}, command, &catalog.Peers{Lookup: peerModel})
+	// Mark is next to llama-swap, so its marker tells failover on any host
+	// that this host's llama-swap never sent the request to a model (0016, 3).
+	enriched := catalog.Enrich(stream.Route(failover.Mark(httpServer.Handler)), &catalog.Deriver{}, command, &catalog.Peers{Lookup: peerModel})
 	remotes := &remoteHolder{next: enriched, local: local, log: log}
 	keyFile := &keyFileHolder{file: cfg.RemoteKeyFile}
 	// Under the one config, the other hosts arrive with its part (one.start).

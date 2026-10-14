@@ -1,14 +1,20 @@
 package failover
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/remote"
 	"github.com/mostlygeek/llama-swap/internal/swaputil"
@@ -167,26 +173,24 @@ func TestAStreamPassesThrough(t *testing.T) {
 // deployed binary sent it on 2026-10-14 for a command that exits at once.
 const didNotStart = `{"src":"llama-swap","error":{"message":"unspecific error: upstream command exited prematurely","type":"server_error","param":null,"code":"internal_error"}}`
 
-// A model that does not start fails over: llama-swap answers it with a 500
-// of its own, and the model never had the request. A model's own 500 is the
-// client's, since retrying it elsewhere would run the request twice (0016, 3).
+// A model that does not start fails over: the host that runs it marks
+// llama-swap's 500, since the model never had the request (Mark). A 500
+// without the mark is the client's, in llama-swap's words too, since
+// retrying it elsewhere would run the request twice (0016, 3).
 func TestAModelThatDoesNotStartFailsOver(t *testing.T) {
-	long := strings.Repeat("x", 100<<10)
+	own := `{"error":{"code":500,"message":"failed to decode image","type":"server_error"}}`
 	for _, tc := range []struct {
-		name        string
-		contentType string
-		body        string
-		both        bool
-		attempts    []string
-		code        int
+		name     string
+		marked   bool
+		body     string
+		both     bool
+		attempts []string
+		code     int
 	}{
-		{"llama-swap's JSON", "application/json", didNotStart, false, []string{"zbox/embed", "embed"}, 200},
-		{"llama-swap's text", "text/plain", "llama-swap: unspecific error: upstream command exited prematurely", false, []string{"zbox/embed", "embed"}, 200},
-		{"llama-swap's HTML", "text/html", "<html><body><h1>llama-swap</h1><p>unspecific error: upstream command exited prematurely</p></body></html>", false, []string{"zbox/embed", "embed"}, 200},
-		{"a model's own 500", "application/json", `{"error":{"code":500,"message":"failed to decode image","type":"server_error"}}`, false, []string{"zbox/embed"}, 500},
-		{"llama-swap's other 500", "application/json", `{"src":"llama-swap","error":{"message":"streaming unsupported","type":"server_error","param":null,"code":"internal_error"}}`, false, []string{"zbox/embed"}, 500},
-		{"a long 500 passes whole", "text/plain", long, false, []string{"zbox/embed"}, 500},
-		{"the last place's is the client's", "application/json", didNotStart, true, []string{"zbox/embed", "embed"}, 500},
+		{"marked", true, didNotStart, false, []string{"zbox/embed", "embed"}, 200},
+		{"llama-swap's words without the mark", false, didNotStart, false, []string{"zbox/embed"}, 500},
+		{"a model's own 500", false, own, false, []string{"zbox/embed"}, 500},
+		{"the last place's is the client's", true, didNotStart, true, []string{"zbox/embed", "embed"}, 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var attempts []string
@@ -194,10 +198,12 @@ func TestAModelThatDoesNotStartFailsOver(t *testing.T) {
 				model, _ := swaputil.ExtractModel(r)
 				attempts = append(attempts, model)
 				if model == "zbox/embed" || tc.both {
-					rw.Header().Set("Content-Type", tc.contentType)
+					if tc.marked {
+						rw.Header().Set(NotStartedHeader, "true")
+					}
+					rw.Header().Set("Content-Type", "application/json")
 					rw.WriteHeader(http.StatusInternalServerError)
-					io.WriteString(rw, tc.body[:len(tc.body)/2])
-					io.WriteString(rw, tc.body[len(tc.body)/2:])
+					io.WriteString(rw, tc.body)
 					return
 				}
 				io.WriteString(rw, "from "+model)
@@ -206,13 +212,143 @@ func TestAModelThatDoesNotStartFailsOver(t *testing.T) {
 			if fmt.Sprint(attempts) != fmt.Sprint(tc.attempts) || rw.Code != tc.code {
 				t.Fatalf("attempts %v status %d, want %v and %d", attempts, rw.Code, tc.attempts, tc.code)
 			}
-			if tc.code == 500 && (rw.Body.String() != tc.body || rw.Header().Get("Content-Type") != tc.contentType) {
-				t.Fatalf("the 500 reached the client as %q %.80q", rw.Header().Get("Content-Type"), rw.Body.String())
+			if tc.code == 500 && rw.Body.String() != tc.body {
+				t.Fatalf("the 500 reached the client as %q", rw.Body.String())
 			}
-			if tc.code == 200 && rw.Body.String() != "from embed" {
-				t.Fatalf("body %q: the dropped attempt's body reached the client", rw.Body.String())
+			if tc.code == 200 && (rw.Body.String() != "from embed" || rw.Header().Get(NotStartedHeader) != "") {
+				t.Fatalf("the dropped attempt reached the client: %v %q", rw.Header(), rw.Body.String())
 			}
 		})
+	}
+}
+
+// Mark tells llama-swap's own 500 from a model's by whether llama-swap sent
+// the request to an upstream, and puts the X-InferMux- headers back as they
+// were before llama-swap ran, whatever the model sent.
+func TestMarkSeesWhetherAModelHadTheRequest(t *testing.T) {
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(NotStartedHeader, "true")
+		w.Header()["X-INFERMUX-BUSY"] = []string{"capacity"}
+		w.Header().Set(PlaceHeader, "elsewhere/embed")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, didNotStart)
+	}))
+	defer model.Close()
+	target, _ := url.Parse(model.URL)
+	// As llama-swap's process proxy: a ReverseProxy on the request's context.
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	llamaSwap := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/started" {
+			proxy.ServeHTTP(w, r)
+			return
+		}
+		swaputil.SendError(w, r, errors.New("upstream command exited prematurely"))
+	})
+	for _, c := range []struct {
+		path   string
+		marked bool
+	}{{"/v1/started", false}, {"/v1/dies", true}} {
+		rw := httptest.NewRecorder()
+		rw.Header().Set(PlaceHeader, "zbox/embed")
+		Mark(llamaSwap).ServeHTTP(rw, httptest.NewRequest(http.MethodPost, c.path, strings.NewReader(`{"model":"embed"}`)))
+		res := rw.Result()
+		if res.StatusCode != 500 || (res.Header.Get(NotStartedHeader) != "") != c.marked {
+			t.Errorf("%s: %d %v, want 500 marked %v", c.path, res.StatusCode, res.Header, c.marked)
+		}
+		if res.Header.Get(BusyHeader) != "" || fmt.Sprint(res.Header.Values(PlaceHeader)) != "[zbox/embed]" {
+			t.Errorf("%s: InferMux's headers are %v", c.path, res.Header)
+		}
+	}
+}
+
+// The mark crosses hosts: the zbox marks its llama-swap's 500, and the host
+// the client asked fails over on it through the remote router.
+func TestAModelThatDoesNotStartOnAnotherHostFailsOver(t *testing.T) {
+	dies := Mark(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		swaputil.SendError(w, r, errors.New("upstream command exited prematurely"))
+	}))
+	zbox := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			w.Write([]byte(`{"data":[{"id":"embed","meta":{"llamaswap":{"type":"model"}}}]}`))
+			return
+		}
+		dies.ServeHTTP(w, r)
+	}))
+	defer zbox.Close()
+	local := &places{}
+	router, err := remote.New([]remote.Host{{Name: "zbox", URL: zbox.URL}}, local, func(model string) bool { return model == "embed" }, "", remoteLog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Poll("zbox")
+	rw := post(t, newHandler(router), "embed", nil)
+	if rw.Code != 200 || rw.Body.String() != "from embed" || fmt.Sprint(local.attempts) != "[embed]" {
+		t.Fatalf("status %d body %q local %v, want the local model's answer", rw.Code, rw.Body.String(), local.attempts)
+	}
+}
+
+// A model's own 500 at a place that is not the last reaches the client as
+// the model writes it, as any other answer does: its status as soon as
+// net/http sends it, here once the body passes the server's buffer, and its
+// headers as they were at WriteHeader (0016).
+func TestAModelsOwn500IsNotHeld(t *testing.T) {
+	seen := make(chan struct{})
+	var early atomic.Bool
+	next := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		model, _ := swaputil.ExtractModel(r)
+		if model != "zbox/embed" {
+			io.WriteString(rw, "from "+model)
+			return
+		}
+		rw.WriteHeader(http.StatusInternalServerError)
+		rw.Header().Set("X-Late", "true")
+		rw.Write(bytes.Repeat([]byte("x"), 16<<10))
+		select {
+		case <-seen:
+			early.Store(true)
+		case <-time.After(3 * time.Second):
+		}
+		io.WriteString(rw, "end")
+	})
+	front := httptest.NewServer(newHandler(next))
+	defer front.Close()
+	resp, err := http.Post(front.URL+"/v1/embeddings", "application/json", strings.NewReader(`{"model":"embed","input":["a"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	close(seen)
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 500 || len(raw) != 16<<10+3 {
+		t.Fatalf("status %d, %d bytes", resp.StatusCode, len(raw))
+	}
+	if !early.Load() {
+		t.Error("the client got the status only after the attempt returned")
+	}
+	if resp.Header.Get("X-Late") != "" {
+		t.Error("a header set after WriteHeader reached the client")
+	}
+}
+
+// A trailer set after the body passes through Mark and a place that is not
+// the last, as net/http sends it.
+func TestATrailerPassesThrough(t *testing.T) {
+	next := Mark(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Trailer", "X-Done")
+		io.WriteString(rw, "body")
+		rw.Header().Set("X-Done", "yes")
+	}))
+	front := httptest.NewServer(newHandler(next))
+	defer front.Close()
+	resp, err := http.Post(front.URL+"/v1/embeddings", "application/json", strings.NewReader(`{"model":"embed","input":["a"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if string(raw) != "body" || resp.Trailer.Get("X-Done") != "yes" {
+		t.Fatalf("body %q trailer %v", raw, resp.Trailer)
 	}
 }
 

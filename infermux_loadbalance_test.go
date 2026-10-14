@@ -19,6 +19,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/remote"
 	"github.com/mostlygeek/llama-swap/internal/server"
 	"github.com/mostlygeek/llama-swap/internal/store/sqlite"
+	"github.com/mostlygeek/llama-swap/internal/swaputil"
 	"github.com/mostlygeek/llama-swap/internal/warden"
 )
 
@@ -213,7 +214,8 @@ func TestProxy_OverflowSkipsYieldedGPU(t *testing.T) {
 // A model whose command exits before it is ready fails over to the next
 // place, through a real llama-swap and its own answer to the failed start. A
 // model that answers 500 itself had the request, so the client gets that 500
-// and the next place gets nothing (0016, 3).
+// and the next place gets nothing (0016, 3), whatever the 500 says: llama-swap's
+// own words, or InferMux's headers.
 func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 	served := make(chan string, 4)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -223,11 +225,22 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 		}
 	}))
 	defer backend.Close()
+	// What each model answers, by the name the attempt gave it.
+	answers := map[string]string{
+		"broken": `{"error":{"code":500,"message":"failed to decode image","type":"server_error"}}`,
+		"mimic":  `{"src":"llama-swap","error":{"message":"unspecific error: upstream command exited prematurely","type":"server_error","param":null,"code":"internal_error"}}`,
+		"marked": `{"error":{"code":500,"message":"failed to decode image","type":"server_error"}}`,
+	}
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
+			model, _ := swaputil.ExtractModel(r)
+			if model == "marked" {
+				w.Header().Set("X-InferMux-Not-Started", "true")
+				w.Header().Set("X-InferMux-Busy", "capacity")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(`{"error":{"code":500,"message":"failed to decode image","type":"server_error"}}`))
+			w.Write([]byte(answers[model]))
 		}
 	}))
 	defer broken.Close()
@@ -240,9 +253,9 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 		}
 		return p
 	}
-	write("failover.yaml", "embed: [{place: test/dies}, {place: test/up}]\nown: [{place: test/broken}, {place: test/up}]\n")
+	write("failover.yaml", "embed: [{place: test/dies}, {place: test/up}]\nown: [{place: test/broken}, {place: test/up}]\nmimics: [{place: test/mimic}, {place: test/up}]\nmarks: [{place: test/marked}, {place: test/up}]\n")
 	wfile := write("warden.yaml", "host: test\nfailover_file: failover.yaml\npolicy:\n  enabled: false\n")
-	cfg, err := config.LoadConfigFromReader(strings.NewReader(fmt.Sprintf("healthCheckTimeout: 15\nperformance:\n  disabled: true\nmodels:\n  dies:\n    cmd: \"false\"\n    proxy: http://127.0.0.1:9\n  up:\n    cmd: sleep 3600\n    proxy: %s\n  broken:\n    cmd: sleep 3600\n    proxy: %s\n", backend.URL, broken.URL)))
+	cfg, err := config.LoadConfigFromReader(strings.NewReader(fmt.Sprintf("healthCheckTimeout: 15\nperformance:\n  disabled: true\nmodels:\n  dies:\n    cmd: \"false\"\n    proxy: http://127.0.0.1:9\n  up:\n    cmd: sleep 3600\n    proxy: %s\n  broken:\n    cmd: sleep 3600\n    proxy: %s\n  mimic:\n    cmd: sleep 3600\n    proxy: %s\n  marked:\n    cmd: sleep 3600\n    proxy: %s\n", backend.URL, broken.URL, broken.URL, broken.URL)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,6 +275,7 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 	defer startWarden(wfile, "", "", httpServer, func() *server.Server { return srv }, logs.ProxyLogs)()
 	front := httptest.NewServer(httpServer.Handler)
 	defer front.Close()
+	var header http.Header
 	post := func(model string) (int, string, string) {
 		resp, err := http.Post(front.URL+"/v1/embeddings", "application/json", strings.NewReader(fmt.Sprintf(`{"model":%q,"input":["hello"]}`, model)))
 		if err != nil {
@@ -269,6 +283,7 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 		}
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(resp.Body)
+		header = resp.Header
 		return resp.StatusCode, string(raw), resp.Header.Get(failover.PlaceHeader)
 	}
 	if code, body, place := post("embed"); code != 200 || body != "up" || place != "test/up" {
@@ -282,13 +297,22 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 			t.Fatalf("no line for what held the card in:\n%s", logged.String())
 		}
 	}
-	if code, body, _ := post("own"); code != 500 || !strings.Contains(body, "failed to decode image") {
-		t.Fatalf("a model's own 500: %d %q, want it as the model sent it", code, body)
-	}
-	select {
-	case <-served:
-		t.Fatal("a model's own 500 was sent on to the next place")
-	default:
+	for _, c := range []struct{ name, model, sent string }{
+		{"a model's own 500", "own", answers["broken"]},
+		{"a model's 500 in llama-swap's words", "mimics", answers["mimic"]},
+		{"a model's 500 with InferMux's headers", "marks", answers["marked"]},
+	} {
+		if code, body, _ := post(c.model); code != 500 || body != c.sent {
+			t.Errorf("%s: %d %q, want it as the model sent it", c.name, code, body)
+		}
+		if header.Get("X-InferMux-Not-Started") != "" || header.Get("X-InferMux-Busy") != "" {
+			t.Errorf("%s: the client got %v", c.name, header)
+		}
+		select {
+		case <-served:
+			t.Errorf("%s: sent on to the next place", c.name)
+		default:
+		}
 	}
 }
 
