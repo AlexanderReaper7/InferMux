@@ -512,6 +512,15 @@ in
             lib.optional (cfg.signedConfig.fetchGroup != null) cfg.signedConfig.fetchGroup
             ++ lib.optional (cfg.controlGroup != null) cfg.controlGroup;
         }
+        // lib.optionalAttrs signed {
+          # llama-swap opens -config-dir before InferMux writes the derived
+          # file into it, so a first start with no directory failed (strix,
+          # 2026-10-14).
+          StateDirectory = [
+            sandbox.StateDirectory
+            "infermux/derived"
+          ];
+        }
         // lib.optionalAttrs (cfg.controlGroup != null) {
           # 0755, so the group can reach the socket; the socket itself is
           # 0660 and the group's.
