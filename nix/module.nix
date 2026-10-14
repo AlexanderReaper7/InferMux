@@ -515,11 +515,10 @@ in
         // lib.optionalAttrs signed {
           # llama-swap opens -config-dir before InferMux writes the derived
           # file into it, so a first start with no directory failed (strix,
-          # 2026-10-14).
-          StateDirectory = [
-            sandbox.StateDirectory
-            "infermux/derived"
-          ];
+          # 2026-10-14). Not a second StateDirectory: systemd then joins
+          # both into $STATE_DIRECTORY with a colon, which the daemon reads
+          # as one path.
+          ExecStartPre = "${pkgs.coreutils}/bin/mkdir -p /var/lib/infermux/derived";
         }
         // lib.optionalAttrs (cfg.controlGroup != null) {
           # 0755, so the group can reach the socket; the socket itself is
