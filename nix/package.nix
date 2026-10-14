@@ -35,6 +35,7 @@ let
       ../infermux_config_test.go
       ../infermux_control.go
       ../infermux_control_test.go
+      ../infermux_jobs_test.go
       ../infermux_loadbalance_test.go
       ../infermux_stream_test.go
       ../config-schema.json

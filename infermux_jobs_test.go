@@ -92,7 +92,10 @@ func TestProxy_AJobPausedByTheWardenGoesOnAfterTheResume(t *testing.T) {
 	}
 	defer srv.Shutdown(5 * time.Second)
 	httpServer := &http.Server{Handler: srv}
-	stop := startWarden(wfile, "", "", httpServer, func() *server.Server { return srv }, logs.ProxyLogs)
+	// Deferred too, so a failure stops the job's attempt before
+	// backend.Close waits for its handler.
+	stop := sync.OnceFunc(startWarden(wfile, "", "", httpServer, func() *server.Server { return srv }, logs.ProxyLogs))
+	defer stop()
 	front := httptest.NewServer(httpServer.Handler)
 	defer front.Close()
 	do := func(method, path, key, body string) *http.Response {
@@ -138,7 +141,10 @@ func TestProxy_AJobPausedByTheWardenGoesOnAfterTheResume(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		t.Fatal("the model never started")
 	}
-	if s := snapshot(job.ID); s.State != "running" || s.Place != "test/gpu" {
+	// The job is running once the proxy has passed the answer's headers on,
+	// which can come after the backend has flushed its chunks.
+	until(job.ID, "running")
+	if s := snapshot(job.ID); s.Place != "test/gpu" {
 		t.Fatalf("running as %+v", s)
 	}
 	manual("pause")
