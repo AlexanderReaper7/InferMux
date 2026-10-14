@@ -32,6 +32,6 @@ A record says what is true now. A decision that changes is edited in place and g
 | [0023](0023-a-batch-request-is-a-job-paused-mid-inference.md) | A batch request is a job InferMux pauses mid-inference and resumes; first-party consumers use a job envelope, nothing is pushed to them | 2026-10-10 |
 | [0024](0024-a-game-clears-the-card-before-it-starts.md) | A game clears the card before it starts: `infermux-hold` pauses and unloads through a keyless control socket, and refuses the launch if the card stays busy | 2026-10-12 |
 | [0025](0025-a-safety-stop-takes-the-local-models-off.md) | A safety stop takes the local models off and leaves the daemon up: every class refused and cancelled, the clouds and the other hosts passed, read from a file before the first request | 2026-10-14 |
-| [0026](0026-a-deploy-waits-for-the-requests-running.md) | A deploy waits up to 40 s for the requests running and refuses new ones with 503 `draining`; a stop while off drains nothing | 2026-10-14 |
+| [0026](0026-a-deploy-waits-for-the-requests-running.md) | A deploy waits up to 40 s for the requests running and refuses new ones with 503 `draining`, while off too; the zbox controller SIGKILLs the models through pidfds | 2026-10-14 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.

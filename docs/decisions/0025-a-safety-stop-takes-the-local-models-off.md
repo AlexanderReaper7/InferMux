@@ -33,7 +33,7 @@ The agent listed three options on 2026-10-14: A, take the zbox's local devices o
 - Immich gets the 503 through its adapter (0013) where before it got the adapter's error for a stopped daemon. Both are 5xx.
 - Consumers hear nothing of it: off is not a verdict, and the verdicts and their announcements go on as before. A host with consumers that set `offFile` would leave them unpaused while their batch requests get 503. Not built, because the zbox, the one host with a safety stop, has no consumers.
 - `/warden/verdict` shows `off` with its reason and since, and the Status page shows it above the verdict as a red notice with the file's text and since when. The notice is the coordinating session's call, 2026-10-14: small, and in the UI only.
-- A deploy still stops the daemon. It lets the requests running finish for up to 40 s first (0026), and then pauses a cloud job still running, whose continuation is 0023's open choice. A stop while off drains nothing.
+- A deploy still stops the daemon. It lets the requests running finish for up to 40 s first (0026), and then pauses a cloud job still running, whose continuation is 0023's open choice. A stop while off drains too, the clouds' requests and the ones forwarded to another host (0026, 5).
 
 ## Verification
 

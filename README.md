@@ -190,7 +190,7 @@ A job belongs to the key that made it. It lives in memory and is kept 10 minutes
 
 ## A deploy's stop
 
-On SIGTERM InferMux answers every new request 503 with `"type":"draining"` and `Retry-After: 5`, and gives the ones running up to 40 s to finish (0026). A job still running then is paused and written, and the rest are cut. With the off file there it drains nothing. The unit is `KillMode=mixed` and `TimeoutStopSec=90`, so the SIGTERM is the daemon's alone and a stop can take up to 85 s.
+On SIGTERM InferMux answers every new request 503 with `"type":"draining"` and `Retry-After: 5`, and gives the ones running up to 40 s to finish (0026). A job still running then is paused and written, and the rest are cut. With the off file there it drains too: off has refused and cancelled the local requests already. The unit is `KillMode=mixed` and `TimeoutStopSec=90`, so the SIGTERM is the daemon's alone and a stop can take up to 85 s.
 
 ## One config for every host
 

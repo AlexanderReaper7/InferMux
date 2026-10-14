@@ -185,7 +185,7 @@ func TestADeployLetsTheRequestRunningFinish(t *testing.T) {
 }
 
 // A job attempt is waited for like a request; past the drain it is paused
-// and written, and a request still running is cut.
+// and written.
 func TestADeployPausesTheJobStillRunningAtTheDeadline(t *testing.T) {
 	d := newDrainDaemon(t, 500*time.Millisecond)
 	resp := d.do(t, "POST", "/warden/jobs", "episteme-key", `{"path":"/v1/chat/completions","body":{"model":"gpu","messages":[{"role":"user","content":"forever"}],"max_tokens":50}}`)
@@ -210,6 +210,31 @@ func TestADeployPausesTheJobStillRunningAtTheDeadline(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(d.dir, "jobs.json"))
 	if err != nil || !strings.Contains(string(raw), job.ID) {
 		t.Fatalf("jobs.json: %v %s", err, raw)
+	}
+}
+
+// A request still running at the deadline is cut, and the stop goes on.
+func TestADeployCutsTheRequestStillRunningAtTheDeadline(t *testing.T) {
+	d := newDrainDaemon(t, 500*time.Millisecond)
+	running := d.chat(t, "cloud/m")
+	d.in(t, "m")
+	select {
+	case <-d.stopping():
+	case <-time.After(15 * time.Second):
+		t.Fatal("the stop never ended")
+	}
+	cut := make(chan string, 1)
+	go func() {
+		raw, _ := io.ReadAll(running.Body)
+		cut <- string(raw)
+	}()
+	select {
+	case raw := <-cut:
+		if strings.Contains(raw, "[DONE]") {
+			t.Fatalf("the request finished: %s", raw)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request still running at the deadline was not cut")
 	}
 }
 
@@ -241,9 +266,10 @@ func TestADrainStartsNoJobAttempt(t *testing.T) {
 	}
 }
 
-// With the local models off the stop is a safety stop's: no drain, and the
-// cloud's request, which off lets run, is cut at once.
-func TestAStopWhileOffDoesNotDrain(t *testing.T) {
+// With the local models off the stop drains too (0026, 5): off has cut every
+// local request already, and the cloud's request, which off lets run,
+// finishes whole.
+func TestAStopWhileOffDrains(t *testing.T) {
 	off := filepath.Join(t.TempDir(), "off")
 	os.WriteFile(off, []byte("too hot"), 0o644)
 	was := *flagOffFile
@@ -253,27 +279,20 @@ func TestAStopWhileOffDoesNotDrain(t *testing.T) {
 	running := d.chat(t, "cloud/m")
 	d.in(t, "m")
 
-	start := time.Now()
 	stopped := d.stopping()
 	select {
 	case <-stopped:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the stop drained while off")
+		t.Fatal("the stop did not wait for the cloud's request")
+	case <-time.After(500 * time.Millisecond):
 	}
-	if waited := time.Since(start); waited > 5*time.Second {
-		t.Fatalf("stopped after %s", waited)
+	close(d.release)
+	raw, _ := io.ReadAll(running.Body)
+	if !strings.Contains(string(raw), "last") || !strings.Contains(string(raw), "[DONE]") {
+		t.Fatalf("the cloud's request was cut: %s", raw)
 	}
-	read := make(chan string, 1)
-	go func() {
-		raw, _ := io.ReadAll(running.Body)
-		read <- string(raw)
-	}()
 	select {
-	case raw := <-read:
-		if strings.Contains(raw, "[DONE]") {
-			t.Fatalf("the cloud's request finished: %s", raw)
-		}
+	case <-stopped:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the cloud's request outlived the stop")
+		t.Fatal("the stop went on after the request ended")
 	}
 }

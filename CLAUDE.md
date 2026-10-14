@@ -86,7 +86,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 - **Free VRAM is only read while no GPU model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001). A CPU model holds no VRAM (0022).
 - **A WebSocket counts toward the warden only while data frames cross** (0018). An open connection and a ping count for nothing. Anything that stops a model under a session closes it first with 1013 or 1012; the backend's death is a 1006 the client cannot tell from a crash.
 - **A writer of ours that records or acts on a status treats a 1xx other than 101 as interim** (0016). The status after it is the answer's. llama-swap's own writers keep the first status they see, so Mark removes `Expect` before the request reaches them.
-- **A stop's SIGTERM is the daemon's alone** (`KillMode=mixed`, 0026), so a deploy can drain. Whatever must take a model off the card at once kills the model, never only the unit; a stop while off drains nothing.
+- **A stop's SIGTERM is the daemon's alone** (`KillMode=mixed`, 0026), so a deploy can drain. Whatever must take a model off the card at once kills the model, never only the unit; a stop while off drains too.
 - **A llama-swap config reload waits for quiet** (0005). It stops every model, so it goes through `WhenNoInteractive`, never `-watch-config`.
 - **The UI never pushes, and commits only when the user presses Commit** (0005).
 - **ComfyUI is contention, never ours.** It is not in `our_units` and it is not a consumer. It is a tenant the warden watches and frees (0002). `comfyui_unit` names it so the config loader refuses it in `our_units`.

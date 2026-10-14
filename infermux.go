@@ -374,21 +374,17 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		go (&configwatcher.DirWatcher{Path: absolute(configDir), OnChange: reload}).Run(ctx)
 	}
 	return func() {
-		// A deploy's stop lets the requests and job attempts running finish
-		// first (0026). With the local models off it is a safety stop's, the
-		// zbox's fallback, and cuts at once as before.
+		// A stop lets the requests and job attempts running finish first
+		// (0026), with the local models off too: off has cut every local
+		// request already, and the zbox's controller kills the models itself.
 		drains.Start()
-		if reason := offNow(); reason != "" {
-			log.Infof("Stopping without a drain, the local models are off: %s", reason)
-		} else {
-			jobStore.Drain()
-			if n, a := drains.Running(), jobStore.Attempting(); n > 0 || a > 0 {
-				log.Infof("Draining for up to %s: %d request(s), %d job attempt(s) running", drainTimeout, n, a)
-				if drain.Wait(drainTimeout, drains.Running, jobStore.Attempting) {
-					log.Infof("Drained")
-				} else {
-					log.Warnf("Drain ended with %d request(s), %d job attempt(s) still running: jobs pause, the rest are cut", drains.Running(), jobStore.Attempting())
-				}
+		jobStore.Drain()
+		if n, a := drains.Running(), jobStore.Attempting(); n > 0 || a > 0 {
+			log.Infof("Draining for up to %s: %d request(s), %d job attempt(s) running", drainTimeout, n, a)
+			if drain.Wait(drainTimeout, drains.Running, jobStore.Attempting) {
+				log.Infof("Drained")
+			} else {
+				log.Warnf("Drain ended with %d request(s), %d job attempt(s) still running: jobs pause, the rest are cut", drains.Running(), jobStore.Attempting())
 			}
 		}
 		unsubscribe()
