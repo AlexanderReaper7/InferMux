@@ -2,6 +2,7 @@ package warden
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -71,11 +72,44 @@ func (w *Warden) SetOff(reason string) {
 // GPU's resume window as Retry-After, which a job waits at most.
 func (w *Warden) refuseOff(rw http.ResponseWriter) {
 	w.mu.Lock()
-	message := "the local models were off"
+	e := OffError{RetryAfter: w.cfg.Policy.ResumeQuietSeconds}
 	if w.off != nil {
-		message = "the local models are off: " + w.off.Reason
+		e.Reason = w.off.Reason
 	}
-	retry := w.cfg.Policy.ResumeQuietSeconds
 	w.mu.Unlock()
-	writeRefusal(rw, "off", message, retry)
+	writeRefusal(rw, "off", e.Error(), e.RetryAfter)
 }
+
+// OffError is a model start refused while off, with the answer the gate
+// writes. llama-swap writes it whole to whoever asked for the start: it has
+// the methods of llama-swap's HTTPError.
+type OffError struct {
+	Reason     string
+	RetryAfter int
+}
+
+// OffError is reason's refusal, with this warden's Retry-After.
+func (w *Warden) OffError(reason string) OffError {
+	return OffError{Reason: reason, RetryAfter: w.config().Policy.ResumeQuietSeconds}
+}
+
+func (e OffError) Error() string {
+	if e.Reason == "" {
+		return "the local models were off"
+	}
+	return "the local models are off: " + e.Reason
+}
+
+func (e OffError) StatusCode() int { return http.StatusServiceUnavailable }
+
+// Header has no Retry-After before the warden exists, when only preload can
+// be refused.
+func (e OffError) Header() http.Header {
+	h := http.Header{"Content-Type": {"application/json"}}
+	if e.RetryAfter > 0 {
+		h.Set("Retry-After", strconv.Itoa(e.RetryAfter))
+	}
+	return h
+}
+
+func (e OffError) Body() []byte { return refusalBody("off", e.Error()) }

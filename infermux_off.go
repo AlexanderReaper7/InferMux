@@ -7,7 +7,11 @@ import (
 	"io/fs"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/mostlygeek/llama-swap/internal/process"
+	"github.com/mostlygeek/llama-swap/internal/warden"
 )
 
 // The off file (0025): while it is there, this host's local models are off,
@@ -20,6 +24,29 @@ var flagOffFile = flag.String("off-file", "", "InferMux: while this file exists,
 
 // offPoll is how often the off file is read.
 const offPoll = time.Second
+
+// The start gate reads the file itself at each start, so a start is refused
+// from the moment the file is there, not from the next poll, and before the
+// warden exists: preload starts as server.New makes the server.
+func init() { process.SetStartGate(gateStart) }
+
+// offWarden answers a refused start with its Retry-After once it exists.
+var offWarden atomic.Pointer[warden.Warden]
+
+func gateStart(string) error {
+	if *flagOffFile == "" {
+		return nil
+	}
+	reason := offReason(*flagOffFile)
+	switch w := offWarden.Load(); {
+	case reason == "":
+		return nil
+	case w != nil:
+		return w.OffError(reason)
+	default:
+		return warden.OffError{Reason: reason}
+	}
+}
 
 // offReason is why the local models are off, "" when they are on. A file
 // that is there but cannot be read takes them off: something wrote it.

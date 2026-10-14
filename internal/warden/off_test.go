@@ -155,3 +155,15 @@ func TestOnAgainWakesWhoWaitsAndTheVerdictShowsIt(t *testing.T) {
 		t.Fatalf("woken %d times", woken)
 	}
 }
+
+// A start llama-swap's processes refuse answers as the gate does (0025).
+func TestARefusedStartAnswersAsTheGate(t *testing.T) {
+	h := newHarness(t, nil)
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {}))
+	h.w.SetOff("quiet hours")
+	gate := send(handler, "qwen", "my-key")
+	e := h.w.OffError("quiet hours")
+	if e.StatusCode() != gate.Code || e.Header().Get("Retry-After") != gate.Header().Get("Retry-After") || string(e.Body()) != gate.Body.String() {
+		t.Fatalf("start: %d %v %s\ngate: %d %v %s", e.StatusCode(), e.Header(), e.Body(), gate.Code, gate.Header(), gate.Body.String())
+	}
+}

@@ -317,6 +317,11 @@ func (p *ProcessCommand) run() {
 				req.respond <- fmt.Errorf("[%s] could not be started in %s state", p.id, state)
 				continue
 			}
+			// InferMux: a start the gate refuses never begins (warden.go).
+			if err := gateStart(p.id); err != nil {
+				req.respond <- err
+				continue
+			}
 			setState(StateStarting)
 
 			startCtx, cancelStart := context.WithCancel(context.Background())

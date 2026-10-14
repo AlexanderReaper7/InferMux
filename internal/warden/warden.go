@@ -526,9 +526,14 @@ func writeRefusal(rw http.ResponseWriter, kind, message string, retry int) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.Header().Set("Retry-After", strconv.Itoa(retry))
 	rw.WriteHeader(http.StatusServiceUnavailable)
-	json.NewEncoder(rw).Encode(map[string]any{
+	rw.Write(refusalBody(kind, message))
+}
+
+func refusalBody(kind, message string) []byte {
+	raw, _ := json.Marshal(map[string]any{
 		"error": map[string]string{"type": kind, "message": message},
 	})
+	return append(raw, '\n')
 }
 
 // trackedWriter remembers whether the response has started. It passes Flush

@@ -34,6 +34,7 @@ This file is rules and navigation only.
 | `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; the one config's check, Publish and nixcfg's copy (`config.go`, 0022), warden.yaml, keys, git, the proxy to the daemon (0005) |
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build; the one config's YAML editor is CodeMirror (`src/lib/editor.ts`, `yamlschema.ts`), tested by bun in `test/` |
 | `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
+| `internal/process/warden.go`, `warden_test.go` | ours: the gate every start of a local model passes, set by `infermux_off.go` from the off file (0025); its one call is marked in upstream's `process_command.go`, in `run()` |
 | `llama-swap.go` | upstream's `main`, plus one flag and two calls: `startWarden`, and the stop it returns, first in the SIGTERM branch (0023) |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
@@ -42,8 +43,8 @@ This file is rules and navigation only.
 ```sh
 nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build && bun test)   # the frontend; bun runs webui/test
-nix develop -c go test -short ./internal/server/ .         # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_control.go infermux_control_test.go infermux_loadbalance_test.go infermux_off.go infermux_off_test.go infermux_stream_test.go infermux_jobs_test.go infermux_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs internal/hold cmd internal/server/warden.go internal/server/warden_test.go
+nix develop -c go test -short ./internal/server/ ./internal/process/ .  # upstream's tests where we touch it
+nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_control.go infermux_control_test.go infermux_loadbalance_test.go infermux_off.go infermux_off_test.go infermux_stream_test.go infermux_jobs_test.go infermux_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs internal/hold cmd internal/server/warden.go internal/server/warden_test.go internal/process/warden.go internal/process/warden_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the Go tests above and webui's
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
