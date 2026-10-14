@@ -54,35 +54,56 @@ func TestStopEndsTheWardensGoroutines(t *testing.T) {
 	defer srv.Shutdown(5 * time.Second)
 
 	// The other tests in this package never stop theirs, so what counts is
-	// the difference.
-	ours := func() (n int, stacks []string) {
+	// the goroutines that are new. A goroutine is matched by who created it,
+	// which its stack shows before it first runs, and known by its ID.
+	ours := func() map[string]string {
 		buf := make([]byte, 1<<22)
 		buf = buf[:runtime.Stack(buf, true)]
+		found := map[string]string{}
 		for _, g := range strings.Split(string(buf), "\n\n") {
-			if strings.Contains(g, "warden.(*Warden).run(") || strings.Contains(g, "remote.(*Router).watch(") || strings.Contains(g, ".startWarden in goroutine") {
-				n++
-				stacks = append(stacks, g)
+			if strings.Contains(g, "warden.(*Warden).Start in goroutine") || strings.Contains(g, "remote.(*Router).Start in goroutine") || strings.Contains(g, ".startWarden in goroutine") {
+				id, _, _ := strings.Cut(g, " [")
+				found[id] = g
 			}
 		}
-		return
+		return found
 	}
-	before, _ := ours()
+	before := ours()
 	stop := startWarden(wfile, "", "", &http.Server{Handler: srv}, func() *server.Server { return srv }, logs.ProxyLogs)
+	started := map[string]string{}
+	for id, g := range ours() {
+		if _, old := before[id]; !old {
+			started[id] = g
+		}
+	}
 	// The loop, the remote's poll and three watchers.
-	if started, stacks := ours(); started < before+5 {
+	if len(started) < 5 {
 		stop()
-		t.Fatalf("%d goroutines before the start, %d after it:\n%s", before, started, strings.Join(stacks, "\n\n"))
+		t.Fatalf("%d goroutines started, want 5:\n%s", len(started), stacks(started))
 	}
 	stop()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		n, stacks := ours()
-		if n == before {
+		left := map[string]string{}
+		for id, g := range ours() {
+			if _, new := started[id]; new {
+				left[id] = g
+			}
+		}
+		if len(left) == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d goroutines before the start, %d after the stop:\n%s", before, n, strings.Join(stacks, "\n\n"))
+			t.Fatalf("%d of the %d goroutines startWarden started are left after the stop:\n%s", len(left), len(started), stacks(left))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func stacks(gs map[string]string) string {
+	all := make([]string, 0, len(gs))
+	for _, g := range gs {
+		all = append(all, g)
+	}
+	return strings.Join(all, "\n\n")
 }

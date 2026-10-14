@@ -148,7 +148,9 @@ func TestOneConfigBetweenTwoHosts(t *testing.T) {
 	if code, body := a.send(t, "POST", "/warden/config", rev1, false); code != 200 || !strings.Contains(body, `"result": "applied"`) {
 		t.Fatalf("publish: %d %s", code, body)
 	}
-	eventually(t, "b runs revision 1", func() bool { return b.running() == rev1.Hash() })
+	// The store takes it before the derived file is written and llama-swap
+	// reloads, so the reload is what says b has finished.
+	eventually(t, "b runs revision 1", func() bool { return b.running() == rev1.Hash() && b.reloads.Load() > 0 })
 	for name, h := range hosts {
 		if d := h.derived(t); !strings.Contains(d, "m:") || !strings.Contains(d, "CUDA_VISIBLE_DEVICES=0") {
 			t.Errorf("%s's derived file:\n%s", name, d)
