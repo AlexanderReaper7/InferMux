@@ -1,0 +1,45 @@
+# 0025. A safety stop takes the local models off and leaves the daemon up
+
+- Date: 2026-10-14
+- Status: accepted; built and tested 2026-10-14, not yet deployed (Verification, below)
+- Amends [0004](0004-infermux-request-priority.md): a second exception to "the user's own request is never killed". Keeps [0009](0009-the-gate-is-for-this-hosts-card.md) (another host's and a cloud's requests pass), [0016](0016-a-model-fails-over-between-places.md) (a 503 fails over) and [0023](0023-a-batch-request-is-a-job-paused-mid-inference.md) (a job's request is paused, not lost).
+
+## Context
+
+The zbox keeps its fans at 20% from 22:00 to 09:00 (nixcfg `docs/zbox.md`, "Quiet hours, 2026-10-08"). Until 2026-10-14 its controller, nixcfg's `hosts/zbox/quiet-hours.py`, did that by stopping `infermux.service`: at 22:00 until the cooling allowed a resume, at a thermal pause (CPU 83, GPU 91 or fan sensor 83 C), and when the controller itself failed. An `ExecCondition` kept the daemon down at night until the controller's state said running. The zbox had 45 thermal pauses in the 7 days to 2026-10-14.
+
+Since 0023 the daemon also holds jobs, and a batch request to OpenRouter through the zbox is one. A stop wrote it to `jobs.json` and left its client with nothing to reach until 09:00 or the thermal resume, although a cloud job uses nothing of the zbox but the proxy. The user, 2026-10-14: "cloud jobs dont need to be cut off since they dont use our resources." Measured on the zbox by day on 2026-10-14, with no quota and no power limit: the daemon used 0.74% of one core while a cloud chat streamed through it, 0.42% idle.
+
+## Decision
+
+The agent listed three options on 2026-10-14: A, take the zbox's local devices off and leave the daemon up; B, forward cloud jobs to strix at a stop, which only moves the cut, since a client following the job through the zbox loses its stream and strix deploys too; C, leave it. The coordinating session chose A the same day, under the user's rule for the session to decide when sure, as the option that does what the user's words ask. A peer review the same day (sol, review 8) required items 2, 3, 4 and 6 below.
+
+1. **The daemon stays up and its local models go off.** While off, every request for a local model gets 503 with `"type":"off"` and the GPU's `resume_quiet_seconds` as Retry-After, whatever its class. Failover takes it to the model's next place. Another host's model and a cloud's pass, as under every gate (0009).
+2. **Off is its own gate, for every class.** The warden's manual pause would not do: it still admits interactive requests.
+3. **Going off cancels and unloads at once.** The requests in flight are cancelled, the user's own included. A job's request is paused with no hold, so failover sends its next attempt on at once. Every model stops without waiting for `interactive_recent_seconds`.
+4. **This is a second exception to 0004.** The first is a stuck agent's request (0015). The coordinating session's reason: the stop is for the fans' noise and the hardware's temperature limits, and an interactive request heats the card as much as a batch one. The daemon stop it replaces killed every request on the zbox, interactive ones included, so the exception allows nothing the stop did not.
+5. **The controller says why in a file, `-off-file`, and InferMux reads it.** The agent chose the file over the control socket (0024) that option A named. A daemon restarted at 23:00, by a deploy or a crash, must start no model, so it has to be off before it takes its first request. A socket can only be called once the daemon listens, and a request can arrive in between. InferMux reads the file before it installs its handler and before the jobs read back from `jobs.json` start, then every second. The file's text is the reason the refusals and the log carry. A file that exists but cannot be read counts as off, because an unreadable file is no evidence that the stop is over.
+6. **The controller's `prepare` replaces the `ExecCondition`.** It is InferMux's `ExecStartPre` on the zbox, run as root. It writes the file before a start at night unless the controller's state says running, and removes it otherwise. The `ExecCondition` would have kept the whole daemon down at night.
+7. **The 1 s read is also a backstop.** A GET to `/upstream/<model>/` starts a model without a gate seeing it. Each read while off stops any model that started since.
+8. **A model that outlives the file still stops the daemon.** The controller waits up to 10 s for the unit's cgroup to hold nothing but the daemon, and then stops the unit, as every stop did before.
+
+## Consequences
+
+- The night's `CPUQuota` on `infermux.service` (10% of one core at 22:00, adapting between 1% and 100%) now slows the daemon's own proxying too, cloud replies included. The coordinating session accepted that on 2026-10-14. The proxy's CPU was measured by day only (Context); not under the quota or the 5 W limit.
+- A thermal pause takes the quota off until the resume, as it did before. With the daemon up, it proxies at full speed while no model runs.
+- strix sees a 503 from the zbox at night instead of a host that does not answer. Both fail over (0016), and the zbox's models stay listed on strix either way.
+- Immich gets the 503 through its adapter (0013) where before it got the adapter's error for a stopped daemon. Both are 5xx.
+- Consumers hear nothing of it: off is not a verdict, and the verdicts and their announcements go on as before. A host with consumers that set `offFile` would leave them unpaused while their batch requests get 503. Not built, because the zbox, the one host with a safety stop, has no consumers.
+- `/warden/verdict` shows `off` with its reason and since. The UI does not show it.
+- A deploy still stops the daemon and cuts a cloud job, whose continuation is 0023's open choice. The zbox's `TimeoutStopSec=5` still cuts a request in flight after 5 s.
+
+## Verification
+
+Tests, run 2026-10-14:
+
+- `internal/warden/off_test.go`, six tests: off cancels the user's own request and stops the models at once; every local request is refused whatever its key while `openrouter/free` and `strix/qwen` pass; a cloud request in flight outlives the stop; a model started anyway stops at the next read; a job is paused with Device `off` and Hold 0; turning back on wakes the jobs waiting and clears the verdict's `off`. They pass under `-race`.
+- `infermux_off_test.go`, two tests: the file's text is the reason, an empty file and an unreadable one count as off, and the first read happens before `watchOff` returns.
+- nixcfg's `tests/zbox-quiet-hours.py`, 11 tests: the file written at a thermal pause and removed at the resume and by day, the daemon left up, `prepare` at night and by day, the 10 s fallback stop, and the cgroup count leaving out the daemon.
+- Five Go mutations each failed them: no off check in the gate, only batch cancelled, no backstop, a cancel with the hand-cancel's device, and no wake when back on. So did seven of the controller: no wait for the models, `prepare` writing nothing, `prepare` removing nothing, a resume leaving the file, a thermal pause stopping the daemon, the daemon counted as a model, and the daytime cleanup leaving the file.
+
+Not deployed. To watch on the zbox: a local request refused with 503 while the file is there and a cloud chat passing, the models stopping within a second, a thermal pause at night that leaves the daemon up, and a restart at night that starts no model.

@@ -221,6 +221,20 @@ in
       '';
     };
 
+    offFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/zbox-quiet-hours-off";
+      description = ''
+        While this file exists, the host's local models are off and its text
+        says why: every request for one is refused whatever its class, the
+        ones in flight are cancelled, and the models stop at once. Clouds and
+        the other hosts' models stay served, and so do their jobs. Written by
+        a controller on the host as root, such as the zbox's quiet hours;
+        read before the daemon takes a request, then every second (0025).
+      '';
+    };
+
     codexPrompt = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -495,6 +509,10 @@ in
               controlSocket
               "-control-group"
               cfg.controlGroup
+            ]
+            ++ lib.optionals (cfg.offFile != null) [
+              "-off-file"
+              cfg.offFile
             ]
           );
           Restart = "always";

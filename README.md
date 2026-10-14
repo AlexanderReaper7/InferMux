@@ -161,6 +161,17 @@ Nothing expires. A warden that dies while a consumer is paused leaves it paused,
 
 Under the one config the GPU and the CPU each have a verdict, and a yield refuses, cancels and unloads only the models on the device that yielded. A model's devices are the device its place names plus its `occupies`. The CPU yields when CPU time outside InferMux's cgroups reaches `cpu.busy_percent` of every core over `cpu.window_seconds`, while a `cpu.priority_processes` name runs, or when MemAvailable falls under `cpu.min_available_ram_mb`. A busy CPU refuses and cancels batch work on its models and unloads nothing. RAM under the floor unloads them once, after `interactive_recent_seconds` of quiet on the CPU's own models. A refusal names the device: `gpu_yielded` or `cpu_yielded`, with that device's `resume_quiet_seconds` as Retry-After. Consumers hear `pause` while either device is yielded, with the GPU's reason when both are, and a pause handed from one device to the other keeps its `since`. Pause and Resume by hand stay the GPU's, so a hand resume while the CPU is busy leaves the consumers paused. Status shows the CPU's card: the verdict, the foreign and own CPU time, RAM, and the busiest processes outside InferMux. The GPU warden reads NVML's first card only, so a model on another CUDA index is on no measured device, and the config check warns about it.
 
+## Off, for a safety stop
+
+With `-off-file` (the module's `offFile`), this host's local models are off while that file exists, and its text says why ([0025](docs/decisions/0025-a-safety-stop-takes-the-local-models-off.md)). InferMux reads it before its first request and then every second. While off:
+
+- Every request for a local model, interactive or batch, gets 503 with `{"error":{"type":"off",...}}` and `resume_quiet_seconds` as Retry-After. Failover takes it to the model's next place.
+- The ones in flight are cancelled, the user's own included, and a job's are paused and sent on through failover at once.
+- Every model stops at once, without waiting for interactive quiet. One started past the gate, by a GET to `/upstream/<model>/`, stops at the next read.
+- Another host's model and a cloud's pass, and so does a job following one.
+
+Consumers hear nothing of it. `/warden/verdict` shows it as `off`, and the UI does not show it. The zbox's quiet-hours controller writes the file at 22:00 and on a thermal pause, and removes it when inference resumes.
+
 ## Jobs
 
 A first-party batch client hands InferMux a request as a job rather than sending it, and a yield then pauses it mid-reply instead of losing it ([0023](docs/decisions/0023-a-batch-request-is-a-job-paused-mid-inference.md)). The job keeps the text sent so far. When a place in the model's lanes takes it again, here after the resume or another host at once, InferMux sends the request again with that text as a prefilled assistant message (`continue_final_message`) and `max_tokens` cut by the tokens already sent. The client hears one reply.

@@ -310,6 +310,11 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	} else {
 		setFailover(cfg.Failover)
 	}
+	// Before the first request and the first job: a daemon started at night
+	// starts off (0025).
+	if *flagOffFile != "" {
+		watchOff(ctx, *flagOffFile, w.SetOff)
+	}
 	httpServer.Handler = failovers
 	w.Start()
 	stopControl := func() {}

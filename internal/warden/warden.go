@@ -90,6 +90,8 @@ type Warden struct {
 	quietLogged map[string]bool
 	// announced is what the consumers were last told, for its start.
 	announced Verdict
+	// off is set while the local models are off (0025).
+	off *Off
 
 	stop chan struct{}
 	done chan struct{}
@@ -366,8 +368,8 @@ func (w *Warden) comfyTick(jobs *int, now time.Time) {
 }
 
 // Wrap puts the warden in front of llama-swap: it answers /warden/*, refuses
-// batch inference during a pause, and tracks every inference request until its
-// response has been written.
+// batch inference during a pause and every local request while the models are
+// off, and tracks every inference request until its response has been written.
 func (w *Warden) Wrap(next http.Handler) http.Handler {
 	api := w.api()
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
@@ -439,6 +441,10 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			}
 		}
 		id, refusedBy := w.traffic.begin(class, r.URL.Path, devices, stop, session)
+		if refusedBy == offDevice {
+			w.refuseOff(rw)
+			return
+		}
 		if refusedBy != "" {
 			w.refuse(rw, refusedBy, "batch requests wait while "+deviceName(refusedBy)+" is yielded: ")
 			return
@@ -456,11 +462,15 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 		// and Go would send that as an empty 200. A cancelled batch request
 		// has to read as a failure to the client that sent it.
 		if !tracked.started {
-			if y.device == "" {
+			switch y.device {
+			case "":
 				// The GPU's window, as before there were devices: a client that
 				// honours Retry-After must not send the work straight back.
 				writeRefusal(rw, "cancelled", "batch request cancelled by hand", w.config().Policy.ResumeQuietSeconds)
-			} else {
+			case offDevice:
+				// Failover takes it to the next place, as for any 503 (0016).
+				w.refuseOff(rw)
+			default:
 				w.refuse(rw, y.device, "batch request cancelled, "+deviceName(y.device)+" was yielded: ")
 			}
 			return
@@ -476,8 +486,11 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 type yielded struct{ device string }
 
 func (y yielded) Error() string {
-	if y.device == "" {
+	switch y.device {
+	case "":
 		return "cancelled by hand"
+	case offDevice:
+		return "the local models are off"
 	}
 	return deviceName(y.device) + " was yielded"
 }
@@ -594,6 +607,8 @@ type VerdictState struct {
 	Remotes any `json:"remotes"`
 	// Jobs counts the jobs (0023).
 	Jobs any `json:"jobs,omitempty"`
+	// Off is set while the local models are off (0025).
+	Off *Off `json:"off"`
 }
 
 type comfyState struct {
@@ -621,6 +636,7 @@ func (w *Warden) State() VerdictState {
 		ProbeError:    w.probeError,
 		Resources:     w.lastResources,
 		Placement:     w.placement,
+		Off:           w.off,
 	}
 	if w.placement != nil {
 		s.CPU = &CPUState{

@@ -19,7 +19,8 @@ import (
 //
 // Batch requests are refused with 503 while the verdict is pause, and cancelled
 // on a yield. Interactive requests always pass, and the models are not unloaded
-// while one is in flight or was recent.
+// while one is in flight or was recent. The exception is a safety stop: while
+// the local models are off, every request is refused and cancelled (0025).
 //
 // Each request is on the devices its model occupies (0022): a batch request
 // is refused when any of them is yielded, and cancelled when one yields. The
@@ -121,6 +122,8 @@ type traffic struct {
 	refused         int
 	cancelled       int
 	resumed         []func()
+	// off is why every request is refused, "" while the models are on (0025).
+	off string
 }
 
 func newTraffic(keys *KeyFile, now func() time.Time) *traffic {
@@ -195,6 +198,12 @@ func isInference(r *http.Request) bool {
 func (t *traffic) begin(class Class, path string, devices []string, cancel func(device, why string), session *stream.Session) (uint64, string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.off != "" {
+		if class == Batch {
+			t.refused++
+		}
+		return 0, offDevice
+	}
 	if class == Batch {
 		for _, d := range devices {
 			if t.paused[d] {
@@ -306,6 +315,42 @@ func (t *traffic) closeSessions(device string, code int, reason string) int {
 		}
 	}
 	return n
+}
+
+// setOff refuses every request from now on and cancels every one in flight,
+// interactive too, a session with a close frame; why is the reason, "" lets
+// them through again and wakes whoever waits for a resume. Returns how many
+// were cancelled.
+func (t *traffic) setOff(why string) int {
+	t.mu.Lock()
+	was := t.off
+	t.off = why
+	var all []*flight
+	if was == "" && why != "" {
+		for _, f := range t.flights {
+			all = append(all, f)
+			if f.class == Batch {
+				t.cancelled++
+			}
+		}
+	}
+	resumed := t.resumed
+	t.mu.Unlock()
+	if why == "" {
+		if was != "" {
+			for _, f := range resumed {
+				f()
+			}
+		}
+		return 0
+	}
+	for _, f := range all {
+		if f.session != nil {
+			f.session.Close(stream.TryAgainLater, "infermux: the local models are off: "+why)
+		}
+		f.cancel(offDevice, "the local models are off: "+why)
+	}
+	return len(all)
 }
 
 func (t *traffic) resume(device string) {
