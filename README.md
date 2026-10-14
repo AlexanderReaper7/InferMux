@@ -197,7 +197,7 @@ services.infermux = {
 };
 ```
 
-The UI's Config tab edits the YAML with completion and hover from the schema, checks the draft with the daemons' own loader as it is typed, and shows where each model would run. Publish asks for the key's passphrase, signs the draft and hands it to this host's daemon. Once the daemon runs it, the UI writes nixcfg's copy, which Changes commits. A draft made from an older version than the one running gets a side-by-side comparison instead: build on the running version, or publish over it, which every host then shows as a conflict until it is dismissed.
+The UI's Config tab edits the YAML with completion and hover from the schema, checks the draft with the daemons' own loader as it is typed, and shows where each model would run. Publish asks for the key's passphrase, signs the draft and hands it to this host's daemon. With `ui.configPassphraseCommand`, an executable that prints the passphrase, such as `secret-tool lookup service infermux-config` against the user's keyring, Publish asks for none, and whoever reaches that host's UI can sign a config every host runs. Once the daemon runs it, the UI writes nixcfg's copy, which Changes commits. A draft made from an older version than the one running gets a side-by-side comparison instead: build on the running version, or publish over it, which every host then shows as a conflict until it is dismissed.
 
 ## Develop
 

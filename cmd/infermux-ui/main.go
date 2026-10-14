@@ -27,6 +27,7 @@ func main() {
 	daemonKeyFile := flag.String("daemon-key-file", "", "a file holding the UI's key for the daemon, when the daemon has a keys_file")
 	signedConfig := flag.String("signed-config", "", "nixcfg's copy of the one config, the daemons' -config-seed: the UI edits it and Publish signs it (0022)")
 	configKey := flag.String("config-key", "", "the key that signs the one config, encrypted with a passphrase (infermux-config keygen)")
+	configPassphrase := flag.String("config-passphrase-command", "", "an executable that prints -config-key's passphrase, such as a lookup in the user's keyring; Publish then asks the browser for none")
 	wardenFile := flag.String("warden-config", "", "the daemon's -warden-config")
 	baseConfig := flag.String("base-config", "", "the daemon's -config: the runtimes' macros and global settings")
 	ggufDirs := flag.String("gguf-dirs", "", "comma-separated directories to look for .gguf files in")
@@ -56,7 +57,7 @@ func main() {
 		daemonKey = strings.TrimSpace(string(raw))
 	}
 	store := &muxui.Store{WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity,
-		CommitPassphrase: *commitPassphrase, GPG: *gpg, SignedConfig: *signedConfig, ConfigKey: *configKey}
+		CommitPassphrase: *commitPassphrase, GPG: *gpg, SignedConfig: *signedConfig, ConfigKey: *configKey, ConfigPassphrase: *configPassphrase}
 	for _, d := range strings.Split(*ggufDirs, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			store.GGUFDirs = append(store.GGUFDirs, d)

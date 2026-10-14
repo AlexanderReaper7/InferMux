@@ -180,6 +180,8 @@ export interface UIState {
   warden: WardenConfig;
   // Per runtime macro, the K-V pairs with a compiled FlashAttention kernel.
   kv_kernels: Record<string, string[]> | null;
+  // Publish takes the config key's passphrase from -config-passphrase-command.
+  config_passphrase: boolean;
   daemon_port: string;
   swap_port: string;
   paths: { warden_file: string; base_config: string; gguf_dirs: string[]; signed_config: string };

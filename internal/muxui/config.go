@@ -2,6 +2,7 @@ package muxui
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -23,9 +25,9 @@ import (
 
 // The one config's editor (0022, 9). The draft lives in the browser. This
 // side checks it with the loader the daemons run, signs it with the config
-// key that the passphrase from the browser opens, hands it to the daemon,
-// which sends it to the other hosts, and writes the signed copy to nixcfg,
-// where Commit records it. The UI never pushes (0005).
+// key that the passphrase opens, from the browser or from ConfigPassphrase,
+// hands it to the daemon, which sends it to the other hosts, and writes the
+// signed copy to nixcfg, where Commit records it. The UI never pushes (0005).
 
 // daemonClient reaches this host's daemon as the UI does through /daemon/:
 // with X-InferMux and the UI's own key.
@@ -222,6 +224,25 @@ func (s *Store) hfFile(source string) (string, int64, error) {
 	return tag, size, nil
 }
 
+// configPassphrase runs ConfigPassphrase. A locked keyring asks to be
+// unlocked first, so it may take as long as the user does.
+func (s *Store) configPassphrase() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, s.ConfigPassphrase)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("the config key's passphrase from %s: %w %s", s.ConfigPassphrase, err, strings.TrimSpace(stderr.String()))
+	}
+	pass := strings.TrimRight(string(out), "\r\n")
+	if pass == "" {
+		return "", fmt.Errorf("%s printed no passphrase for the config key", s.ConfigPassphrase)
+	}
+	return pass, nil
+}
+
 type publishRequest struct {
 	Files map[string]string `json:"files"`
 	// Base is the hash of the version the draft was edited from, "" for the
@@ -269,7 +290,13 @@ func (s *Store) publish(d daemonClient, req publishRequest, now time.Time) (map[
 	if err != nil {
 		return nil, nil, fmt.Errorf("the config key: %w", err)
 	}
-	key, err := configstore.DecryptKey(encrypted, req.Passphrase)
+	pass := req.Passphrase
+	if pass == "" && s.ConfigPassphrase != "" {
+		if pass, err = s.configPassphrase(); err != nil {
+			return nil, nil, err
+		}
+	}
+	key, err := configstore.DecryptKey(encrypted, pass)
 	if err != nil {
 		return nil, nil, fmt.Errorf("the passphrase does not open the config key: %w", err)
 	}

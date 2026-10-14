@@ -304,7 +304,20 @@ in
           The key that signs the one config, encrypted with a passphrase by
           `infermux-config keygen`, readable by `ui.user`. The UI edits
           `signedConfig.seed`, and Publish asks for the passphrase to sign
-          (0022, 9).
+          (0022, 9), unless `configPassphraseCommand` prints it.
+        '';
+      };
+      configPassphraseCommand = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = lib.literalExpression ''
+          pkgs.writeShellScript "infermux-config-passphrase" "exec ''${pkgs.libsecret}/bin/secret-tool lookup service infermux-config"
+        '';
+        description = ''
+          An executable, run as `ui.user` with no arguments, that prints
+          `configKey`'s passphrase, such as a lookup in the user's keyring.
+          Publish then asks the browser for none, so whoever reaches the UI
+          can sign a config every host runs.
         '';
       };
       daemonKeyFile = lib.mkOption {
@@ -574,6 +587,12 @@ in
               cfg.signedConfig.seed
               "-config-key"
               cfg.ui.configKey
+            ]
+            ++ lib.optionals (cfg.ui.configPassphraseCommand != null) [
+              "-config-passphrase-command"
+              cfg.ui.configPassphraseCommand
+            ]
+            ++ [
               "-warden-config"
               wardenFile
               "-base-config"

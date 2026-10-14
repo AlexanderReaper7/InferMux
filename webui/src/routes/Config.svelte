@@ -212,6 +212,8 @@
 
   // Publish.
   let passphrase = $state("");
+  // Without -config-passphrase-command, Publish needs the passphrase typed.
+  const signable = $derived(!!ui?.config_passphrase || !!passphrase);
   let publishing = $state(false);
   let notice = $state<string | null>(null);
   let publishError = $state<string | null>(null);
@@ -360,7 +362,7 @@
   <Merge {files} other={merge.other} label={merge.label} onedit={(n, t) => (files[n] = t)}>
     {#if merge.kind === "stale"}
       <button class="btn-primary" onclick={rebase} title="The draft as it is now, edited from the running version">Build on the running version</button>
-      <button class="btn-danger" disabled={!passphrase || publishing} onclick={() => publish(true)} title="Needs the passphrase below"
+      <button class="btn-danger" disabled={!signable || publishing} onclick={() => publish(true)} title={ui?.config_passphrase ? "" : "Needs the passphrase below"}
         >Publish over it</button
       >
     {/if}
@@ -416,8 +418,10 @@
         </div>
       </div>
       <div class="flex gap-2">
-        <input type="password" autocomplete="off" class="flex-1" placeholder="config key passphrase" bind:value={passphrase} />
-        <button class="btn-primary" disabled={!dirty || !!checked?.error || !passphrase || publishing} onclick={() => publish(false)}>Publish</button>
+        {#if !ui?.config_passphrase}
+          <input type="password" autocomplete="off" class="flex-1" placeholder="config key passphrase" bind:value={passphrase} />
+        {/if}
+        <button class="btn-primary" disabled={!dirty || !!checked?.error || !signable || publishing} onclick={() => publish(false)}>Publish</button>
       </div>
       <div class="mt-1 text-xs text-neutral-500">Signs the draft on this host. The daemon runs it and sends it to the other hosts.</div>
       {#if notice}<div class="mt-2 text-sm text-emerald-300">{notice}</div>{/if}

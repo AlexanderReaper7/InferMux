@@ -45,6 +45,8 @@ func Handler(store *Store, build *Builder, daemon *url.URL, daemonKey, swapPort 
 			"runtimes":   runtimes,
 			"warden":     wcfg,
 			"kv_kernels": store.KVKernels,
+			// Publish needs no passphrase from the browser.
+			"config_passphrase": store.ConfigPassphrase != "",
 			// The browser reaches llama-swap's own UI on this port, on whatever
 			// host it reached infermux-ui: loopback, or the tailnet name.
 			"daemon_port": daemon.Port(),

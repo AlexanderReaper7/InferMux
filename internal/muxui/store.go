@@ -46,6 +46,10 @@ type Store struct {
 	// passphrase (0022).
 	SignedConfig string
 	ConfigKey    string
+	// ConfigPassphrase is an executable that prints ConfigKey's passphrase,
+	// such as a lookup in the user's keyring. Publish then takes none from
+	// the browser. Empty, the browser sends it.
+	ConfigPassphrase string
 
 	mu sync.Mutex
 }

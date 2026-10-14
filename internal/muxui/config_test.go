@@ -156,6 +156,29 @@ func TestCheckIsTheDaemonsLoader(t *testing.T) {
 	}
 }
 
+func TestPublishTakesThePassphraseFromTheCommandWhenTheBrowserSendsNone(t *testing.T) {
+	u := newConfigUI(t)
+	dir := t.TempDir()
+	lookup := filepath.Join(dir, "lookup")
+	os.WriteFile(lookup, []byte("#!/bin/sh\nprintf 'the passphrase\\n'\n"), 0o755)
+	u.f.store.ConfigPassphrase = lookup
+	if code, out := u.call("GET", "/api/state", nil); code != 200 || out["config_passphrase"] != true {
+		t.Fatalf("the state does not say Publish needs no passphrase: %d %v", code, out["config_passphrase"])
+	}
+	code, out := u.call("POST", "/api/config/publish", map[string]any{"files": draft(u.f.gguf, ""), "base": ""})
+	u.want(code, 200, out, "a publish with the command's passphrase")
+	if u.daemon.running() == nil {
+		t.Fatal("the daemon got nothing")
+	}
+
+	// A locked or missing keyring is the command's failure, and says so.
+	os.WriteFile(lookup, []byte("#!/bin/sh\necho 'no such secret' >&2\nexit 1\n"), 0o755)
+	code, out = u.call("POST", "/api/config/publish", map[string]any{"files": draft(u.f.gguf, "# again\n"), "base": u.daemon.running().Hash()})
+	if code == 200 || !strings.Contains(out["detail"].(string), "no such secret") {
+		t.Errorf("a failing command: %d %v", code, out)
+	}
+}
+
 func TestPublishSignsHandsOverAndWritesTheCopy(t *testing.T) {
 	u := newConfigUI(t)
 	files := draft(u.f.gguf, "")
