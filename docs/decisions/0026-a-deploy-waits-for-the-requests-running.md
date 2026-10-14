@@ -1,7 +1,7 @@
 # 0026. A deploy waits for the requests running, up to 40 s
 
 - Date: 2026-10-14
-- Status: accepted; built and tested 2026-10-14, not yet deployed (Verification, below)
+- Status: accepted; running on both hosts since 2026-10-14 (Verification, below)
 - Amends [0023](0023-a-batch-request-is-a-job-paused-mid-inference.md), item 4: a job is paused and written after the drain, not at the signal. Amends [0025](0025-a-safety-stop-takes-the-local-models-off.md): the zbox's `TimeoutStopSec=5` is gone, and its controller kills the models itself when it stops the daemon. Keeps 0025's safety stops cancelling at once.
 
 ## Context
@@ -42,4 +42,12 @@ Tests, run 2026-10-14:
 - Each of these mutations failed its test: no `Start`, the job attempts not waited for, no wait, a drain while off, no cut, the jobs not drained, the handler not wrapped. In nixcfg's controller tests: no kill, a blocking stop, the daemon killed with the models.
 - Not covered by a test: the hook's position above the backstop in `llama-swap.go`, which only a live stop longer than 35 s shows, and `KillMode`.
 
-Not yet watched running on either host.
+Watched 2026-10-14, after nixcfg `550d1c6` on both hosts (details in `docs/verification.md`):
+
+- A cloud chat streaming through a restart on the zbox finished with `[DONE]` 34.2 s into the drain, and the restart returned 0.4 s later.
+- An Octen batch on the zbox's GPU answered 200 28.3 s after the signal: under `KillMode=mixed` its llama-server lived through the drain.
+- A job still running at 40 s was paused and written, the stop took 41.6 s, past the backstop's 35 s, and the job finished as attempt 2 after the restart.
+- On strix a cloud chat still writing at 40 s was cut at 40.02 s; another client's chat on the GPU, in flight at the signal, answered 200 inside the drain.
+- A new chat and a GET during a drain each got 503 `draining` with `Retry-After: 5`, on both hosts.
+
+Not watched: a stop while off, the controller's fallback killing the models, a WebSocket closed with 1012, a request failing over from one host's 503 `draining` to the other, and Codex's handling of that 503.
