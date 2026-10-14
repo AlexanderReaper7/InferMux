@@ -37,6 +37,13 @@ type configHost struct {
 
 func newConfigHosts(t *testing.T, trusted []ed25519.PublicKey, names ...string) map[string]*configHost {
 	t.Helper()
+	return newConfigHostsWith(t, trusted, nil, names...)
+}
+
+// newConfigHostsWith is newConfigHosts with each host's llama-swap -config,
+// by name; none for a host not in bases.
+func newConfigHostsWith(t *testing.T, trusted []ed25519.PublicKey, bases map[string]string, names ...string) map[string]*configHost {
+	t.Helper()
 	logs := logmon.NewGroup(io.Discard, true, true, true)
 	hosts := map[string]*configHost{}
 	for _, name := range names {
@@ -44,7 +51,7 @@ func newConfigHosts(t *testing.T, trusted []ed25519.PublicKey, names ...string) 
 		srv := httptest.NewServer(mux)
 		t.Cleanup(srv.Close)
 		dir := t.TempDir()
-		one, err := openConfig(name, filepath.Join(dir, "state"), filepath.Join(dir, "derived"), trusted, logs.ProxyLogs)
+		one, err := openConfig(name, filepath.Join(dir, "state"), bases[name], filepath.Join(dir, "derived"), trusted, logs.ProxyLogs)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -114,6 +121,46 @@ func twoHostFiles(a, b, balance, model string) map[string][]byte {
 	return map[string][]byte{
 		"infermux.yaml": []byte(fmt.Sprintf("hosts:\n  a:\n    url: %s\n    devices:\n      gpu: {kind: gpu}\n  b:\n    url: %s\n    devices:\n      gpu: {kind: gpu}\nbalance:\n  m: %s\n", a, b, balance)),
 		"models/m.yaml": []byte(model),
+	}
+}
+
+// A config whose part here names a macro this host's -config lacks is
+// refused before the store, where llama-swap's reload refused it only after
+// the store had taken it; a host whose part does not name the macro takes
+// the config (0022, 11).
+func TestAMacroThisHostLacksIsRefusedBeforeTheStore(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	bases := map[string]string{"a": filepath.Join(dir, "a.yaml"), "b": filepath.Join(dir, "b.yaml")}
+	os.WriteFile(bases["a"], []byte("macros:\n  only-a: /bin/llama-server\n"), 0o644)
+	os.WriteFile(bases["b"], []byte("macros:\n  everywhere: /bin/llama-server\n"), 0o644)
+	hosts := newConfigHostsWith(t, []ed25519.PublicKey{pub}, bases, "a", "b")
+	a, b := hosts["a"], hosts["b"]
+	model := "cmd: ${only-a} --model /m.gguf --port ${PORT}\n"
+	onA, err := configstore.Sign(twoHostFiles(a.url, b.url, "[a/gpu]", model), priv, "a", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, h := range hosts {
+		if res, err := h.one.accept(onA, "test"); err != nil || res != configstore.Applied {
+			t.Fatalf("%s: %s %v", name, res, err)
+		}
+	}
+	onBoth, err := configstore.Sign(twoHostFiles(a.url, b.url, "[a/gpu, b/gpu]", model), priv, "a", onA, time.Now().Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := b.one.accept(onBoth, "test"); err == nil || !strings.Contains(err.Error(), "does not load here") || !strings.Contains(err.Error(), "only-a") {
+		t.Fatalf("b: %s %v", res, err)
+	}
+	if b.running() != onA.Hash() {
+		t.Error("b's store took it")
+	}
+	if res, err := a.one.accept(onBoth, "test"); err != nil || res != configstore.Applied {
+		t.Fatalf("a: %s %v", res, err)
 	}
 }
 
@@ -314,7 +361,7 @@ func TestProxy_OneConfigRuns(t *testing.T) {
 	seed := filepath.Join(dir, "seed")
 	bundle, err := configstore.Sign(map[string][]byte{
 		"infermux.yaml":     []byte(fmt.Sprintf("hosts:\n  test:\n    url: http://127.0.0.1:1\n    devices:\n      gpu: {kind: gpu}\n  zbox:\n    url: %s\n    devices:\n      gpu: {kind: gpu}\nbalance:\n  embed: [zbox/gpu]\nfailover:\n  embed: [test/gpu]\n", zbox.URL)),
-		"models/embed.yaml": []byte(fmt.Sprintf("cmd: llama-server --model %s --port ${PORT}\nfiles:\n  %s: {sha256: %x}\n", modelFile, modelFile, sha256.Sum256(weights))),
+		"models/embed.yaml": []byte(fmt.Sprintf("cmd: ${llama-server} --model %s --port ${PORT}\nfiles:\n  %s: {sha256: %x}\n", modelFile, modelFile, sha256.Sum256(weights))),
 	}, priv, "test", nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +372,9 @@ func TestProxy_OneConfigRuns(t *testing.T) {
 	keys := write("trusted", configstore.PublicKeyString(pub)+"\n")
 	hostKey := write("hostkey", "host-secret\n")
 	wfile := write("warden.yaml", fmt.Sprintf("host: test\nremote_key_file: %s\npolicy:\n  enabled: false\n", hostKey))
+	// The runtime's macro is Nix's, in llama-swap's -config: the seed loads
+	// with it (0022, 11).
+	base := write("base.yaml", "macros:\n  llama-server: llama-server\n")
 	*flagConfigTrustedKeys, *flagConfigSeed, *flagFetchDirs = keys, seed, filepath.Dir(modelFile)
 	t.Cleanup(func() { *flagConfigTrustedKeys, *flagConfigSeed, *flagFetchDirs = "", "", "" })
 	var reloads atomic.Int32
@@ -349,7 +399,7 @@ func TestProxy_OneConfigRuns(t *testing.T) {
 	defer srv.Shutdown(5 * time.Second)
 	httpServer := &http.Server{Handler: srv}
 	derivedDir := filepath.Join(dir, "derived")
-	startWarden(wfile, "", derivedDir, httpServer, func() *server.Server { return srv }, logs.ProxyLogs)
+	startWarden(wfile, base, derivedDir, httpServer, func() *server.Server { return srv }, logs.ProxyLogs)
 	front := httptest.NewServer(httpServer.Handler)
 	defer front.Close()
 

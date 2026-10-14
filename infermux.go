@@ -146,7 +146,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		}
 		trusted, state, err := configFlags()
 		if err == nil {
-			one, err = openConfig(cfg.Host, state, configDir, trusted, log)
+			one, err = openConfig(cfg.Host, state, configPath, configDir, trusted, log)
 		}
 		if err == nil {
 			one.options.CPURunner, err = cpuRunner(*flagCPUSocket)

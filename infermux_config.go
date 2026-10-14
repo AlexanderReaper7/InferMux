@@ -46,10 +46,12 @@ const configSyncEvery = remote.PollEvery
 
 // oneConfig is the daemon's side of the one config.
 type oneConfig struct {
-	host       string
-	options    placement.Options
-	store      *configstore.Store
-	trusted    []ed25519.PublicKey
+	host    string
+	options placement.Options
+	store   *configstore.Store
+	trusted []ed25519.PublicKey
+	// base is llama-swap's -config, which a part must load with.
+	base       string
 	derivedDir string
 	log        *logmon.Monitor
 	// activate takes a new part: the routes, the other hosts, the devices.
@@ -98,7 +100,7 @@ func configFlags() ([]ed25519.PublicKey, string, error) {
 	return trusted, state, nil
 }
 
-func openConfig(host, state, derivedDir string, trusted []ed25519.PublicKey, log *logmon.Monitor) (*oneConfig, error) {
+func openConfig(host, state, base, derivedDir string, trusted []ed25519.PublicKey, log *logmon.Monitor) (*oneConfig, error) {
 	if derivedDir == "" {
 		return nil, errors.New("-config-dir is needed: it is where this host's part goes for llama-swap")
 	}
@@ -110,7 +112,7 @@ func openConfig(host, state, derivedDir string, trusted []ed25519.PublicKey, log
 		// The kept version no longer verifies: run none (0022, 10).
 		log.Warnf("Config: %v", err)
 	}
-	return &oneConfig{host: host, store: store, trusted: trusted, derivedDir: derivedDir, log: log,
+	return &oneConfig{host: host, store: store, trusted: trusted, base: base, derivedDir: derivedDir, log: log,
 		client: &http.Client{Timeout: 30 * time.Second}}, nil
 }
 
@@ -173,6 +175,9 @@ func (c *oneConfig) derive(b *configstore.Bundle) (*placement.Part, []string, er
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := part.LoadsWith(c.base, true); err != nil {
+		return nil, nil, fmt.Errorf("llama-swap: %w", err)
+	}
 	for name, l := range part.Local {
 		if len(c.options.CPURunner) == 0 && part.Devices[l.Devices[0]].Kind == placement.KindCPU {
 			warnings = append(warnings, fmt.Sprintf("%s runs in the daemon's own cgroup, not the idle slice: -cpu-socket is not set", name))
@@ -205,8 +210,9 @@ func cpuRunner(socket string) ([]string, error) {
 }
 
 // accept checks a bundle, then hands it to the store, and runs it if the
-// store took it. A config this host cannot derive is refused before the
-// store sees it, so it never replaces one that runs.
+// store took it. A config this host cannot derive, or whose part llama-swap
+// does not load with this host's -config, is refused before the store sees
+// it, so it never replaces one that runs.
 func (c *oneConfig) accept(b *configstore.Bundle, from string) (configstore.Result, error) {
 	c.applying.Lock()
 	defer c.applying.Unlock()

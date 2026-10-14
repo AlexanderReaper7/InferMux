@@ -154,6 +154,29 @@ func check(files map[string][]byte) (*placement.Config, Check) {
 	return cfg, res
 }
 
+// checkHere is check, and this host's part loaded by llama-swap with the
+// base config, as the daemon loads it before it keeps a config: a macro this
+// host's Nix does not define fails here (0022, 11). Each other host's
+// daemon loads its own part. The UI has not the daemon's environment, which
+// holds the clouds' keys, so each ${env.VAR} reads as a placeholder.
+func (s *Store) checkHere(files map[string][]byte) Check {
+	cfg, res := check(files)
+	if res.Error != nil {
+		return res
+	}
+	host, err := s.host()
+	if err == nil {
+		var part *placement.Part
+		if part, err = cfg.Derive(host); err == nil {
+			err = part.LoadsWith(s.BaseConfig, false)
+		}
+	}
+	if err != nil {
+		res.Error = &Problem{Message: fmt.Sprintf("%s: llama-swap: %v", host, err)}
+	}
+	return res
+}
+
 func toBytes(files map[string]string) map[string][]byte {
 	out := make(map[string][]byte, len(files))
 	for name, content := range files {
@@ -261,7 +284,7 @@ var errStale = errors.New("stale")
 // publish signs the draft and hands it to the daemon, then writes the copy.
 func (s *Store) publish(d daemonClient, req publishRequest, now time.Time) (map[string]any, *Problem, error) {
 	files := toBytes(req.Files)
-	if _, res := check(files); res.Error != nil {
+	if res := s.checkHere(files); res.Error != nil {
 		return nil, res.Error, nil
 	}
 	current, err := d.bundle("/warden/config")
@@ -360,7 +383,7 @@ func configRoutes(mux *http.ServeMux, store *Store, build *Builder, d daemonClie
 		if !decode(rw, r, &body) {
 			return
 		}
-		_, res := check(toBytes(body.Files))
+		res := store.checkHere(toBytes(body.Files))
 		reply(rw, res)
 	})
 	mux.HandleFunc("POST /api/config/publish", func(rw http.ResponseWriter, r *http.Request) {

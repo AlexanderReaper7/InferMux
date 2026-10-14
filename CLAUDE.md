@@ -17,7 +17,7 @@ This file is rules and navigation only.
 |---|---|
 | `internal/warden/` | ours: config, policy, probe, the CPU's meter and each model's devices (`cpu.go`, `devices.go`, 0022), ComfyUI, consumers, request classes, stuck agents, the loop and `/warden/*` |
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
-| `internal/placement/` | ours: the one config (0022): hosts, devices, groups, the `balance` and `failover` lanes, and each host's part derived from it, llama-swap's file included |
+| `internal/placement/` | ours: the one config (0022): hosts, devices, groups, the `balance` and `failover` lanes, and each host's part derived from it, llama-swap's file included and loaded with the host's `-config` |
 | `internal/configstore/`, `cmd/infermux-config/` | ours: the config's signature, the daemon's kept versions and conflicts, and the terminal tool that makes the key and signs (0022) |
 | `infermux_config.go` | ours: the daemon's side of the one config: start, `/warden/config*`, push and poll between hosts |
 | `internal/cpurun/`, `cmd/infermux-cpu/` | ours: the runner that starts a CPU device's model servers in the root `idle.slice`, as its children rather than the daemon's (0022) |

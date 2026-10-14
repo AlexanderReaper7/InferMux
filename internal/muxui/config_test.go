@@ -147,6 +147,23 @@ func TestCheckIsTheDaemonsLoader(t *testing.T) {
 	if p, _ := out["error"].(map[string]any); p == nil || !strings.Contains(p["message"].(string), `here has no device "tpu"`) || p["file"] != "" {
 		t.Errorf("a placement error: %v", out["error"])
 	}
+	// A macro this host's base config does not define, which llama-swap
+	// refuses when it loads the part; ${env.VAR} reads as a placeholder,
+	// since the UI has not the daemon's environment.
+	macro := draft(u.f.gguf, "clouds:\n  c:\n    url: https://c.example\n    api_key: ${env.INFERMUX_TEST_UNSET}\n    models: [m]\n")
+	if _, out = u.call("POST", "/api/config/check", map[string]any{"files": macro}); out["error"] != nil {
+		t.Fatalf("an env macro: %v", out["error"])
+	}
+	macro["models/qwen.yaml"] = strings.Replace(macro["models/qwen.yaml"], "cmd: llama-server", "cmd: ${elsewhere}", 1)
+	_, out = u.call("POST", "/api/config/check", map[string]any{"files": macro})
+	if p, _ := out["error"].(map[string]any); p == nil || !strings.Contains(p["message"].(string), "here: llama-swap: unknown macro '${elsewhere}'") {
+		t.Errorf("an unknown macro: %v", out["error"])
+	}
+	code, out = u.call("POST", "/api/config/publish", map[string]any{"files": macro, "base": "", "passphrase": "the passphrase"})
+	u.want(code, http.StatusUnprocessableEntity, out, "Publish with an unknown macro")
+	if !strings.Contains(out["detail"].(string), "unknown macro") || u.daemon.running() != nil {
+		t.Error("the daemon got a config its llama-swap refuses")
+	}
 	// One only the host's own part raises, which the routes do not.
 	env := draft(u.f.gguf, "")
 	env["models/qwen.yaml"] += "env: [CUDA_VISIBLE_DEVICES=1]\n"
