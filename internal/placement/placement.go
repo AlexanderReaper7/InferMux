@@ -335,6 +335,9 @@ func parseModel(name string, raw []byte) (*Model, error) {
 		return nil, fmt.Errorf("a model is a mapping with at least cmd:")
 	}
 	body := doc.Content[0]
+	if err := writeOutMerge(body); err != nil {
+		return nil, err
+	}
 	m := &Model{Name: name, Body: body, Files: map[string]File{}}
 	if v := mapValue(body, "models"); v != nil {
 		return nil, fmt.Errorf("this is a llama-swap file: a model file holds one model's entry, without models: and its name")
@@ -599,6 +602,111 @@ func mapValue(n *yaml.Node, key string) *yaml.Node {
 		}
 	}
 	return nil
+}
+
+// writeOutMerge puts the keys a mapping's merge key, <<, brings in where the
+// merge key was, in the order yaml.v3's decode applies them, llama-swap's
+// included: the mapping's own keys win, then each source's own keys before
+// its own merge, the first source first. InferMux reads and rewrites a
+// model's keys by name, cmd, env, aliases, files and vram_mb, so none of them
+// may reach llama-swap through a merge InferMux did not read (sol, review
+// 15, M2). llama-swap decodes the result as it decodes m.
+func writeOutMerge(m *yaml.Node) error {
+	at := -1
+	set := map[string]bool{}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if isMerge(m.Content[i]) {
+			at = i
+		} else {
+			set[m.Content[i].Value] = true
+		}
+	}
+	if at < 0 {
+		return nil
+	}
+	// What yaml.v3 refuses in a merge, a second merge key, a key twice in a
+	// source, a source that is not a mapping, is refused here as it would be
+	// in llama-swap's load.
+	var decoded any
+	if err := m.Decode(&decoded); err != nil {
+		return err
+	}
+	if a := anchorIn(m.Content[at+1]); a != nil {
+		return fmt.Errorf("line %d: an anchor inside the merge key's value: InferMux writes the merge out, and an alias to the anchor would be left without it", a.Line)
+	}
+	var in []*yaml.Node
+	seen := map[*yaml.Node]bool{}
+	var merge func(n *yaml.Node)
+	from := func(src *yaml.Node) {
+		if src.Kind == yaml.AliasNode {
+			src = src.Alias
+		}
+		if seen[src] {
+			// Every key it brings is set already.
+			return
+		}
+		seen[src] = true
+		var next *yaml.Node
+		for i := 0; i+1 < len(src.Content); i += 2 {
+			k, v := src.Content[i], src.Content[i+1]
+			switch {
+			case isMerge(k):
+				next = v
+			case !set[k.Value]:
+				set[k.Value] = true
+				// Each anchor stays where it is defined, in the source, and
+				// is not defined a second time here.
+				kc, vc := deepCopy(k), deepCopy(v)
+				dropAnchors(kc)
+				dropAnchors(vc)
+				in = append(in, kc, vc)
+			}
+		}
+		if next != nil {
+			merge(next)
+		}
+	}
+	merge = func(n *yaml.Node) {
+		if n.Kind == yaml.SequenceNode {
+			for _, src := range n.Content {
+				from(src)
+			}
+			return
+		}
+		from(n)
+	}
+	merge(m.Content[at+1])
+	m.Content = append(m.Content[:at], append(in, m.Content[at+2:]...)...)
+	return nil
+}
+
+// isMerge is yaml.v3's own test for a merge key.
+func isMerge(k *yaml.Node) bool {
+	return k.Kind == yaml.ScalarNode && k.Value == "<<" && (k.Tag == "" || k.Tag == "!" || k.ShortTag() == "!!merge")
+}
+
+// anchorIn is the first node in n that defines an anchor, without following
+// an alias, or nil.
+func anchorIn(n *yaml.Node) *yaml.Node {
+	if n.Anchor != "" {
+		return n
+	}
+	if n.Kind == yaml.AliasNode {
+		return nil
+	}
+	for _, c := range n.Content {
+		if a := anchorIn(c); a != nil {
+			return a
+		}
+	}
+	return nil
+}
+
+func dropAnchors(n *yaml.Node) {
+	n.Anchor = ""
+	for _, c := range n.Content {
+		dropAnchors(c)
+	}
 }
 
 func deleteKey(n *yaml.Node, key string) {
