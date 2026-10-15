@@ -1,8 +1,13 @@
 package muxui
 
 import (
+	"encoding/hex"
+	"encoding/json"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -43,6 +48,13 @@ func TestCheckLoadsWithTheDaemonsEnvironmentFile(t *testing.T) {
 	t.Setenv("INFERMUX_TEST_KEY", "sk-session")
 	if got := checkMessage(&u, files); !strings.Contains(got, unset) {
 		t.Errorf("with the variable in the UI's environment only: %q, want %q", got, unset)
+	}
+	// Nor with no file or an empty one, where the child has no variable.
+	for _, file := range []string{"", envFile(t, "")} {
+		u.f.store.EnvFile = file
+		if got := checkMessage(&u, files); !strings.Contains(got, unset) {
+			t.Errorf("with the variable in the UI's environment and the file %q: %q, want %q", file, got, unset)
+		}
 	}
 	os.Unsetenv("INFERMUX_TEST_KEY")
 	u.f.store.EnvFile = envFile(t, "OTHER=x\nINFERMUX_TEST_KEY=sk-test\n")
@@ -108,12 +120,111 @@ func TestReadEnvFileReadsOnlyWhatSystemdReadsAsWritten(t *testing.T) {
 	for _, line := range []string{
 		`A="secret"`, `A='secret'`, `A=sec\ret`, `A=$secret`, `A=secret `, ` A=secret`, "A=secret\r",
 		"export A=secret", "A secret", "1A=secret", "A=secret\nA=again", "A=\nA=secret",
+		"A=sec\tret", "A=sec\x01ret", "A=sec\x7fret", "A=sec\u00e9ret", "A=sec\xffret", "A=sec\x00ret",
+		"A=one\rB=secret", "# a comment\rA=secret", "; another\rA=secret",
 	} {
 		_, err := ReadEnvFile(envFile(t, line+"\n"))
 		if err == nil {
 			t.Errorf("%q read", line)
 		} else if strings.Contains(err.Error(), "secret") {
 			t.Errorf("%q: the error %q holds the value", line, err)
+		}
+	}
+}
+
+// testdata/systemd-env/cases.json is systemd's own reading of each file in
+// probe.py's list, through the load_env_file behind a unit's
+// EnvironmentFile. What ReadEnvFile reads, it reads as systemd does, and each
+// value it reads Go's %q and %+q print unchanged, so redact finds it in an
+// error (sol, review 15, H1 and M3). What it refuses, systemd may read
+// another way.
+func TestReadEnvFileReadsAsSystemdDoes(t *testing.T) {
+	raw, err := os.ReadFile("testdata/systemd-env/cases.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record struct {
+		Systemd string
+		Cases   []struct {
+			File string
+			RC   int
+			Vars []string
+		}
+	}
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatal(err)
+	}
+	read := 0
+	for _, c := range record.Cases {
+		file, _ := hex.DecodeString(c.File)
+		got, err := ReadEnvFile(envFile(t, string(file)))
+		if err != nil {
+			continue
+		}
+		read++
+		want := map[string]string{}
+		for _, v := range c.Vars {
+			b, _ := hex.DecodeString(v)
+			name, value, _ := strings.Cut(string(b), "=")
+			want[name] = value
+		}
+		if c.RC != 0 || !maps.Equal(got, want) {
+			t.Errorf("%q: read as %q, and %s reads %q (%d)", file, got, record.Systemd, want, c.RC)
+		}
+		for name, value := range got {
+			if q := strconv.Quote(value); q[1:len(q)-1] != value {
+				t.Errorf("%q: %%q prints %s's value as %s", file, name, q)
+			}
+			if q := strconv.QuoteToASCII(value); q[1:len(q)-1] != value {
+				t.Errorf("%q: %%+q prints %s's value as %s", file, name, q)
+			}
+		}
+	}
+	// And the rule refuses no more than it says.
+	for c := byte(' '); c <= '~'; c++ {
+		if strings.IndexByte("\"'\\$", c) >= 0 {
+			continue
+		}
+		if _, err := ReadEnvFile(envFile(t, "A=x"+string(c)+"y\n")); err != nil {
+			t.Errorf("%q refused: %v", c, err)
+		}
+	}
+	if read < 95 {
+		t.Errorf("%d of %d cases read", read, len(record.Cases))
+	}
+}
+
+// A value an error would print escaped never reaches the check's answer:
+// net/url quotes a URL it refuses, and a tab in it becomes \t, which redact
+// would not find (sol's TestSolR15QuotedKeyMustNotReachHTTP, review 15, H1).
+func TestAValueAnErrorWouldPrintEscapedNeverReachesTheCheck(t *testing.T) {
+	u := newConfigUI(t)
+	u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY=sk-or-v1-a\tbsecret\n")
+	files := draft(u.f.gguf, "")
+	files["infermux.yaml"] += "clouds:\n  a:\n    url: http://[${env.INFERMUX_TEST_KEY}\n    models: [m]\n"
+	got := checkMessage(&u, files)
+	if strings.Contains(got, "sk-or-v1-a") || strings.Contains(got, "bsecret") || !strings.Contains(got, "line 1: INFERMUX_TEST_KEY's value has a byte other than printable ASCII") {
+		t.Fatalf("%q", got)
+	}
+}
+
+// A variable of the file never chooses what the loader child runs: the
+// argument makes it the loader, and the GPG shim's variable, set in the
+// file, is not looked at (sol, review 15, L4).
+func TestTheFileCannotChooseWhatTheLoaderRuns(t *testing.T) {
+	ok, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := func(u configUI) map[string]string {
+		return draft(u.f.gguf, "clouds:\n  c:\n    url: https://c.example\n    api_key: ${env.INFERMUX_TEST_UNSET_KEY}\n    models: [m]\n")
+	}
+	const unset = "environment variable 'INFERMUX_TEST_UNSET_KEY' is not set"
+	for _, file := range []string{"INFERMUX_UI_GPG=" + ok + "\n", "INFERMUX_UI_LOAD=\n", "INFERMUX_UI_LOAD=1\n"} {
+		u := newConfigUI(t)
+		u.f.store.EnvFile = envFile(t, file)
+		if got := checkMessage(&u, files(u)); !strings.Contains(got, unset) {
+			t.Errorf("with %q: %q, want %q", file, got, unset)
 		}
 	}
 }

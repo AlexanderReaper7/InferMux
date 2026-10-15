@@ -17,8 +17,8 @@ import (
 )
 
 func main() {
-	muxui.GPGShim()
 	muxui.LoadShim()
+	muxui.GPGShim()
 	listen := flag.String("listen", "127.0.0.1:5010", "address to serve the UI on")
 	swapListen := flag.String("swap-listen", "", "address to serve llama-swap's own UI on, with the UI's key, so the llama-swap tab asks for none; empty frames the daemon")
 	daemon := flag.String("daemon", "http://127.0.0.1:5001", "the InferMux daemon")

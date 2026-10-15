@@ -26,8 +26,8 @@ const gpgShimEnv = "INFERMUX_UI_GPG"
 var ErrGPGPassphrase = errors.New("a commit here needs the passphrase of your GPG key")
 
 // GPGShim makes this process gpg when git started it as gpg.program for a
-// Commit, and returns at once otherwise. Call it first in main, before flags
-// are parsed: the arguments are git's, for gpg.
+// Commit, and returns at once otherwise. Call it in main after LoadShim and
+// before flags are parsed: the arguments are git's, for gpg.
 func GPGShim() {
 	gpg := os.Getenv(gpgShimEnv)
 	if gpg == "" {
