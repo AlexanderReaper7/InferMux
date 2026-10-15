@@ -3,9 +3,9 @@ package muxui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"os"
 	"os/exec"
@@ -22,53 +22,75 @@ import (
 // does (the user's decision 9 of 2026-10-15; 0022, 11). The file's variables
 // never enter this process's environment, so nothing the UI starts, git, nix
 // or the passphrase command, inherits them: each load runs in a child,
-// infermux-ui itself started with loadShimArg, whose environment is the
-// file's variables and nothing of the UI's session. The argument, not the
-// environment, makes the child the loader, so no variable of the file
-// changes what it runs (sol, review 15, L4). The file is read at each check,
-// so a new key needs no restart.
+// infermux-ui itself started with loadShimArg, whose environment is empty.
+// The variables reach it on stdin with the part, and LoadShim sets them once
+// the Go runtime has started, so the runtime takes none of them as a setting,
+// as it took a stand-in in GOMAXPROCS and grew to 58.5 GB (the user's
+// decision of 2026-10-15). The argument, not the environment, makes the child
+// the loader (sol, review 15, L4). The file is read at each check, so a new
+// key needs no restart.
 
 const loadShimArg = "--infermux-ui-loads-a-part"
 
 // loadTimeout bounds a load the child does not finish.
 const loadTimeout = 30 * time.Second
 
-// LoadShim makes this process load a part, read from stdin, with the base
-// config named by the argument after loadShimArg, when the UI started it for
-// a check, and returns at once otherwise. Call it first in main, before
-// GPGShim, which the file's variables could otherwise start. It exits 0 when
+// loadInput is what a load's child reads on stdin: the part, and the
+// variables it loads with.
+type loadInput struct {
+	Env  map[string]string
+	Part []byte
+}
+
+// LoadShim makes this process load a part, read from stdin with its
+// variables, with the base config named by the argument after loadShimArg,
+// when the UI started it for a check, and returns at once otherwise. Call it
+// first in main, before GPGShim, which reads the environment. It exits 0 when
 // the part loads, and 1 with llama-swap's error on stdout when not.
 func LoadShim() {
 	if len(os.Args) < 2 || os.Args[1] != loadShimArg {
 		return
 	}
-	part, err := io.ReadAll(os.Stdin)
-	if err == nil && len(os.Args) != 3 {
-		err = errors.New("infermux-ui as the loader takes the base config, and only it")
-	}
-	if err == nil {
-		err = (&placement.Part{LlamaSwap: part}).LoadsWith(os.Args[2], true)
-	}
-	if err != nil {
+	if err := loadStdin(); err != nil {
 		fmt.Print(err)
 		os.Exit(1)
 	}
 	os.Exit(0)
 }
 
+// loadStdin sets the variables of the loadInput on stdin and loads its part.
+// os.Setenv reaches the macros, which read os.LookupEnv, and of the runtime
+// only GODEBUG, which it parses again.
+func loadStdin() error {
+	var in loadInput
+	if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
+		return err
+	}
+	if len(os.Args) != 3 {
+		return errors.New("infermux-ui as the loader takes the base config, and only it")
+	}
+	for name, value := range in.Env {
+		if err := os.Setenv(name, value); err != nil {
+			return err
+		}
+	}
+	return (&placement.Part{LlamaSwap: in.Part}).LoadsWith(os.Args[2], true)
+}
+
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ReadEnvFile reads a systemd EnvironmentFile, as the daemon's unit loads it,
 // in the one form that systemd reads as written: NAME=VALUE lines, blank
-// lines and lines that begin with # or ;. A value is printable ASCII, which
-// the check's redaction needed until sol's review 16, since an error prints
-// any other byte escaped (sol, review 15, H1); the check now answers with a
-// load that never had the values (loads). It has no quote or backslash, which
-// systemd unquotes and llama-swap escapes, no $, which llama-swap can expand
-// as a macro once the value is in the config, and no space at either end,
-// which systemd trims. Any other line, a NUL byte, for which systemd refuses the
-// file, and a carriage return, which it reads as a line break, refuse the
-// file. testdata/systemd-env holds systemd's own reading of each case the
+// lines and lines that begin with # or ;. A value is printable ASCII, the
+// user's decision of 2026-10-15 to keep the rule. The agent's reason: of the
+// other bytes, systemd refuses the whole file for one that is not UTF-8 and
+// trims a tab at either end, so a reader of them would copy two more of
+// systemd's rules, and no key has such a byte. It has no quote or backslash,
+// which systemd unquotes and llama-swap escapes, no $, which llama-swap can
+// expand as a macro once the value is in the config, and no space at either
+// end, which systemd trims. Any other line, a NUL byte, for which systemd
+// refuses the file, and a carriage return, which it reads as a line break,
+// refuse the file. testdata/systemd-env holds systemd's own reading of each case the
 // test compares. An error names the line, never its value.
 func ReadEnvFile(path string) (map[string]string, error) {
 	raw, err := os.ReadFile(path)
@@ -124,12 +146,11 @@ func notAsWritten(value string) string {
 // The check's answer goes to whoever reaches the UI, and what the child says
 // can hold a value of the file: llama-swap quotes a value it refuses, such as
 // a duplicate alias or a proxy URL, as YAML left it, with a comment or a tag
-// cut off, and the Go runtime prints a variable such as GOMEMLIMIT that it
-// refuses before LoadShim runs (sol, review 16, H1). So the answer is never
-// what that load said. When it fails, part is loaded again with a stand-in for
-// each value the part or the base reads and without the file's other
-// variables, and the answer is what the second load said, each stand-in shown
-// as the ${env.NAME} it stands for. The first load adds only that it failed.
+// cut off (sol, review 16, H1). So the answer is never what that load said.
+// When it fails, part is loaded again with a stand-in for each value the part
+// or the base reads and without the file's other variables, and the answer is
+// what the second load said, each stand-in shown as the ${env.NAME} it stands
+// for. The first load adds only that it failed.
 // The second load never has a value of the file, whatever YAML reads the value
 // as alone: where the part puts it, it can be text, as `300 # rest` is in a
 // quoted alias (sol, review 17, H1). Nothing in the answer is chosen by
@@ -193,9 +214,9 @@ func reads(name string, texts ...[]byte) bool {
 	return false
 }
 
-// load loads part in the loader child, whose whole environment is env, and
-// returns "" when it loads, and when not, llama-swap's error or, for an exit
-// but 1, the Go runtime's.
+// load loads part in the loader child with the variables env and nothing
+// else, and returns "" when it loads, and when not, llama-swap's error or,
+// for an exit but 1, the Go runtime's.
 func (s *Store) load(part *placement.Part, env map[string]string) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
@@ -203,13 +224,14 @@ func (s *Store) load(part *placement.Part, env map[string]string) (string, error
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), loadTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, self, loadShimArg, s.BaseConfig)
-	// Not nil, which would hand the child the UI's own environment.
-	cmd.Env = []string{}
-	for name, value := range env {
-		cmd.Env = append(cmd.Env, name+"="+value)
+	in, err := json.Marshal(loadInput{Env: env, Part: part.LlamaSwap})
+	if err != nil {
+		return "", err
 	}
-	cmd.Stdin = bytes.NewReader(part.LlamaSwap)
+	cmd := exec.CommandContext(ctx, self, loadShimArg, s.BaseConfig)
+	// Empty, not nil, which would hand the child the UI's own environment.
+	cmd.Env = []string{}
+	cmd.Stdin = bytes.NewReader(in)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err = cmd.Run()

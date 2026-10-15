@@ -1,8 +1,10 @@
 package muxui
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
@@ -250,9 +252,8 @@ func runOf(s, value string) string {
 // The check's answer holds no run of leakRun characters of a value of the
 // file, whatever YAML made of the value before llama-swap quoted it, a
 // comment or a tag cut off (sol's TestSolR16ChangedValue, review 16, H1),
-// whatever the Go runtime printed of a variable it refused before the loader
-// started (sol's TestSolR16RuntimeEnv), and whatever yaml.v3's type error
-// keeps of a string in an int field, which the second load's number fills.
+// and whatever yaml.v3's type error keeps of a string in an int field, which
+// the second load's number fills.
 func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 	block := "aliases:\n  - ${env.INFERMUX_TEST_KEY}\n"
 	for _, c := range []struct{ value, alias string }{
@@ -274,20 +275,73 @@ func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 	}
 
 	u := newConfigUI(t)
-	const value = "sk-or-v1-madeup-runtime-secret"
-	u.f.store.EnvFile = envFile(t, "GOMEMLIMIT="+value+"\n")
-	got := checkMessage(&u, draft(u.f.gguf, ""))
-	if !strings.Contains(got, "loads with a stand-in for each and without GOMEMLIMIT, which nothing reads, so a value fails it; its error is not shown") || runOf(got, value) != "" {
-		t.Errorf("a variable the Go runtime refuses: %q", got)
-	}
-
-	u = newConfigUI(t)
-	u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY="+value+"\n")
+	const value = "sk-or-v1-madeup-type-secret"
+	u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY="+value+"\nUNREAD=sk-or-v1-unread-secret\n")
 	files := draft(u.f.gguf, "")
 	files["models/qwen.yaml"] += "concurrencyLimit: ${env.INFERMUX_TEST_KEY}\n"
-	got = checkMessage(&u, files)
-	if !strings.Contains(got, "loads with a stand-in for each, so a value fails it; its error is not shown") || runOf(got, value) != "" {
+	got := checkMessage(&u, files)
+	if !strings.Contains(got, "loads with a stand-in for each and without UNREAD, which nothing reads, so a value fails it; its error is not shown") || runOf(got, value) != "" || strings.Contains(got, "unread-secret") {
 		t.Errorf("a type error, which yaml.v3 prints with 7 characters of the value: %q", got)
+	}
+}
+
+// The loader child starts with an empty environment and sets the file's
+// variables once the Go runtime runs, so the runtime takes none of them as a
+// setting. A GOMEMLIMIT it would refuse at start loads, read by nothing or by
+// the part (the user's decision of 2026-10-15; sol's TestSolR16RuntimeEnv,
+// review 16, before it). GOMAXPROCS, the setting that decision is for, has no
+// test: a child that reads 735700357 as one grew to 58.5 GB in 10 s.
+func TestTheLoadersRuntimeReadsNoVariableOfTheFile(t *testing.T) {
+	for _, reads := range []string{"", "name: ${env.GOMEMLIMIT}\n"} {
+		u := newConfigUI(t)
+		u.f.store.EnvFile = envFile(t, "GOMEMLIMIT=sk-or-v1-madeup-runtime-secret\n")
+		files := draft(u.f.gguf, "")
+		files["models/qwen.yaml"] += reads
+		if got := checkMessage(&u, files); got != "" {
+			t.Errorf("a GOMEMLIMIT the runtime refuses, the part reading %q: %q", reads, got)
+		}
+	}
+}
+
+// The built infermux-ui, with the loader's argument and GPGShim's variable,
+// is the loader: main calls LoadShim before GPGShim, which would otherwise
+// run the gpg it names, here true, which exits 0 without a word (the user's
+// decision of 2026-10-15, for a test of main's own order). It takes the base
+// config and nothing after it.
+func TestTheBuiltUILoadsBeforeItRunsGPG(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "infermux-ui")
+	if out, err := exec.Command("go", "build", "-o", bin, "../../cmd/infermux-ui").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	gpg, err := exec.LookPath("true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseFile := filepath.Join(dir, "base.yaml")
+	if err := os.WriteFile(baseFile, []byte(base), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in, err := json.Marshal(loadInput{Env: map[string]string{"INFERMUX_TEST_SET": "x"}, Part: []byte("models:\n  m:\n    cmd: ${env.INFERMUX_TEST_SET} ${env.INFERMUX_TEST_UNSET}\n")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(bin, loadShimArg, baseFile)
+	cmd.Env = []string{gpgShimEnv + "=" + gpg}
+	cmd.Stdin = bytes.NewReader(in)
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	const unset = "environment variable 'INFERMUX_TEST_UNSET' is not set"
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(out), unset) || strings.Contains(string(out), "INFERMUX_TEST_SET'") {
+		t.Errorf("%v, %q, want exit 1 and %q", err, out, unset)
+	}
+	cmd = exec.Command(bin, loadShimArg, baseFile, baseFile)
+	cmd.Env = []string{}
+	cmd.Stdin = bytes.NewReader(in)
+	out, err = cmd.Output()
+	const only = "infermux-ui as the loader takes the base config, and only it"
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || string(out) != only {
+		t.Errorf("with an argument after the base config: %v, %q, want exit 1 and %q", err, out, only)
 	}
 }
 
