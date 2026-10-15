@@ -60,15 +60,15 @@ var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // ReadEnvFile reads a systemd EnvironmentFile, as the daemon's unit loads it,
 // in the one form that systemd reads as written and whose values an error
 // prints as written: NAME=VALUE lines, blank lines and lines that begin with
-// # or ;. A value is printable ASCII, which Go's %q and %+q print unchanged,
-// so the check's error can be cleared of it (redact; sol, review 15, H1). It
-// has no quote or backslash, which systemd unquotes and llama-swap escapes,
-// no $, which llama-swap can expand as a macro once the value is in the
-// config, and no space at either end, which systemd trims. Any other line,
-// a NUL byte, for which systemd refuses the file, and a carriage return,
-// which it reads as a line break, refuse the file. testdata/systemd-env
-// holds systemd's own reading of each case the test compares. An error names
-// the line, never its value.
+// # or ;. A value is printable ASCII: Go's %q and %+q print any other byte
+// escaped, and redact finds only the characters of a value printed as
+// written (sol, review 15, H1). It has no quote or backslash, which systemd
+// unquotes and llama-swap escapes, no $, which llama-swap can expand as a
+// macro once the value is in the config, and no space at either end, which
+// systemd trims. Any other line, a NUL byte, for which systemd refuses the
+// file, and a carriage return, which it reads as a line break, refuse the
+// file. testdata/systemd-env holds systemd's own reading of each case the
+// test compares. An error names the line, never its value.
 func ReadEnvFile(path string) (map[string]string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -120,27 +120,14 @@ func notAsWritten(value string) string {
 }
 
 // loads loads part with the base config and the environment file in a child,
-// and returns llama-swap's error with each value the part or the base reads
-// put back as the ${env.VAR} it came from: llama-swap quotes a value it
-// refuses, such as a duplicate alias or a proxy URL, and the check's answer
-// goes to whoever reaches the UI. Only those values are pasted into the text,
-// so a short value of another variable is not replaced in a path that never
-// held it.
+// and returns what the child said, llama-swap's error or the Go runtime's,
+// through redact: the check's answer goes to whoever reaches the UI.
 func (s *Store) loads(part *placement.Part) error {
 	env := map[string]string{}
 	if s.EnvFile != "" {
 		var err error
 		if env, err = ReadEnvFile(s.EnvFile); err != nil {
 			return err
-		}
-	}
-	read := map[string]string{}
-	base, _ := os.ReadFile(s.BaseConfig) // unreadable, the child's load says so
-	for _, raw := range [][]byte{part.LlamaSwap, base} {
-		for _, m := range placement.EnvMacro.FindAllSubmatch(raw, -1) {
-			if value, ok := env[string(m[1])]; ok {
-				read[string(m[1])] = value
-			}
 		}
 	}
 	self, err := os.Executable()
@@ -166,24 +153,51 @@ func (s *Store) loads(part *placement.Part) error {
 	case ctx.Err() != nil:
 		return fmt.Errorf("the load did not finish in %s", loadTimeout)
 	case errors.As(err, &exit) && exit.ExitCode() == 1:
-		return errors.New(redact(stdout.String(), read))
+		return errors.New(redact(stdout.String(), env))
 	default:
-		return fmt.Errorf("the load failed: %v %s", err, redact(strings.TrimSpace(stderr.String()), read))
+		return fmt.Errorf("the load failed: %v %s", err, redact(strings.TrimSpace(stderr.String()), env))
 	}
 }
 
-// redact puts ${env.NAME} in place of each value of env in s, the longest
-// first, so that one value inside another is not left half in place.
+// redactRun is the shortest run of a value's characters that redact puts
+// back. yaml.v3's type error keeps 7 characters of a value, `sk-or-v...`.
+const redactRun = 6
+
+// redact puts ${env.NAME} in place of each run of redactRun or more
+// characters of s that is part of NAME's value, at each place the longest
+// run of any value. A run and not the whole value, because what the child
+// prints is the value as YAML left it, with a comment or a tag cut off (sol,
+// review 16, H1). Every value of the file, and not only those the config
+// reads, because the Go runtime reads a variable such as GOMEMLIMIT before
+// LoadShim and prints the one it refuses. So no redactRun characters in a
+// row of a value reach the answer, outside the ${env.NAME} put in for them.
+// A value shorter than redactRun is not looked for, and does not replace
+// the same letters in a path.
 func redact(s string, env map[string]string) string {
 	names := make([]string, 0, len(env))
-	for name, value := range env {
-		if value != "" {
-			names = append(names, name)
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		name, run := "", 0
+		for _, n := range names {
+			l := 0
+			for i+l < len(s) && strings.Contains(env[n], s[i:i+l+1]) {
+				l++
+			}
+			if l > run {
+				name, run = n, l
+			}
 		}
+		if run >= redactRun {
+			b.WriteString("${env." + name + "}")
+			i += run
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
 	}
-	sort.Slice(names, func(i, j int) bool { return len(env[names[i]]) > len(env[names[j]]) })
-	for _, name := range names {
-		s = strings.ReplaceAll(s, env[name], "${env."+name+"}")
-	}
-	return s
+	return b.String()
 }

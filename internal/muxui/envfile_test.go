@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,8 +91,8 @@ func TestACheckErrorNamesTheVariableNotItsValue(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			u := newConfigUI(t)
-			// A value of a variable the part does not read stays: "x" is in
-			// the load's own temporary path.
+			// A value shorter than redactRun stays: "x" is in the load's own
+			// temporary path.
 			u.f.store.EnvFile = envFile(t, "UNREAD=x\nINFERMUX_TEST_KEY="+key+"\n")
 			files := draft(u.f.gguf, "")
 			c.files(files)
@@ -226,5 +227,95 @@ func TestTheFileCannotChooseWhatTheLoaderRuns(t *testing.T) {
 		if got := checkMessage(&u, files(u)); !strings.Contains(got, unset) {
 			t.Errorf("with %q: %q, want %q", file, got, unset)
 		}
+	}
+}
+
+// leakRun is the shortest run of a value's characters the check's answer may
+// not hold, written here and not read from redactRun, so that the test fails
+// when redactRun grows.
+const leakRun = 6
+
+// runOf is the first run of leakRun characters of value in s outside each
+// ${env.NAME} redact put in, or "".
+func runOf(s, value string) string {
+	for _, part := range regexp.MustCompile(`\$\{env\.[A-Za-z0-9_]+\}`).Split(s, -1) {
+		for i := 0; i+leakRun <= len(part); i++ {
+			if strings.Contains(value, part[i:i+leakRun]) {
+				return part[i : i+leakRun]
+			}
+		}
+	}
+	return ""
+}
+
+// The check's answer holds no run of leakRun characters of a value of the
+// file, whatever YAML made of the value before llama-swap quoted it, a
+// comment or a tag cut off (sol's TestSolR16ChangedValue, review 16, H1),
+// and whatever the Go runtime printed of a variable it refused before the
+// loader started (sol's TestSolR16RuntimeEnv). A space next to the value is
+// part of the run where the value holds one. yaml.v3's type error keeps the
+// value's first 7 characters.
+func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
+	block := "aliases:\n  - ${env.INFERMUX_TEST_KEY}\n"
+	for _, c := range []struct{ value, alias string }{
+		{"sk-or-v1-abcdefgh # rest", block},
+		{"!!str sk-or-v1-abcdefghijklmnop", block},
+		{"sk-or-v1-abcdef, moresecret", "aliases: [\"${env.INFERMUX_TEST_KEY}\"]\n"},
+		{"sk-or-v1-abcdefgh%zzrest", "aliases: [\"${env.INFERMUX_TEST_KEY}\"]\n"},
+	} {
+		u := newConfigUI(t)
+		u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY="+c.value+"\n")
+		files := draft(u.f.gguf, "")
+		files["infermux.yaml"] = strings.Replace(files["infermux.yaml"], "balance:\n", "balance:\n  other: [here/gpu]\n", 1)
+		files["models/other.yaml"] = strings.Replace(files["models/qwen.yaml"], "files:", c.alias+"files:", 1)
+		files["models/qwen.yaml"] += c.alias
+		got := checkMessage(&u, files)
+		if !regexp.MustCompile(`duplicate alias ?\$\{env\.INFERMUX_TEST_KEY\} ?found`).MatchString(got) || runOf(got, c.value) != "" {
+			t.Errorf("%q as %q: %q", c.value, c.alias, got)
+		}
+	}
+
+	u := newConfigUI(t)
+	const value = "sk-or-v1-madeup-runtime-secret"
+	u.f.store.EnvFile = envFile(t, "GOMEMLIMIT="+value+"\n")
+	got := checkMessage(&u, draft(u.f.gguf, ""))
+	if !strings.Contains(got, "GOMEMLIMIT=${env.GOMEMLIMIT}") || !strings.Contains(got, "malformed GOMEMLIMIT") || runOf(got, value) != "" {
+		t.Errorf("a variable the Go runtime refuses: %q", got)
+	}
+
+	u = newConfigUI(t)
+	u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY="+value+"\n")
+	files := draft(u.f.gguf, "")
+	files["models/qwen.yaml"] += "concurrencyLimit: ${env.INFERMUX_TEST_KEY}\n"
+	got = checkMessage(&u, files)
+	if !strings.Contains(got, "!!str `${env.INFERMUX_TEST_KEY}...` into int") || runOf(got, value) != "" {
+		t.Errorf("a type error: %q", got)
+	}
+}
+
+// redact leaves no run of leakRun characters of any value, wherever a value is
+// cut, and changes nothing that holds none.
+func TestRedactLeavesNoRunOfAValue(t *testing.T) {
+	env := map[string]string{"A": "sk-or-v1-0123456789abcdef", "B": "sk-or-v1-fedcba9876543210", "C": "xyz"}
+	for _, v := range env {
+		for i := 0; i < len(v); i++ {
+			for j := i + 1; j <= len(v); j++ {
+				s := "duplicate alias " + v[i:j] + " found in /tmp/xyz/" + v[j:] + v[:i]
+				got := redact(s, env)
+				for name, w := range env {
+					if r := runOf(got, w); r != "" {
+						t.Fatalf("%q: %q holds %q of %s", s, got, r, name)
+					}
+				}
+			}
+		}
+	}
+	for _, s := range []string{"line 3: cmd is missing", "/tmp/xyz/sk-or", "0123 abcd 6789"} {
+		if got := redact(s, env); got != s {
+			t.Errorf("%q became %q", s, got)
+		}
+	}
+	if got := redact("A sk-or-v1-0123456789abcdefsk-or-v1-fedcba9876543210 B", env); got != "A ${env.A}${env.B} B" {
+		t.Errorf("two values back to back: %q", got)
 	}
 }

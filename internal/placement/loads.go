@@ -9,8 +9,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// EnvMacro is llama-swap's ${env.VAR} (internal/config/macros.go).
-var EnvMacro = regexp.MustCompile(`\$\{env\.([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+// envMacro is llama-swap's ${env.VAR} (internal/config/macros.go).
+var envMacro = regexp.MustCompile(`\$\{env\.([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 
 // LoadsWith loads the part's file with base, llama-swap's -config, as
 // llama-swap does once the file is in -config-dir. A macro the host's Nix
@@ -62,13 +62,13 @@ func readsEnv(raw []byte) bool {
 	var doc yaml.Node
 	if yaml.Unmarshal(raw, &doc) != nil {
 		// llama-swap then substitutes in the text as it stands.
-		return EnvMacro.Match(raw)
+		return envMacro.Match(raw)
 	}
 	return nodeReadsEnv(&doc)
 }
 
 func nodeReadsEnv(n *yaml.Node) bool {
-	if EnvMacro.MatchString(n.Value) {
+	if envMacro.MatchString(n.Value) {
 		return true
 	}
 	for _, c := range n.Content {
