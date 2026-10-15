@@ -100,7 +100,7 @@ OpenRouter, the one config's only cloud, through strix. The nemotron stream is `
 
 ## Consequences
 
-- Once Episteme sends jobs, the warden stops pushing to consumers. `consumers` in `warden.yaml`, and CLAUDE.md's rules "A pause is a message, not a lease" and "An announcement must be idempotent at the other end", retire with it, and so does 0001's residual risk: a held job leaves no state at the consumer.
+- Once Episteme sends jobs, the warden stops pushing to consumers. `consumers` in `warden.yaml`, and AGENTS.md's rules "A pause is a message, not a lease" and "An announcement must be idempotent at the other end", retire with it, and so does 0001's residual risk: a held job leaves no state at the consumer.
 - Episteme changes its client to the job envelope. That is work in Episteme's repository.
 - A crash, an OOM kill, a `SIGKILL` or a power cut loses the jobs in memory, since only a shutdown signal writes them. The consumer finds its job id unknown and submits the request again. A job's text up to the crash is lost with it.
 - Resuming at another place needs only the lanes, which the one config's `balance` and `failover` provide (0022).

@@ -8,7 +8,7 @@ It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-
 
 ## What is InferMux's and what is llama-swap's
 
-InferMux is a fork of llama-swap that merges each upstream release rather than vendoring it, so most of the tree and most of the history are upstream's. InferMux's own code is `infermux.go`, `internal/warden/`, `internal/remote/`, `internal/failover/`, `internal/catalog/`, `internal/stats/`, `internal/stream/`, `internal/placement/`, `internal/configstore/`, `internal/cpurun/`, `internal/fetch/`, `internal/adapter/`, `internal/muxui/`, `internal/server/warden.go`, `infermux_config.go`, `cmd/infermux-ui/`, `cmd/infermux-adapter/`, `cmd/infermux-config/`, `cmd/infermux-cpu/`, `webui/`, `nix/`, `e2e/` and `docs/decisions/`. [CLAUDE.md](CLAUDE.md) has the full map.
+InferMux is a fork of llama-swap that merges each upstream release rather than vendoring it, so most of the tree and most of the history are upstream's. InferMux's own code is `infermux.go`, `internal/warden/`, `internal/remote/`, `internal/failover/`, `internal/catalog/`, `internal/stats/`, `internal/stream/`, `internal/placement/`, `internal/configstore/`, `internal/cpurun/`, `internal/fetch/`, `internal/adapter/`, `internal/muxui/`, `internal/server/warden.go`, `infermux_config.go`, `cmd/infermux-ui/`, `cmd/infermux-adapter/`, `cmd/infermux-config/`, `cmd/infermux-cpu/`, `webui/`, `nix/`, `e2e/` and `docs/decisions/`. [AGENTS.md](AGENTS.md) has the full map.
 
 The Go module path is still `github.com/mostlygeek/llama-swap` for the same reason. Renaming it would rewrite every upstream import, and every later merge would conflict on all of them.
 
@@ -227,7 +227,7 @@ nix build                              # runs the tests as part of the build
 e2e/run.sh                             # after nix build: both UIs end to end in a headless browser
 ```
 
-[CLAUDE.md](CLAUDE.md) has the map of the code and how to merge a new llama-swap release.
+[AGENTS.md](AGENTS.md) has the map of the code and how to merge a new llama-swap release.
 
 ## License
 

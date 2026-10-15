@@ -2,7 +2,7 @@
 
 Why InferMux (llama-warden until 2026-10-03) is built the way it is. One file per decision: the date, what was chosen, what was rejected, and what it was measured against.
 
-These are records, not instructions. The *rule* a decision produced lives in [CLAUDE.md](../../CLAUDE.md), which is read every session; the reasoning lives here, which is read when someone asks "why is this like this" or is about to undo it. Grep this directory before changing something that looks arbitrary.
+These are records, not instructions. The *rule* a decision produced lives in [AGENTS.md](../../AGENTS.md), which is read every session; the reasoning lives here, which is read when someone asks "why is this like this" or is about to undo it. Grep this directory before changing something that looks arbitrary.
 
 A record says what is true now. A decision that changes is edited in place and gets an `Amended by` line in its header; one replaced whole gets a `Status:` line naming its replacement and keeps its reasoning, because the reason it was wrong is the useful part. Git keeps the earlier text ([ADR 0017](https://github.com/AlexanderReaper7/agents/blob/main/docs/adr/0017-records-describe-the-current-state.md) in the agents repository).
 
@@ -33,5 +33,6 @@ A record says what is true now. A decision that changes is edited in place and g
 | [0024](0024-a-game-clears-the-card-before-it-starts.md) | A game clears the card before it starts: `infermux-hold` pauses and unloads through a keyless control socket, and refuses the launch if the card stays busy | 2026-10-12 |
 | [0025](0025-a-safety-stop-takes-the-local-models-off.md) | A safety stop takes the local models off and leaves the daemon up: every class refused and cancelled, the clouds and the other hosts passed, read from a file before the first request | 2026-10-14 |
 | [0026](0026-a-deploy-waits-for-the-requests-running.md) | A deploy waits up to 40 s for the requests running and refuses new ones with 503 `draining`, while off too; the zbox controller SIGKILLs the models through pidfds | 2026-10-14 |
+| [0027](0027-one-agents-md-ours-above-upstreams-guide.md) | One AGENTS.md: InferMux's rules above llama-swap's guide, kept verbatim so upstream's changes merge; CLAUDE.md is upstream's `@AGENTS.md` | 2026-10-15 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.
