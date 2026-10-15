@@ -48,7 +48,7 @@ nix develop -c go test -short ./internal/server/ ./internal/process/ .  # upstre
 nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_control.go infermux_control_test.go infermux_loadbalance_test.go infermux_off.go infermux_off_test.go infermux_stream_test.go infermux_jobs_test.go infermux_drain_test.go infermux_main_test.go infermux_test.go infermux_fit_test.go infermux_binary_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs internal/hold internal/drain cmd internal/server/warden.go internal/server/warden_test.go internal/process/warden.go internal/process/warden_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the Go tests above and webui's
-e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model
+e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML, loads no model, and run.py fails at "pause by hand" while other work holds the card at 100% (sol, review 15)
 e2e/run.sh config.py                                       # only the Config tab's editor (run.py is the other pages)
 
 # with keys_file set, each of these needs -H "Authorization: Bearer <key>"
@@ -84,7 +84,7 @@ git merge v<N>                       # README.md keeps ours (.gitattributes); AG
 - **An announcement must be idempotent at the other end.** The verdict is re-sent every 300 s, so a consumer that re-stamps `since` on every `pause` erases the one fact its panel shows.
 - **A failed probe leaves the verdict alone, and so does an unreadable ComfyUI queue.** Neither is evidence that the GPU is free.
 - **A device's models are unloaded once per yield of that device** (0002), owed from the transition and paid when interactive traffic on that device is quiet (0004). The CPU's are unloaded only for RAM under the floor (0022). Unloading every tick would fight a client the user chose to let through.
-- **Free VRAM is only read while no GPU model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001). A CPU model holds no VRAM (0022).
+- **The verdict reads free VRAM only while no GPU model is loaded.** Kept, not re-decided (0002). `starting` counts as loaded (0001). A CPU model holds no VRAM (0022). The fit check is apart from it: it reads the card's own free figure at each start of a model with `vram_mb` on the GPU, whatever is loaded (0028).
 - **A WebSocket counts toward the warden only while data frames cross** (0018). An open connection and a ping count for nothing. Anything that stops a model under a session closes it first with 1013 or 1012; the backend's death is a 1006 the client cannot tell from a crash.
 - **A writer of ours that records or acts on a status treats a 1xx other than 101 as interim** (0016). The status after it is the answer's. llama-swap's own writers keep the first status they see, so Mark removes `Expect` before the request reaches them.
 - **A stop's SIGTERM is the daemon's alone** (`KillMode=mixed`, 0026), so a deploy can drain. Whatever must take a model off the card at once kills the model, never only the unit; a stop while off drains too.

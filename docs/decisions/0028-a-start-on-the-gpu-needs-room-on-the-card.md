@@ -25,7 +25,7 @@ The agent's calls:
 - A card that cannot be read lets the start through, with a WARN. A reading not taken is never evidence of contention, as for the verdict, and the start then does what it did before this check.
 - Exactly the need fits.
 - The check runs with `policy.enabled: false` too, which measures on request only, since a start is a request.
-- One WARN per refused start, as `NotStarted` logged one per failed start. When the refusal fails over to another place, failover logs its own WARN too (0019, kept by the user on 2026-10-15).
+- The fit check's WARN is the one InferMux adds. A refused start leaves three WARN lines, as sol's review 15 recorded: the fit check's, then llama-swap's own `group: starting <model> failed: ...` and `non-200 response, recording partial metrics: status=503`. The two are upstream's and stay (0004). When the refusal fails over to another place, failover logs its own WARN too (0019, kept by the user on 2026-10-15).
 
 ## Consequences
 
