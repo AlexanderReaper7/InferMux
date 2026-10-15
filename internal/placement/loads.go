@@ -19,10 +19,10 @@ var envMacro = regexp.MustCompile(`\$\{env\.([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 //
 // With env false the caller has not the daemon's environment, which holds
 // the clouds' keys. llama-swap pastes each ${env.VAR} into the text before
-// it parses, so no stand-in fits every field it can sit in. The part's
-// aliases are resolved, and it is loaded without its models, groups and
-// clouds that then read the environment, and not at all when base reads it:
-// the daemon loads those before it keeps the config.
+// it parses, so no stand-in fits every field it can sit in. The part is
+// loaded without its models, groups and clouds that read the environment,
+// and without each that an alias ties to one left out, and not at all when
+// base reads it: the daemon loads those before it keeps the config.
 func (p *Part) LoadsWith(base string, env bool) error {
 	part := p.LlamaSwap
 	if !env {
@@ -80,43 +80,82 @@ func nodeReadsEnv(n *yaml.Node) bool {
 }
 
 // withoutEnv is the part without each model, group and cloud that reads the
-// environment. Derive writes nothing else at the top.
+// environment, and without each entry with an alias to a node in one left
+// out, until none is left. Derive writes nothing else at the top. What it
+// keeps are the part's own nodes in their order, and every alias in them
+// names a node that stays, so they load as they do in the daemon. No alias
+// is followed, so no anchor can make it loop (sol, review 14).
 func withoutEnv(part []byte) ([]byte, error) {
-	// llama-swap decodes the config into plain values too, which refuses an
-	// anchor that holds itself and aliasing past yaml.v3's limit, both of which
-	// resolve would follow without end.
-	var plain any
 	var doc yaml.Node
-	if yaml.Unmarshal(part, &plain) != nil || yaml.Unmarshal(part, &doc) != nil || len(doc.Content) == 0 {
+	if yaml.Unmarshal(part, &doc) != nil || len(doc.Content) == 0 {
 		return part, nil // llama-swap's load says what is wrong
 	}
-	resolve(&doc)
+	type entry struct{ key, value *yaml.Node }
+	var entries []entry
 	top := doc.Content[0]
 	for i := 1; i < len(top.Content); i += 2 {
-		entries := top.Content[i]
-		if entries.Kind != yaml.MappingNode {
-			continue
-		}
-		var kept []*yaml.Node
-		for j := 0; j+1 < len(entries.Content); j += 2 {
-			if !nodeReadsEnv(entries.Content[j]) && !nodeReadsEnv(entries.Content[j+1]) {
-				kept = append(kept, entries.Content[j], entries.Content[j+1])
+		if s := top.Content[i]; s.Kind == yaml.MappingNode {
+			for j := 0; j+1 < len(s.Content); j += 2 {
+				entries = append(entries, entry{s.Content[j], s.Content[j+1]})
 			}
 		}
-		entries.Content = kept
+	}
+	out := map[*yaml.Node]bool{}
+	for _, e := range entries {
+		if nodeReadsEnv(e.key) || nodeReadsEnv(e.value) {
+			out[e.key] = true
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		gone := map[*yaml.Node]bool{}
+		for _, e := range entries {
+			if out[e.key] {
+				within(e.key, gone)
+				within(e.value, gone)
+			}
+		}
+		for _, e := range entries {
+			if !out[e.key] && (namesAny(e.key, gone) || namesAny(e.value, gone)) {
+				out[e.key] = true
+				changed = true
+			}
+		}
+	}
+	for i := 1; i < len(top.Content); i += 2 {
+		if s := top.Content[i]; s.Kind == yaml.MappingNode {
+			var kept []*yaml.Node
+			for j := 0; j+1 < len(s.Content); j += 2 {
+				if !out[s.Content[j]] {
+					kept = append(kept, s.Content[j], s.Content[j+1])
+				}
+			}
+			s.Content = kept
+		}
 	}
 	return yaml.Marshal(&doc)
 }
 
-// resolve puts in place of each alias the node it names, as llama-swap's
-// plain decode does, so that an entry reads what its aliases name and one
-// kept needs no anchor in one left out (sol, review 13).
-func resolve(n *yaml.Node) {
-	for i, c := range n.Content {
-		if c.Kind == yaml.AliasNode {
-			c = c.Alias
-			n.Content[i] = c
-		}
-		resolve(c)
+// within adds n and every node under it to set, aliases not followed.
+func within(n *yaml.Node, set map[*yaml.Node]bool) {
+	if set[n] {
+		return
 	}
+	set[n] = true
+	for _, c := range n.Content {
+		within(c, set)
+	}
+}
+
+// namesAny is whether an alias under n names a node in set.
+func namesAny(n *yaml.Node, set map[*yaml.Node]bool) bool {
+	if n.Kind == yaml.AliasNode {
+		return set[n.Alias]
+	}
+	for _, c := range n.Content {
+		if namesAny(c, set) {
+			return true
+		}
+	}
+	return false
 }
