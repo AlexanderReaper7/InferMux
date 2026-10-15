@@ -565,3 +565,138 @@ func TestTheWardenSeesEachModelsDevices(t *testing.T) {
 		t.Fatalf("warnings %v", gpus)
 	}
 }
+
+// trustedKeysSet runs the test under the one config, as -config-trusted-keys
+// set does.
+func trustedKeysSet(t *testing.T) {
+	t.Helper()
+	*flagConfigTrustedKeys = "set"
+	t.Cleanup(func() { *flagConfigTrustedKeys = "" })
+}
+
+// A derived file that no longer loads, here because the next -config lacks
+// a macro it names, is moved aside before llama-swap loads, so llama-swap
+// loads -config alone where it exited; the kept config does not derive
+// either, and the config's state says so (the user's decision of
+// 2026-10-15; 0022, 11).
+func TestADerivedFileThatNoLongerLoadsIsMovedAsideAtStart(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(t.TempDir(), "base.yaml")
+	os.WriteFile(base, []byte("macros:\n  server: /bin/llama-server\n"), 0o644)
+	a := newConfigHostsWith(t, []ed25519.PublicKey{pub}, map[string]string{"a": base}, "a")["a"]
+	b, err := configstore.Sign(twoHostFiles(a.url, "http://b.invalid", "[a/gpu]", "cmd: ${server} --model /m.gguf --port ${PORT}\n"), priv, "a", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := a.one.accept(b, "test"); err != nil || res != configstore.Applied {
+		t.Fatalf("%s %v", res, err)
+	}
+	derived := a.one.derivedDir
+	file := filepath.Join(derived, derivedFile)
+	os.WriteFile(base, []byte("macros:\n  other: /bin/llama-server\n"), 0o644)
+	if _, err := config.LoadConfigSources(base, derived); err == nil {
+		t.Fatal("the derived file loads with the new -config; the test proves nothing")
+	}
+	trustedKeysSet(t)
+	setAsideDerived(base, derived)
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Fatalf("the derived file is still in -config-dir: %v", err)
+	}
+	if raw, err := os.ReadFile(file + refusedSuffix); err != nil || !strings.Contains(string(raw), "${server}") {
+		t.Fatalf("the file moved aside: %q %v", raw, err)
+	}
+	if _, err := config.LoadConfigSources(base, derived); err != nil {
+		t.Fatalf("llama-swap still does not load: %v", err)
+	}
+	again, err := openConfig("a", filepath.Join(filepath.Dir(derived), "state"), base, derived, []ed25519.PublicKey{pub}, logmon.NewGroup(io.Discard, true, true, true).ProxyLogs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.start("") {
+		t.Fatal("start wrote a derived file from a config that does not load here")
+	}
+	s := again.state()
+	if s.Rejected == nil || s.Rejected.From != "start" || s.Rejected.Hash != b.Hash() || !strings.Contains(s.Rejected.Error, "server") {
+		t.Fatalf("rejected %+v", s.Rejected)
+	}
+	if len(s.Local) != 0 {
+		t.Fatalf("local models %v", s.Local)
+	}
+}
+
+// A derived file an earlier binary wrote, which this one's llama-swap does
+// not load, is moved aside, and start derives the kept config again.
+func TestAFileAnEarlierBinaryDerivedIsDerivedAgain(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(t.TempDir(), "base.yaml")
+	os.WriteFile(base, []byte("logLevel: info\n"), 0o644)
+	a := newConfigHostsWith(t, []ed25519.PublicKey{pub}, map[string]string{"a": base}, "a")["a"]
+	b, err := configstore.Sign(twoHostFiles(a.url, "http://b.invalid", "[a/gpu]", "cmd: llama-server --model /m.gguf --port ${PORT}\n"), priv, "a", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.one.accept(b, "test"); err != nil {
+		t.Fatal(err)
+	}
+	want := a.derived(t)
+	derived := a.one.derivedDir
+	os.WriteFile(filepath.Join(derived, derivedFile), []byte("models:\n  m: [an earlier binary's form]\n"), 0o644)
+	trustedKeysSet(t)
+	setAsideDerived(base, derived)
+	if _, err := config.LoadConfigSources(base, derived); err != nil {
+		t.Fatalf("llama-swap does not load: %v", err)
+	}
+	again, err := openConfig("a", filepath.Join(filepath.Dir(derived), "state"), base, derived, []ed25519.PublicKey{pub}, logmon.NewGroup(io.Discard, true, true, true).ProxyLogs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.start("") {
+		t.Fatal("start did not write the derived file")
+	}
+	if got := a.derived(t); got != want {
+		t.Fatalf("derived\n%s\nwant\n%s", got, want)
+	}
+	if s := again.state(); s.Rejected != nil || len(s.Local) != 1 {
+		t.Fatalf("rejected %+v, local %v", s.Rejected, s.Local)
+	}
+}
+
+// The file stays where moving it would not let the daemon start, or where
+// it is not the one config's.
+func TestADerivedFileStaysWhenItIsNotInTheWay(t *testing.T) {
+	bad := "models:\n  m: [not an entry]\n"
+	good := "models:\n  m:\n    cmd: llama-server --port ${PORT}\n"
+	for _, c := range []struct {
+		name, base, file string
+		signed           bool
+	}{
+		{"outside the one config", "logLevel: info\n", bad, false},
+		{"it loads", "logLevel: info\n", good, true},
+		{"-config does not load alone", "models: [neither]\n", bad, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			base, derived := filepath.Join(dir, "base.yaml"), filepath.Join(dir, "derived")
+			os.WriteFile(base, []byte(c.base), 0o644)
+			os.Mkdir(derived, 0o755)
+			file := filepath.Join(derived, derivedFile)
+			os.WriteFile(file, []byte(c.file), 0o644)
+			if c.signed {
+				trustedKeysSet(t)
+			}
+			setAsideDerived(base, derived)
+			if raw, err := os.ReadFile(file); err != nil || string(raw) != c.file {
+				t.Fatalf("%q %v", raw, err)
+			}
+			if _, err := os.Stat(file + refusedSuffix); !os.IsNotExist(err) {
+				t.Fatalf("moved aside: %v", err)
+			}
+		})
+	}
+}

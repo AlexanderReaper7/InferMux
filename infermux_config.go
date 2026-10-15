@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mostlygeek/llama-swap/internal/config"
 	"github.com/mostlygeek/llama-swap/internal/configstore"
 	"github.com/mostlygeek/llama-swap/internal/fetch"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
@@ -147,8 +149,12 @@ func (c *oneConfig) start(seed string) bool {
 	part, warnings, err := c.derive(b)
 	if err != nil {
 		// Kept and signed, but this build cannot run it: llama-swap keeps the
-		// file derived from it before.
+		// file derived from it before, or none if that did not load either
+		// (setAsideDerived).
 		c.log.Warnf("Config: revision %d does not load here: %v", b.Info().Revision, err)
+		c.mu.Lock()
+		c.rejected = &rejection{Hash: b.Hash(), From: "start", At: time.Now(), Error: err.Error()}
+		c.mu.Unlock()
 		return false
 	}
 	c.mu.Lock()
@@ -374,6 +380,42 @@ func (c *oneConfig) writeDerived() bool {
 		return false
 	}
 	return true
+}
+
+// refusedSuffix is the derived file's when it was moved aside at start. Not
+// .yaml, so llama-swap no longer reads it.
+const refusedSuffix = ".refused"
+
+// setAsideDerived moves the derived file out of llama-swap's way, before
+// llama-swap loads its config, when the file does not load with base and
+// base loads alone (the user's decision of 2026-10-15; 0022, 11). An earlier
+// binary wrote it, or it reads an ${env.VAR} the daemon's environment no
+// longer holds, and llama-swap exits on a config that does not load, so the
+// unit would never start. The daemon then starts with base alone, no model
+// of this host's own, and start derives the kept version again. It does
+// nothing outside the one config: there -config-dir is the user's.
+func setAsideDerived(base, dir string) {
+	if *flagConfigTrustedKeys == "" || dir == "" || base == "" {
+		return
+	}
+	file := filepath.Join(dir, derivedFile)
+	if _, err := os.Stat(file); err != nil {
+		return
+	}
+	_, loadErr := config.LoadConfigSources(base, dir)
+	if loadErr == nil {
+		return
+	}
+	// A base that does not load stops llama-swap with or without the file,
+	// and says why.
+	if _, err := config.LoadConfigSources(base, ""); err != nil {
+		return
+	}
+	if err := os.Rename(file, file+refusedSuffix); err != nil {
+		slog.Error("InferMux: the derived file does not load and could not be moved aside", "file", file, "error", err)
+		return
+	}
+	slog.Warn("InferMux: the derived file does not load, moved aside; starting with -config alone until a config derives here", "file", file+refusedSuffix, "error", loadErr)
 }
 
 // configState is GET /warden/config/state: what runs here and why not

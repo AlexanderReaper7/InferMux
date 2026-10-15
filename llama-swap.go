@@ -157,6 +157,9 @@ func main() {
 		}
 	}
 
+	// InferMux: under the one config, a derived file that does not load is
+	// moved aside first, so the daemon starts (infermux_config.go).
+	setAsideDerived(*flagConfig, *flagConfigDir)
 	cfg, err := config.LoadConfigSources(*flagConfig, *flagConfigDir)
 	if err != nil {
 		slog.Error("failed to load config", "config", *flagConfig, "config-dir", *flagConfigDir, "error", err)

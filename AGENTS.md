@@ -19,7 +19,7 @@ This file is rules and navigation only, with llama-swap's own guide below them. 
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
 | `internal/placement/` | ours: the one config (0022): hosts, devices, groups, the `balance` and `failover` lanes, and each host's part derived from it, llama-swap's file included and loaded with the host's `-config` |
 | `internal/configstore/`, `cmd/infermux-config/` | ours: the config's signature, the daemon's kept versions and conflicts, and the terminal tool that makes the key and signs (0022) |
-| `infermux_config.go` | ours: the daemon's side of the one config: start, `/warden/config*`, push and poll between hosts |
+| `infermux_config.go` | ours: the daemon's side of the one config: start, `/warden/config*`, push and poll between hosts, and a derived file that does not load moved aside before llama-swap reads it (0022, 11) |
 | `internal/cpurun/`, `cmd/infermux-cpu/` | ours: the runner that starts a CPU device's model servers in the root `idle.slice`, as its children rather than the daemon's (0022) |
 | `internal/fetch/` | ours: a local model's missing file, fetched from another host or Hugging Face and checked against the signed SHA-256; the gate that answers 503 until it is here (0022, 8) |
 | `internal/failover/` | ours: failure and capacity overflow between model destinations (0016, [0019](docs/decisions/0019-model-overflow-uses-destination-capacity.md), 0021); admission counts each serving host's requests after authentication; `mark.go` marks llama-swap's own 500 for a request no model had, the one 500 that fails over |
@@ -36,7 +36,7 @@ This file is rules and navigation only, with llama-swap's own guide below them. 
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build; the one config's YAML editor is CodeMirror (`src/lib/editor.ts`, `yamlschema.ts`), tested by bun in `test/` |
 | `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
 | `internal/process/warden.go`, `warden_test.go` | ours: the gate every start of a local model passes, set by `infermux_off.go` from the off file (0025); its one call is marked in upstream's `process_command.go`, in `run()` |
-| `llama-swap.go` | upstream's `main`, plus one flag and two calls: `startWarden`, and the stop it returns, first in the SIGTERM branch and before the backstop's clock (0023, 0026) |
+| `llama-swap.go` | upstream's `main`, plus one flag and three calls: `setAsideDerived` before llama-swap loads its config (0022, 11), `startWarden`, and the stop it returns, first in the SIGTERM branch and before the backstop's clock (0023, 0026) |
 | everything else in Go, `ui/`, `docs/` except `docs/decisions/` | upstream llama-swap, merged at the tag in `nix/package.nix`'s `upstream` |
 
 ## Commands
