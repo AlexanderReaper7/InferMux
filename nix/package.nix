@@ -34,6 +34,8 @@ let
       ../config-schema.json
       ../config.example.yaml
       ../warden.example.yaml
+      # The e2e runs' check of the card, which e2e/loadcheck_test.go runs.
+      ../e2e/load-check.sh
       ../keys.example.yaml
       ../failover.example.yaml
       ../docs
@@ -123,13 +125,13 @@ in
     cp -r ${ui}/ui_dist internal/server/
   '';
 
-  # The warden's and the UI's tests, and llama-swap's for the two places
-  # InferMux touches. The rest of upstream's suite starts processes and is
-  # upstream's to run, internal/process's included: only our start gate's
-  # test runs there.
+  # The warden's and the UI's tests, the e2e runs' check of the card, and
+  # llama-swap's for the two places InferMux touches. The rest of upstream's
+  # suite starts processes and is upstream's to run, internal/process's
+  # included: only our start gate's test runs there.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/ ./cmd/infermux-config/ ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/ ./cmd/infermux-config/ ./e2e/ ./internal/server/ .
     go test -count=1 -run '^TestTheStartGate' ./internal/process/
     runHook postCheck
   '';
