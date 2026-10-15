@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -94,8 +95,8 @@ func TestACheckErrorNamesTheVariableNotItsValue(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			u := newConfigUI(t)
-			// A variable nothing reads is left out of the second load, and
-			// named only where the answer says so.
+			// A variable neither the part nor the base reads is left out of
+			// the second load, and named only where the answer says so.
 			u.f.store.EnvFile = envFile(t, "UNREAD=x\nINFERMUX_TEST_KEY="+key+"\n")
 			files := draft(u.f.gguf, "")
 			c.files(files)
@@ -280,7 +281,7 @@ func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 	files := draft(u.f.gguf, "")
 	files["models/qwen.yaml"] += "concurrencyLimit: ${env.INFERMUX_TEST_KEY}\n"
 	got := checkMessage(&u, files)
-	if !strings.Contains(got, "loads with a stand-in for each and without UNREAD, which nothing reads, so a value fails it; its error is not shown") || runOf(got, value) != "" || strings.Contains(got, "unread-secret") {
+	if !strings.Contains(got, "loads with a stand-in for each and without UNREAD, which neither the part nor the base reads, so a value fails it; its error is not shown") || runOf(got, value) != "" || strings.Contains(got, "unread-secret") {
 		t.Errorf("a type error, which yaml.v3 prints with 7 characters of the value: %q", got)
 	}
 }
@@ -289,8 +290,7 @@ func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 // variables once the Go runtime runs, so the runtime takes none of them as a
 // setting. A GOMEMLIMIT it would refuse at start loads, read by nothing or by
 // the part (the user's decision of 2026-10-15; sol's TestSolR16RuntimeEnv,
-// review 16, before it). GOMAXPROCS, the setting that decision is for, has no
-// test: a child that reads 735700357 as one grew to 58.5 GB in 10 s.
+// review 16, before it). The second load's child is the next test's.
 func TestTheLoadersRuntimeReadsNoVariableOfTheFile(t *testing.T) {
 	for _, reads := range []string{"", "name: ${env.GOMEMLIMIT}\n"} {
 		u := newConfigUI(t)
@@ -300,6 +300,65 @@ func TestTheLoadersRuntimeReadsNoVariableOfTheFile(t *testing.T) {
 		if got := checkMessage(&u, files); got != "" {
 			t.Errorf("a GOMEMLIMIT the runtime refuses, the part reading %q: %q", reads, got)
 		}
+	}
+}
+
+// asLimitedEnv marks the test binary's run of one test under an address-space
+// limit.
+const asLimitedEnv = "INFERMUX_TEST_AS_LIMITED"
+
+// raceDetector is whether the test binary is built with -race (race_test.go).
+var raceDetector bool
+
+// The second load's child starts with no variable either, so its runtime
+// takes no stand-in as a setting. A GOMAXPROCS of 735700357 at start has the
+// runtime ask for a block of 5.9 GB, so the test runs itself again under an
+// address-space limit of 2 GiB, which the loader children inherit: a child
+// that took the stand-in stops at once with out of memory, where without the
+// limit it grew to 58.5 GB in 10 s (sol's TestSolR18SecondLoadRuntime,
+// review 18, M1). It cannot run under -race.
+func TestTheSecondLoadsRuntimeTakesNoStandIn(t *testing.T) {
+	if raceDetector {
+		t.Skip("the race detector's shadow memory does not fit under the limit")
+	}
+	if os.Getenv(asLimitedEnv) == "" {
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(self, "-test.run", "^"+t.Name()+"$", "-test.count=1", "-test.v")
+		cmd.Env = append(os.Environ(), asLimitedEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "--- PASS: "+t.Name()) {
+			t.Fatalf("under the limit: %v\n%s", err, out)
+		}
+		return
+	}
+	limit := syscall.Rlimit{Cur: 2 << 30, Max: 2 << 30}
+	if err := syscall.Setrlimit(syscall.RLIMIT_AS, &limit); err != nil {
+		t.Fatal(err)
+	}
+	u := newConfigUI(t)
+	u.f.store.EnvFile = envFile(t, "GOMAXPROCS=1\n")
+	files := draft(u.f.gguf, "")
+	files["infermux.yaml"] = strings.Replace(files["infermux.yaml"], "balance:\n", "balance:\n  other: [here/gpu]\n", 1)
+	files["models/other.yaml"] = strings.Replace(files["models/qwen.yaml"], "files:", "aliases: [dup]\nfiles:", 1)
+	files["models/qwen.yaml"] += "name: ${env.GOMAXPROCS}\naliases: [dup]\n"
+	if got := checkMessage(&u, files); !strings.Contains(got, "duplicate alias dup found in model:") {
+		t.Errorf("the second load did not reach llama-swap's check: %q", got)
+	}
+}
+
+// A variable neither the part nor the base reads stays out of the second
+// load, since the loader reads some itself: os.MkdirTemp in LoadsWith reads
+// TMPDIR, and its error prints the value. The first load fails on it (sol's
+// TestSolR18UnreadTMPDIR, review 18, M1).
+func TestAnUnreadVariableStaysOutOfTheSecondLoad(t *testing.T) {
+	u := newConfigUI(t)
+	u.f.store.EnvFile = envFile(t, "TMPDIR=sk-or-v1-unread-path-secret\n")
+	got := checkMessage(&u, draft(u.f.gguf, ""))
+	if !strings.Contains(got, "without TMPDIR, which neither the part nor the base reads, so a value fails it") || strings.Contains(got, "unread-path-secret") {
+		t.Errorf("an unread TMPDIR: %q", got)
 	}
 }
 

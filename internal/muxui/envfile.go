@@ -59,8 +59,9 @@ func LoadShim() {
 }
 
 // loadStdin sets the variables of the loadInput on stdin and loads its part.
-// os.Setenv reaches the macros, which read os.LookupEnv, and of the runtime
-// only GODEBUG, which it parses again.
+// os.Setenv reaches the macros, which read os.LookupEnv, the loader's own
+// reads, such as os.MkdirTemp's of TMPDIR, and of the runtime's settings only
+// GODEBUG, which it parses again.
 func loadStdin() error {
 	var in loadInput
 	if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
@@ -148,9 +149,10 @@ func notAsWritten(value string) string {
 // a duplicate alias or a proxy URL, as YAML left it, with a comment or a tag
 // cut off (sol, review 16, H1). So the answer is never what that load said.
 // When it fails, part is loaded again with a stand-in for each value the part
-// or the base reads and without the file's other variables, and the answer is
-// what the second load said, each stand-in shown as the ${env.NAME} it stands
-// for. The first load adds only that it failed.
+// or the base reads and without the file's other variables, which the loader
+// can read itself, as os.MkdirTemp reads TMPDIR (sol, review 18, M1). The
+// answer is what the second load said, each stand-in shown as the ${env.NAME}
+// it stands for. The first load adds only that it failed.
 // The second load never has a value of the file, whatever YAML reads the value
 // as alone: where the part puts it, it can be text, as `300 # rest` is in a
 // quoted alias (sol, review 17, H1). Nothing in the answer is chosen by
@@ -189,7 +191,7 @@ func (s *Store) loads(part *placement.Part) error {
 	}
 	without := ""
 	if len(unread) > 0 {
-		without = " and without " + strings.Join(unread, ", ") + ", which nothing reads"
+		without = " and without " + strings.Join(unread, ", ") + ", which neither the part nor the base reads"
 	}
 	return fmt.Errorf("the load fails with the env file's values and loads with a stand-in for each%s, so a value fails it; its error is not shown, since it can hold the value", without)
 }
