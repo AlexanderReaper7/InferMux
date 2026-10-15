@@ -1,7 +1,7 @@
 # 0028. A start on the GPU needs room on the card
 
 - Date: 2026-10-15
-- Status: accepted; built 2026-10-15, not deployed, and no model has a `vram_mb` in nixcfg's signed config yet (Verification, below)
+- Status: accepted; built 2026-10-15, running on both hosts; the one model with a `vram_mb` in the signed config is `drama-3`, 6200, since revision 5 of 2026-10-16 (Verification, below)
 - Amends [0004](0004-infermux-request-priority.md): a third exception to "the user's own request is never killed". Keeps [0025](0025-a-safety-stop-takes-the-local-models-off.md)'s start gate, which this check is part of, [0016](0016-a-model-fails-over-between-places.md) (a 503 fails over) and [0002](0002-linux-nvml-router-unload-comfyui.md)'s free VRAM rule for the verdict.
 
 ## Context
