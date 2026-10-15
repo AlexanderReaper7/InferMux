@@ -6,14 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/placement"
+	"gopkg.in/yaml.v3"
 )
 
 // The UI loads its host's part with the daemon's environment file, which
@@ -58,14 +60,14 @@ func LoadShim() {
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ReadEnvFile reads a systemd EnvironmentFile, as the daemon's unit loads it,
-// in the one form that systemd reads as written and whose values an error
-// prints as written: NAME=VALUE lines, blank lines and lines that begin with
-// # or ;. A value is printable ASCII: Go's %q and %+q print any other byte
-// escaped, and redact finds only the characters of a value printed as
-// written (sol, review 15, H1). It has no quote or backslash, which systemd
-// unquotes and llama-swap escapes, no $, which llama-swap can expand as a
-// macro once the value is in the config, and no space at either end, which
-// systemd trims. Any other line, a NUL byte, for which systemd refuses the
+// in the one form that systemd reads as written: NAME=VALUE lines, blank
+// lines and lines that begin with # or ;. A value is printable ASCII, which
+// the check's redaction needed until sol's review 16, since an error prints
+// any other byte escaped (sol, review 15, H1); the check now answers with a
+// load that never had the values (loads). It has no quote or backslash, which
+// systemd unquotes and llama-swap escapes, no $, which llama-swap can expand
+// as a macro once the value is in the config, and no space at either end,
+// which systemd trims. Any other line, a NUL byte, for which systemd refuses the
 // file, and a carriage return, which it reads as a line break, refuse the
 // file. testdata/systemd-env holds systemd's own reading of each case the
 // test compares. An error names the line, never its value.
@@ -106,7 +108,7 @@ func notAsWritten(value string) string {
 	for _, c := range []byte(value) {
 		switch {
 		case c < ' ' || c > '~':
-			return "a byte other than printable ASCII, which an error would print escaped, where the check could not hide it"
+			return "a byte other than printable ASCII"
 		case c == '"' || c == '\'' || c == '\\':
 			return "a quote or a backslash, which systemd unquotes and llama-swap escapes"
 		case c == '$':
@@ -119,9 +121,19 @@ func notAsWritten(value string) string {
 	return ""
 }
 
-// loads loads part with the base config and the environment file in a child,
-// and returns what the child said, llama-swap's error or the Go runtime's,
-// through redact: the check's answer goes to whoever reaches the UI.
+// loads loads part with the base config and the environment file in a child.
+// The check's answer goes to whoever reaches the UI, and what the child says
+// can hold a value of the file: llama-swap quotes a value it refuses, such as
+// a duplicate alias or a proxy URL, as YAML left it, with a comment or a tag
+// cut off, and the Go runtime prints a variable such as GOMEMLIMIT that it
+// refuses before LoadShim runs (sol, review 16, H1). So the answer is never
+// what that load said. When it fails, part is loaded again with a stand-in for
+// each value the part or the base reads and without the file's other
+// variables, and the answer is what the second load said, each stand-in shown
+// as the ${env.NAME} it stands for. The first load adds only that it failed.
+// Nothing in the answer is chosen by comparing the draft's text with a value,
+// which would tell whoever writes a guess into the draft whether the guess is
+// part of a key.
 func (s *Store) loads(part *placement.Part) error {
 	env := map[string]string{}
 	if s.EnvFile != "" {
@@ -130,9 +142,75 @@ func (s *Store) loads(part *placement.Part) error {
 			return err
 		}
 	}
-	self, err := os.Executable()
+	failed, err := s.load(part, env)
+	if err != nil || failed == "" {
+		return err
+	}
+	base, _ := os.ReadFile(s.BaseConfig) // unreadable, both loads say so
+	stood := map[string]string{}
+	var shown, unread []string
+	for _, name := range slices.Sorted(maps.Keys(env)) {
+		switch {
+		case !reads(name, part.LlamaSwap, base):
+			unread = append(unread, name)
+		case typed(env[name]):
+			stood[name] = env[name]
+		default:
+			stand := fmt.Sprintf("_ENV_%02d_", len(shown)/2)
+			stood[name] = stand
+			shown = append(shown, stand, "${env."+name+"}")
+		}
+	}
+	again, err := s.load(part, stood)
 	if err != nil {
 		return err
+	}
+	if again != "" {
+		return errors.New(strings.NewReplacer(shown...).Replace(again))
+	}
+	without := ""
+	if len(unread) > 0 {
+		without = " and without " + strings.Join(unread, ", ") + ", which nothing reads"
+	}
+	return fmt.Errorf("the load fails with the env file's values and loads with a stand-in for each%s, so a value fails it; its error is not shown, since it can hold the value", without)
+}
+
+// typed is whether YAML reads value as a number, a bool or null, which a
+// field such as ttl reads, and which a stand-in of another type would fail
+// (sol, review 12). The second load has such a value as it is, so the answer
+// can show a number of the file.
+func typed(value string) bool {
+	var doc yaml.Node
+	if yaml.Unmarshal([]byte(value), &doc) != nil || len(doc.Content) != 1 {
+		return value == ""
+	}
+	n := doc.Content[0]
+	switch n.ShortTag() {
+	case "!!int", "!!float", "!!bool", "!!null":
+		return n.Kind == yaml.ScalarNode && n.Style == 0
+	}
+	return false
+}
+
+// reads is whether the part or the base reads the variable name.
+func reads(name string, texts ...[]byte) bool {
+	for _, text := range texts {
+		for _, m := range placement.EnvMacro.FindAllSubmatch(text, -1) {
+			if string(m[1]) == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// load loads part in the loader child, whose whole environment is env, and
+// returns "" when it loads, and when not, llama-swap's error or, for an exit
+// but 1, the Go runtime's.
+func (s *Store) load(part *placement.Part, env map[string]string) (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), loadTimeout)
 	defer cancel()
@@ -149,55 +227,14 @@ func (s *Store) loads(part *placement.Part) error {
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
-		return nil
+		return "", nil
 	case ctx.Err() != nil:
-		return fmt.Errorf("the load did not finish in %s", loadTimeout)
+		return "", fmt.Errorf("the load did not finish in %s", loadTimeout)
 	case errors.As(err, &exit) && exit.ExitCode() == 1:
-		return errors.New(redact(stdout.String(), env))
+		return stdout.String(), nil
+	case errors.As(err, &exit):
+		return fmt.Sprintf("the load failed: %v %s", err, strings.TrimSpace(stderr.String())), nil
 	default:
-		return fmt.Errorf("the load failed: %v %s", err, redact(strings.TrimSpace(stderr.String()), env))
+		return "", err
 	}
-}
-
-// redactRun is the shortest run of a value's characters that redact puts
-// back. yaml.v3's type error keeps 7 characters of a value, `sk-or-v...`.
-const redactRun = 6
-
-// redact puts ${env.NAME} in place of each run of redactRun or more
-// characters of s that is part of NAME's value, at each place the longest
-// run of any value. A run and not the whole value, because what the child
-// prints is the value as YAML left it, with a comment or a tag cut off (sol,
-// review 16, H1). Every value of the file, and not only those the config
-// reads, because the Go runtime reads a variable such as GOMEMLIMIT before
-// LoadShim and prints the one it refuses. So no redactRun characters in a
-// row of a value reach the answer, outside the ${env.NAME} put in for them.
-// A value shorter than redactRun is not looked for, and does not replace
-// the same letters in a path.
-func redact(s string, env map[string]string) string {
-	names := make([]string, 0, len(env))
-	for name := range env {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		name, run := "", 0
-		for _, n := range names {
-			l := 0
-			for i+l < len(s) && strings.Contains(env[n], s[i:i+l+1]) {
-				l++
-			}
-			if l > run {
-				name, run = n, l
-			}
-		}
-		if run >= redactRun {
-			b.WriteString("${env." + name + "}")
-			i += run
-			continue
-		}
-		b.WriteByte(s[i])
-		i++
-	}
-	return b.String()
 }

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -91,8 +92,8 @@ func TestACheckErrorNamesTheVariableNotItsValue(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			u := newConfigUI(t)
-			// A value shorter than redactRun stays: "x" is in the load's own
-			// temporary path.
+			// A variable nothing reads is left out of the second load, and
+			// named only where the answer says so.
 			u.f.store.EnvFile = envFile(t, "UNREAD=x\nINFERMUX_TEST_KEY="+key+"\n")
 			files := draft(u.f.gguf, "")
 			c.files(files)
@@ -136,9 +137,8 @@ func TestReadEnvFileReadsOnlyWhatSystemdReadsAsWritten(t *testing.T) {
 // testdata/systemd-env/cases.json is systemd's own reading of each file in
 // probe.py's list, through the load_env_file behind a unit's
 // EnvironmentFile. What ReadEnvFile reads, it reads as systemd does, and each
-// value it reads Go's %q and %+q print unchanged, so redact finds it in an
-// error (sol, review 15, H1 and M3). What it refuses, systemd may read
-// another way.
+// value it reads Go's %q and %+q print unchanged (sol, review 15, H1 and M3).
+// What it refuses, systemd may read another way.
 func TestReadEnvFileReadsAsSystemdDoes(t *testing.T) {
 	raw, err := os.ReadFile("testdata/systemd-env/cases.json")
 	if err != nil {
@@ -195,9 +195,9 @@ func TestReadEnvFileReadsAsSystemdDoes(t *testing.T) {
 	}
 }
 
-// A value an error would print escaped never reaches the check's answer:
-// net/url quotes a URL it refuses, and a tab in it becomes \t, which redact
-// would not find (sol's TestSolR15QuotedKeyMustNotReachHTTP, review 15, H1).
+// A value an error would print escaped refuses the file, and no part of it
+// reaches the check's answer: net/url quotes a URL it refuses, and a tab in
+// it becomes \t (sol's TestSolR15QuotedKeyMustNotReachHTTP, review 15, H1).
 func TestAValueAnErrorWouldPrintEscapedNeverReachesTheCheck(t *testing.T) {
 	u := newConfigUI(t)
 	u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY=sk-or-v1-a\tbsecret\n")
@@ -231,12 +231,11 @@ func TestTheFileCannotChooseWhatTheLoaderRuns(t *testing.T) {
 }
 
 // leakRun is the shortest run of a value's characters the check's answer may
-// not hold, written here and not read from redactRun, so that the test fails
-// when redactRun grows.
+// not hold. yaml.v3's type error keeps 7.
 const leakRun = 6
 
 // runOf is the first run of leakRun characters of value in s outside each
-// ${env.NAME} redact put in, or "".
+// ${env.NAME}, or "".
 func runOf(s, value string) string {
 	for _, part := range regexp.MustCompile(`\$\{env\.[A-Za-z0-9_]+\}`).Split(s, -1) {
 		for i := 0; i+leakRun <= len(part); i++ {
@@ -252,9 +251,7 @@ func runOf(s, value string) string {
 // file, whatever YAML made of the value before llama-swap quoted it, a
 // comment or a tag cut off (sol's TestSolR16ChangedValue, review 16, H1),
 // and whatever the Go runtime printed of a variable it refused before the
-// loader started (sol's TestSolR16RuntimeEnv). A space next to the value is
-// part of the run where the value holds one. yaml.v3's type error keeps the
-// value's first 7 characters.
+// loader started (sol's TestSolR16RuntimeEnv).
 func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 	block := "aliases:\n  - ${env.INFERMUX_TEST_KEY}\n"
 	for _, c := range []struct{ value, alias string }{
@@ -270,7 +267,7 @@ func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 		files["models/other.yaml"] = strings.Replace(files["models/qwen.yaml"], "files:", c.alias+"files:", 1)
 		files["models/qwen.yaml"] += c.alias
 		got := checkMessage(&u, files)
-		if !regexp.MustCompile(`duplicate alias ?\$\{env\.INFERMUX_TEST_KEY\} ?found`).MatchString(got) || runOf(got, c.value) != "" {
+		if !strings.Contains(got, "duplicate alias ${env.INFERMUX_TEST_KEY} found in model: ") || runOf(got, c.value) != "" {
 			t.Errorf("%q as %q: %q", c.value, c.alias, got)
 		}
 	}
@@ -279,7 +276,7 @@ func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 	const value = "sk-or-v1-madeup-runtime-secret"
 	u.f.store.EnvFile = envFile(t, "GOMEMLIMIT="+value+"\n")
 	got := checkMessage(&u, draft(u.f.gguf, ""))
-	if !strings.Contains(got, "GOMEMLIMIT=${env.GOMEMLIMIT}") || !strings.Contains(got, "malformed GOMEMLIMIT") || runOf(got, value) != "" {
+	if !strings.Contains(got, "loads with a stand-in for each and without GOMEMLIMIT, which nothing reads, so a value fails it; its error is not shown") || runOf(got, value) != "" {
 		t.Errorf("a variable the Go runtime refuses: %q", got)
 	}
 
@@ -288,34 +285,67 @@ func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 	files := draft(u.f.gguf, "")
 	files["models/qwen.yaml"] += "concurrencyLimit: ${env.INFERMUX_TEST_KEY}\n"
 	got = checkMessage(&u, files)
-	if !strings.Contains(got, "!!str `${env.INFERMUX_TEST_KEY}...` into int") || runOf(got, value) != "" {
+	if !strings.Contains(got, "!!str `${env.INFERMUX_TEST_KEY}` into int") || runOf(got, value) != "" {
 		t.Errorf("a type error: %q", got)
 	}
 }
 
-// redact leaves no run of leakRun characters of any value, wherever a value is
-// cut, and changes nothing that holds none.
-func TestRedactLeavesNoRunOfAValue(t *testing.T) {
-	env := map[string]string{"A": "sk-or-v1-0123456789abcdef", "B": "sk-or-v1-fedcba9876543210", "C": "xyz"}
-	for _, v := range env {
-		for i := 0; i < len(v); i++ {
-			for j := i + 1; j <= len(v); j++ {
-				s := "duplicate alias " + v[i:j] + " found in /tmp/xyz/" + v[j:] + v[:i]
-				got := redact(s, env)
-				for name, w := range env {
-					if r := runOf(got, w); r != "" {
-						t.Fatalf("%q: %q holds %q of %s", s, got, r, name)
-					}
+// A value YAML reads as a number, a bool or null is the second load's as it
+// is, so a field that reads it does not fail there for a stand-in, and the
+// answer is the error the first load had: a duplicate alias, which
+// llama-swap finds after it has decoded the fields.
+func TestATypedValueIsTheSecondLoadsAsItIs(t *testing.T) {
+	for _, c := range []struct{ field, value string }{
+		{"ttl", "300"}, {"ttl", "0x1F"}, {"ttl", "~"}, {"ttl", ""}, {"unlisted", "true"},
+	} {
+		u := newConfigUI(t)
+		u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_TYPED="+c.value+"\nINFERMUX_TEST_KEY=sk-or-v1-0123456789\n")
+		files := draft(u.f.gguf, "")
+		files["infermux.yaml"] = strings.Replace(files["infermux.yaml"], "balance:\n", "balance:\n  other: [here/gpu]\n", 1)
+		files["models/other.yaml"] = strings.Replace(files["models/qwen.yaml"], "files:", "aliases: [dup]\nfiles:", 1)
+		files["models/qwen.yaml"] += c.field + ": ${env.INFERMUX_TEST_TYPED}\nname: ${env.INFERMUX_TEST_KEY}\naliases: [dup]\n"
+		got := checkMessage(&u, files)
+		if !strings.HasPrefix(got, "here: llama-swap: duplicate alias dup found in model: ") {
+			t.Errorf("%s: %q: %q", c.field, c.value, got)
+		}
+	}
+	for value, want := range map[string]bool{
+		"300": true, "0x1F": true, "1.5": true, "true": true, "~": true, "": true, "300 # c": true,
+		"sk-or-v1-0123": false, "!!int 5": false, "[1]": false, "a: 1": false, "1 2": false,
+	} {
+		if typed(value) != want {
+			t.Errorf("typed(%q) is %v", value, !want)
+		}
+	}
+}
+
+// What the check answers does not depend on whether text in the draft is part
+// of a key: a guess written into the draft comes back as written, whatever
+// part of the key it is, so that guessing cannot find the key a run at a
+// time. The key is read by the part, and by the base.
+func TestACheckIsNoOracleForAKey(t *testing.T) {
+	const key = "sk-or-v1-0123456789abcdef"
+	for _, reader := range []string{"part", "base"} {
+		answers := map[string]bool{}
+		for _, guess := range []string{key[:12], key[4:16], key[9:], "sk-or-v1-fedcba98", "zzzzzzzzzzzz"} {
+			u := newConfigUI(t)
+			u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY="+key+"\nUNREAD=sk-or-v1-0123456789\n")
+			cloud := "clouds:\n  a:\n    url: http://[" + guess + "\n    models: [m]\n"
+			if reader == "part" {
+				cloud += "  b:\n    url: https://b.example\n    api_key: ${env.INFERMUX_TEST_KEY}\n    models: [n]\n"
+			} else {
+				if err := os.WriteFile(u.f.store.BaseConfig, []byte(base+"apiKeys: [\"${env.INFERMUX_TEST_KEY}\"]\n"), 0o644); err != nil {
+					t.Fatal(err)
 				}
 			}
+			got := checkMessage(&u, draft(u.f.gguf, cloud))
+			if !strings.Contains(got, "["+guess) || strings.Contains(got, "not shown") {
+				t.Errorf("read by the %s, %q: %q", reader, guess, got)
+			}
+			answers[strings.ReplaceAll(got, guess, "GUESS")] = true
 		}
-	}
-	for _, s := range []string{"line 3: cmd is missing", "/tmp/xyz/sk-or", "0123 abcd 6789"} {
-		if got := redact(s, env); got != s {
-			t.Errorf("%q became %q", s, got)
+		if len(answers) != 1 {
+			t.Errorf("read by the %s, the answers differ with the guess: %q", reader, slices.Collect(maps.Keys(answers)))
 		}
-	}
-	if got := redact("A sk-or-v1-0123456789abcdefsk-or-v1-fedcba9876543210 B", env); got != "A ${env.A}${env.B} B" {
-		t.Errorf("two values back to back: %q", got)
 	}
 }
