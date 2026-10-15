@@ -115,6 +115,8 @@ func TestAMergeWrittenOutDecodesAsWritten(t *testing.T) {
 		"d: &d {ttl: 3}\ncmd: x\n!!merge <<: *d\n",
 		"cmd: x\n\"<<\": {ttl: 3}\n",
 		"cmd: x\n<<: {filters: {<<: {strip_params: temperature}}}\n",
+		"cmd: x\nd: &d {ttl: 3}\nbase: &base {nested: {<<: *d}}\n<<: *base\n",
+		"cmd: x\n\"vram_mb\": 1\n<<: {!!str ttl: 3, 'name': n}\n",
 	} {
 		var doc yaml.Node
 		if err := yaml.Unmarshal([]byte(body), &doc); err != nil {
@@ -145,5 +147,76 @@ func TestAMergeWrittenOutDecodesAsWritten(t *testing.T) {
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%q written out:\n%s\ndecodes to\n%v\nwant\n%v", body, out, got, want)
 		}
+	}
+}
+
+// A key yaml.v3 reads as other than its text is refused, at the top, in a
+// source a merge brings, overridden or not, and in a place and its flags:
+// InferMux finds a key by its text (sol, review 16, M2: TestSolR16AliasKeyMerge,
+// TestSolR16AliasFloat, TestSolR16MergeDecode). So is a number key, which
+// yaml.v3's merge compares as a number, where its own key 1 loses to a
+// source's '1'. yaml.v3 loads each model and reads the key and value given,
+// so the refusal is InferMux's.
+func TestAKeyYAMLReadsOtherwiseIsRefused(t *testing.T) {
+	const want = "a key InferMux reads is a string as written"
+	for _, c := range []struct {
+		name, model, key string
+		value            any
+	}{
+		{"an alias key in a source", "anchor: &key vram_mb\nbase: &base\n  ? *key\n  : 3100\ncmd: run --port ${PORT}\n<<: *base\n", "vram_mb", 3100},
+		{"its anchor named as a key of the mapping", "key: &key vram_mb\nbase: &base\n  ? *key\n  : 3100\ncmd: run --port ${PORT}\n<<: *base\n", "vram_mb", 3100},
+		{"a fraction behind it", "anchor: &key vram_mb\nbase: &base {? *key : 3.1}\ncmd: run --port ${PORT}\n<<: *base\n", "vram_mb", 3.1},
+		{"one the mapping's own key wins over", "key: &key ttl\nbase: &base {? *key : 3}\ncmd: x\n<<: *base\nttl: 5\n", "ttl", 5},
+		{"an alias key with no merge", "anchor: &key vram_mb\ncmd: run --port ${PORT}\n? *key\n: 3100\n", "vram_mb", 3100},
+		{"a binary key", "cmd: run --port ${PORT}\n!!binary dnJhbV9tYg==: 3100\n", "vram_mb", 3100},
+		{"a number key", "cmd: x\n1: a\n<<: {'1': b}\n", "1", "b"},
+	} {
+		var decoded map[string]any
+		if err := yaml.Unmarshal([]byte(c.model), &decoded); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if decoded[c.key] != c.value {
+			t.Errorf("%s: yaml.v3 reads %s: %v, want %v", c.name, c.key, decoded[c.key], c.value)
+		}
+		_, _, err := Parse(files(hosts+"balance: {m: [a/gpu]}\n", map[string]string{"m": c.model}))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", c.name, err, want)
+		}
+	}
+	// A place's settings and its flags InferMux alone reads, by the text too.
+	for _, place := range []string{
+		"{place: &max_inflight a/gpu, ? *max_inflight : 2}",
+		"{place: a/gpu, flags: {--ctx-size: &-t 8, ? *-t : 4}}",
+		"{place: a/gpu, flags: {!!binary LS10aHJlYWRz: 4}}",
+	} {
+		_, _, err := Parse(files(hosts+"balance: {m: ["+place+"]}\n", map[string]string{"m": "cmd: run --port ${PORT}\n"}))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: %v, want %q", place, err, want)
+		}
+	}
+}
+
+// A key quoted or tagged !!str is its text, and is read and removed as one
+// written plain.
+func TestAQuotedKeyIsReadAsWritten(t *testing.T) {
+	for _, model := range []string{
+		"cmd: run --port ${PORT}\n\"vram_mb\": 3100\n",
+		"cmd: run --port ${PORT}\n!!str vram_mb: 3100\n",
+		"cmd: run --port ${PORT}\n<<: {'vram_mb': 3100}\n",
+	} {
+		cfg, _, err := Parse(files(hosts+"balance: {m: [a/gpu]}\n", map[string]string{"m": model}))
+		if err != nil {
+			t.Fatalf("%q: %v", model, err)
+		}
+		part, err := cfg.Derive("a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if part.Local["m"].VRAMMB != 3100 || strings.Contains(string(part.LlamaSwap), "vram_mb") {
+			t.Errorf("%q: need %d, llama-swap's entry:\n%s", model, part.Local["m"].VRAMMB, part.LlamaSwap)
+		}
+	}
+	if _, _, err := Parse(files(hosts+"balance: {m: [a/gpu]}\n", map[string]string{"m": "cmd: x\n\"vram_mb\": 3.1\n"})); err == nil || !strings.Contains(err.Error(), "a whole number above 0") {
+		t.Errorf("a quoted key's 3.1: %v", err)
 	}
 }

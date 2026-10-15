@@ -124,6 +124,9 @@ func (p *Place) UnmarshalYAML(n *yaml.Node) error {
 	}
 	seen := map[string]bool{}
 	for i := 0; i < len(n.Content); i += 2 {
+		if err := plainKey(n.Content[i]); err != nil {
+			return err
+		}
 		key, value := n.Content[i].Value, n.Content[i+1]
 		if seen[key] {
 			return fmt.Errorf("line %d: %s is set twice", n.Content[i].Line, key)
@@ -186,6 +189,9 @@ func decodeFlags(n *yaml.Node) ([]Flag, error) {
 	}
 	var out []Flag
 	for i := 0; i < len(n.Content); i += 2 {
+		if err := plainKey(n.Content[i]); err != nil {
+			return nil, err
+		}
 		name, value := n.Content[i].Value, n.Content[i+1]
 		if !isFlag(name) {
 			return nil, fmt.Errorf("line %d: %q is not a flag", n.Content[i].Line, name)
@@ -610,16 +616,21 @@ func mapValue(n *yaml.Node, key string) *yaml.Node {
 // its own merge, the first source first. InferMux reads and rewrites a
 // model's keys by name, cmd, env, aliases, files and vram_mb, so none of them
 // may reach llama-swap through a merge InferMux did not read (sol, review
-// 15, M2). llama-swap decodes the result as it decodes m.
+// 15, M2). It compares keys by their text, so each key of the mapping and of
+// a source, with a merge or without, is first plainKey's. llama-swap decodes
+// the result as it decodes m.
 func writeOutMerge(m *yaml.Node) error {
 	at := -1
 	set := map[string]bool{}
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if isMerge(m.Content[i]) {
 			at = i
-		} else {
-			set[m.Content[i].Value] = true
+			continue
 		}
+		if err := plainKey(m.Content[i]); err != nil {
+			return err
+		}
+		set[m.Content[i].Value] = true
 	}
 	if at < 0 {
 		return nil
@@ -636,23 +647,29 @@ func writeOutMerge(m *yaml.Node) error {
 	}
 	var in []*yaml.Node
 	seen := map[*yaml.Node]bool{}
-	var merge func(n *yaml.Node)
-	from := func(src *yaml.Node) {
+	var merge func(n *yaml.Node) error
+	from := func(src *yaml.Node) error {
 		if src.Kind == yaml.AliasNode {
 			src = src.Alias
 		}
 		if seen[src] {
 			// Every key it brings is set already.
-			return
+			return nil
 		}
 		seen[src] = true
 		var next *yaml.Node
 		for i := 0; i+1 < len(src.Content); i += 2 {
 			k, v := src.Content[i], src.Content[i+1]
-			switch {
-			case isMerge(k):
+			if isMerge(k) {
 				next = v
-			case !set[k.Value]:
+				continue
+			}
+			// Each key, the ones the mapping's own keys win over too: which
+			// it is is read from its text.
+			if err := plainKey(k); err != nil {
+				return err
+			}
+			if !set[k.Value] {
 				set[k.Value] = true
 				// Each anchor stays where it is defined, in the source, and
 				// is not defined a second time here.
@@ -663,20 +680,39 @@ func writeOutMerge(m *yaml.Node) error {
 			}
 		}
 		if next != nil {
-			merge(next)
+			return merge(next)
 		}
+		return nil
 	}
-	merge = func(n *yaml.Node) {
+	merge = func(n *yaml.Node) error {
 		if n.Kind == yaml.SequenceNode {
 			for _, src := range n.Content {
-				from(src)
+				if err := from(src); err != nil {
+					return err
+				}
 			}
-			return
+			return nil
 		}
-		from(n)
+		return from(n)
 	}
-	merge(m.Content[at+1])
+	if err := merge(m.Content[at+1]); err != nil {
+		return err
+	}
 	m.Content = append(m.Content[:at], append(in, m.Content[at+2:]...)...)
+	return nil
+}
+
+// plainKey refuses a key that yaml.v3 does not read as its own text, a
+// string: an alias, which it reads as the aliased node, a tag but !!str,
+// such as !!binary, and a key it reads as a number, a bool or null.
+// InferMux finds and removes a key by its text, so such a key would be one
+// key to InferMux and another to llama-swap: `? *key : 3100`, with
+// `&key vram_mb`, is vram_mb to llama-swap and key to InferMux (sol, review
+// 16, M2).
+func plainKey(k *yaml.Node) error {
+	if k.Kind != yaml.ScalarNode || k.ShortTag() != "!!str" {
+		return fmt.Errorf("line %d: a key InferMux reads is a string as written: not an alias, a tag but !!str, or a number, a bool or null", k.Line)
+	}
 	return nil
 }
 
