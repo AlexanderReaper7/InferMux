@@ -18,6 +18,7 @@ import (
 
 func main() {
 	muxui.GPGShim()
+	muxui.LoadShim()
 	listen := flag.String("listen", "127.0.0.1:5010", "address to serve the UI on")
 	swapListen := flag.String("swap-listen", "", "address to serve llama-swap's own UI on, with the UI's key, so the llama-swap tab asks for none; empty frames the daemon")
 	daemon := flag.String("daemon", "http://127.0.0.1:5001", "the InferMux daemon")
@@ -30,6 +31,7 @@ func main() {
 	configPassphrase := flag.String("config-passphrase-command", "", "an executable that prints -config-key's passphrase, such as a lookup in the user's keyring; Publish then asks the browser for none")
 	wardenFile := flag.String("warden-config", "", "the daemon's -warden-config")
 	baseConfig := flag.String("base-config", "", "the daemon's -config: the runtimes' macros and global settings")
+	envFile := flag.String("env-file", "", "the daemon's EnvironmentFile, with the clouds' keys: the check loads this host's part with it, in a child of its own")
 	ggufDirs := flag.String("gguf-dirs", "", "comma-separated directories to look for .gguf files in")
 	kvKernels := flag.String("kv-kernels", "", "a JSON file: per runtime macro, the K-V cache pairs with a FlashAttention kernel")
 	prebuild := flag.String("prebuild", "", "a flake installable the UI may build ahead of a switch; empty hides the button")
@@ -56,7 +58,7 @@ func main() {
 		}
 		daemonKey = strings.TrimSpace(string(raw))
 	}
-	store := &muxui.Store{WardenFile: *wardenFile, BaseConfig: *baseConfig, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity,
+	store := &muxui.Store{WardenFile: *wardenFile, BaseConfig: *baseConfig, EnvFile: *envFile, KeySecrets: *keySecrets, Sops: *sops, AgeIdentity: *ageIdentity,
 		CommitPassphrase: *commitPassphrase, GPG: *gpg, SignedConfig: *signedConfig, ConfigKey: *configKey, ConfigPassphrase: *configPassphrase}
 	for _, d := range strings.Split(*ggufDirs, ",") {
 		if d = strings.TrimSpace(d); d != "" {

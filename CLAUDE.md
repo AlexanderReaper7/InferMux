@@ -32,7 +32,7 @@ This file is rules and navigation only.
 | `internal/stream/` | ours: a WebSocket followed frame by frame for the warden and the stats, closed with a code of ours, and routed by `?model=` (0018); `wstest/` is the tests' frame client and echo backend |
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
 | `internal/adapter/`, `cmd/infermux-adapter/` | ours: puts a client's key on the requests of a client that cannot send one, such as Immich (0013) |
-| `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; the one config's check, Publish and nixcfg's copy (`config.go`, 0022), warden.yaml, keys, git, the proxy to the daemon (0005) |
+| `internal/muxui/`, `cmd/infermux-ui/` | ours: the UI binary; the one config's check, Publish and nixcfg's copy (`config.go`, 0022), the check's load in a child with the daemon's env file (`envfile.go`, 0022, 11), warden.yaml, keys, git, the proxy to the daemon (0005) |
 | `webui/` | ours: the Svelte 5 frontend, embedded into `internal/muxui/dist/` by the nix build; the one config's YAML editor is CodeMirror (`src/lib/editor.ts`, `yamlschema.ts`), tested by bun in `test/` |
 | `internal/server/warden.go`, `warden_test.go` | ours: the accessors the warden needs on llama-swap's server |
 | `internal/process/warden.go`, `warden_test.go` | ours: the gate every start of a local model passes, set by `infermux_off.go` from the off file (0025); its one call is marked in upstream's `process_command.go`, in `run()` |
@@ -70,7 +70,7 @@ git merge v<N>                       # README.md and CLAUDE.md keep ours (.gitat
 
 ## The rules that have to fire without being looked up
 
-- **Every client has a key once `keys_file` is set, and keys.yaml holds only hashes** (0006). The plaintext lives in the hosts' sops file and nowhere else, and never on a command line. A job's key stays in memory, so `jobs.json` never holds one (0023).
+- **Every client has a key once `keys_file` is set, and keys.yaml holds only hashes** (0006). The plaintext lives in the hosts' sops file and nowhere else, and never on a command line. A job's key stays in memory, so `jobs.json` never holds one (0023). The clouds' keys in the daemon's env file reach the UI only in the environment of its loader child, never its own, which git and nix inherit (0022, 11).
 - **A config is trusted by its signature and by nothing else** (0022, 10). The trusted keys come from Nix's command line, never from the config or a file the UI writes. A daemon never runs a config that fails the check, and the host key carries a signed config without being able to write one.
 - **Between hosts the client's own key travels; a host's own key is for discovery and never replaces it** (0006). A llama-swap peer `apiKey` would replace the client's key and with it its class, so the hosts are `remotes`, not `peers`.
 - **The user's own request is never killed** (0004), **nor paused** (0023). Unmarked is interactive. Do not add a path that cancels, refuses or unloads under an interactive request; the unload waits for `interactive_recent_seconds` of quiet. The exceptions are a stuck agent's request, refused before it reaches the model, by the user's choice (0015), and a safety stop's off file, which refuses and cancels every request for a local model and stops the models at once (0025).

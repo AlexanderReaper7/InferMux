@@ -9,9 +9,11 @@ import (
 	"testing"
 )
 
-// A Commit that signs runs this test binary as git's gpg.program.
+// A Commit that signs runs this test binary as git's gpg.program, and a
+// check runs it as the loader.
 func TestMain(m *testing.M) {
 	GPGShim()
+	LoadShim()
 	os.Exit(m.Run())
 }
 

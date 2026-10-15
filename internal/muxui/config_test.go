@@ -149,9 +149,10 @@ func TestCheckIsTheDaemonsLoader(t *testing.T) {
 		t.Errorf("a placement error: %v", out["error"])
 	}
 	// A macro this host's base config does not define, which llama-swap
-	// refuses when it loads the part. A cloud that reads the environment is
-	// left to the daemon, since the UI has not the daemon's environment.
-	macro := draft(u.f.gguf, "clouds:\n  c:\n    url: https://c.example\n    api_key: ${env.INFERMUX_TEST_UNSET}\n    models: [m]\n")
+	// refuses when it loads the part. A cloud reads its key from the
+	// daemon's environment file, which the UI loads with.
+	u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY=sk-test\n")
+	macro := draft(u.f.gguf, "clouds:\n  c:\n    url: https://c.example\n    api_key: ${env.INFERMUX_TEST_KEY}\n    models: [m]\n")
 	if _, out = u.call("POST", "/api/config/check", map[string]any{"files": macro}); out["error"] != nil {
 		t.Fatalf("an env macro: %v", out["error"])
 	}
@@ -199,7 +200,8 @@ func TestCheckAcceptsAnAliasAcrossPlaces(t *testing.T) {
 
 // acceptsWhatTheDaemonLoads loads the draft's part for here as the daemon
 // does, with INFERMUX_TEST_TTL set, then has the UI check and publish it
-// without the variable, as the UI runs.
+// with the variable in its environment file and not in its own
+// environment, as the UI runs.
 func (u *configUI) acceptsWhatTheDaemonLoads(t *testing.T, files map[string]string) {
 	t.Helper()
 	cfg, _, err := placement.Parse(toBytes(files))
@@ -214,6 +216,7 @@ func (u *configUI) acceptsWhatTheDaemonLoads(t *testing.T, files map[string]stri
 		t.Fatalf("the daemon's load: %v", err)
 	}
 	os.Unsetenv("INFERMUX_TEST_TTL")
+	u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_TTL=30\n")
 	if _, out := u.call("POST", "/api/config/check", map[string]any{"files": files}); out["error"] != nil {
 		t.Errorf("Check refused a part the daemon loads: %v", out["error"])
 	}

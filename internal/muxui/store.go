@@ -20,9 +20,13 @@ import (
 // written that llama-swap's or the warden's own loader refuses: a bad edit
 // fails here, not as a reload the daemon logs and ignores.
 type Store struct {
-	WardenFile string   // the warden's -warden-config
-	BaseConfig string   // llama-swap's -config, from Nix: the runtimes' macros and global settings
-	GGUFDirs   []string // where to look for model files
+	WardenFile string // the warden's -warden-config
+	BaseConfig string // llama-swap's -config, from Nix: the runtimes' macros and global settings
+	// EnvFile is the daemon's EnvironmentFile, which holds the clouds' keys:
+	// the check loads this host's part with it, and nothing else of the UI
+	// sees it (envfile.go). Empty, the part loads with no environment.
+	EnvFile  string
+	GGUFDirs []string // where to look for model files
 	// KVKernels is, per runtime macro, the K-V cache pairs its FlashAttention
 	// kernels were compiled for. A runtime missing here is not checked.
 	KVKernels map[string][]string

@@ -170,6 +170,22 @@ in
       '';
     };
 
+    environmentFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "/run/secrets/rendered/infermux.env";
+      description = ''
+        The daemon's EnvironmentFile, such as the clouds' keys a config reads
+        with `''${env.VAR}`. With `ui.enable` the UI's check loads this host's
+        part with it too, in a child of its own whose environment is this
+        file alone, so `ui.user` must be able to read it. Lines are
+        NAME=VALUE with no quote, backslash, `$` or whitespace at either end
+        of the value, or comments; the UI refuses another form, which
+        systemd would read differently. A string, not a path, so Nix never
+        copies it into the store.
+      '';
+    };
+
     signedConfig = {
       trustedKeys = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -217,9 +233,9 @@ in
           unless it verifies against `trustedKeys` and `host`'s part of it
           loads with `settings`, as llama-swap loads the derived file with
           `-config` at start, before the warden runs (0022, 11). It is
-          loaded without the daemon's environment, as the UI's Check loads
-          it, so what reads `''${env.VAR}` is left out. It checks this copy,
-          not a newer version the daemon keeps.
+          loaded without the daemon's environment, unlike the UI's Check, so
+          what reads `''${env.VAR}` is left out, and what an alias ties to it.
+          It checks this copy, not a newer version the daemon keeps.
         '';
       };
       fetchDirs = lib.mkOption {
@@ -568,6 +584,7 @@ in
           # llama-swap's own shutdown, forced at 35 s.
           TimeoutStopSec = 90;
           LoadCredential = lib.mapAttrsToList (name: path: "${name}:${path}") cfg.credentials;
+          EnvironmentFile = lib.optional (cfg.environmentFile != null) cfg.environmentFile;
         }
         // sandbox
         // lib.optionalAttrs (cfg.signedConfig.fetchDirs != [ ]) {
@@ -701,6 +718,10 @@ in
             ++ lib.optionals (cfg.ui.hfTokenFile != null) [
               "-hf-token-file"
               cfg.ui.hfTokenFile
+            ]
+            ++ lib.optionals (cfg.environmentFile != null) [
+              "-env-file"
+              cfg.environmentFile
             ]
             ++ lib.optionals cfg.ui.commitPassphrase [
               "-commit-passphrase"

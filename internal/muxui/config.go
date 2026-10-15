@@ -157,8 +157,8 @@ func check(files map[string][]byte) (*placement.Config, Check) {
 // checkHere is check, and this host's part loaded by llama-swap with the
 // base config, as the daemon loads it before it keeps a config: a macro this
 // host's Nix does not define fails here (0022, 11). Each other host's
-// daemon loads its own part. The UI has not the daemon's environment, which
-// holds the clouds' keys, so what reads it is left to the daemon (LoadsWith).
+// daemon loads its own part. It loads with the daemon's environment file, so
+// a cloud that reads a key the file does not hold fails here too (envfile.go).
 func (s *Store) checkHere(files map[string][]byte) Check {
 	cfg, res := check(files)
 	if res.Error != nil {
@@ -168,7 +168,7 @@ func (s *Store) checkHere(files map[string][]byte) Check {
 	if err == nil {
 		var part *placement.Part
 		if part, err = cfg.Derive(host); err == nil {
-			err = part.LoadsWith(s.BaseConfig, false)
+			err = s.loads(part)
 		}
 	}
 	if err != nil {
