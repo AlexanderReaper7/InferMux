@@ -3,7 +3,8 @@
 - Date: 2026-10-03
 - Status: accepted; narrowed by 0009 (only this host's models are gated)
 - Amended by [0025](0025-a-safety-stop-takes-the-local-models-off.md) on 2026-10-14: a safety stop refuses and cancels every request for a local model, interactive ones included (the rule).
-- Rule: InferMux is llama-swap with the warden built in, one binary on :5001. A request presenting a batch API key is refused while paused and cancelled on a yield. Every other request is interactive and is never killed: the models are not unloaded while one is in flight or was within `interactive_recent_seconds` (600). The exceptions are a stuck agent's request (0015) and a safety stop, which takes the local models off whatever the class (0025). The compositor and Electron's GPU process are not contention.
+- Amended by [0028](0028-a-start-on-the-gpu-needs-room-on-the-card.md) on 2026-10-15: a start on the GPU the card has no room for is refused at once, interactive requests included (the rule).
+- Rule: InferMux is llama-swap with the warden built in, one binary on :5001. A request presenting a batch API key is refused while paused and cancelled on a yield. Every other request is interactive and is never killed: the models are not unloaded while one is in flight or was within `interactive_recent_seconds` (600). The exceptions are a stuck agent's request (0015), a safety stop, which takes the local models off whatever the class (0025), and a start on the GPU that the card's free VRAM does not cover, refused whatever the class (0028). The compositor and Electron's GPU process are not contention.
 - Keeps 0001 whole (decide, push, a pause is a message and not a lease) and 0002's transition-only unload, which may now be owed for a while before it is paid. Supersedes 0003: one router runs both runtimes.
 
 ## Context

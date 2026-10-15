@@ -135,6 +135,9 @@ func TestSchemaFollowsTheTypes(t *testing.T) {
 	if _, ok := modelProps["files"]; !ok {
 		t.Error("a model's files: is missing")
 	}
+	if v, ok := modelProps["vram_mb"].(map[string]any); !ok || v["type"] != "integer" {
+		t.Errorf("a model's vram_mb: %v", modelProps["vram_mb"])
+	}
 	if _, ok := modelProps["cmd"]; !ok {
 		t.Error("a model's cmd: is missing")
 	}

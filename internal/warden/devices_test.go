@@ -23,7 +23,7 @@ func placed(t *testing.T) (*harness, *CPUResources) {
 	reading := &CPUResources{ForeignPercent: f64(5), RAMAvailableMB: 60000, RAMTotalMB: 96000}
 	var probeErr error
 	h.w.cpuProbe = func() (CPUResources, error) { return *reading, probeErr }
-	h.w.SetPlacement(Placement{"qwen": {DeviceGPU}, "embed": {DeviceCPU}, "big": {DeviceGPU, DeviceCPU}})
+	h.w.SetPlacement(Placement{"qwen": {Devices: []string{DeviceGPU}}, "embed": {Devices: []string{DeviceCPU}}, "big": {Devices: []string{DeviceGPU, DeviceCPU}}})
 	return h, reading
 }
 
@@ -278,7 +278,7 @@ func TestAModelThatDoesNotStartLogsWhatHeldTheCard(t *testing.T) {
 	h := newHarness(t, nil)
 	log := &warnings{}
 	h.w.log = log
-	h.w.SetPlacement(Placement{"qwen": {DeviceGPU}, "embed": {DeviceCPU}})
+	h.w.SetPlacement(Placement{"qwen": {Devices: []string{DeviceGPU}}, "embed": {Devices: []string{DeviceCPU}}})
 	h.w.probe = func() (Resources, error) { return quiet(), nil } // the loop's, not read here
 	h.w.freshProbe = func() (Resources, error) {
 		r := quiet()

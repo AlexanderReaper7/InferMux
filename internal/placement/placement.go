@@ -222,6 +222,10 @@ type Model struct {
 	// signed, so a file fetched from another host is checked against it
 	// (0022). Not every model has one: immich-ml downloads its own.
 	Files map[string]File
+	// VRAMMB is the VRAM the model holds once serving, from vram_mb. A start
+	// on the GPU is refused while the card has less free (the user's
+	// decision 17 of 2026-10-15). 0 is unchecked.
+	VRAMMB int
 }
 
 // File is a file a model needs on the host that runs it.
@@ -341,6 +345,13 @@ func parseModel(name string, raw []byte) (*Model, error) {
 		}
 		deleteKey(body, "files")
 	}
+	if v := mapValue(body, "vram_mb"); v != nil {
+		// The tag first: yaml.v3 decodes 3.1 into an int as 3.
+		if v.ShortTag() != "!!int" || v.Decode(&m.VRAMMB) != nil || m.VRAMMB <= 0 {
+			return nil, fmt.Errorf("line %d: vram_mb is the VRAM the model holds once serving, in MB: a whole number above 0", v.Line)
+		}
+		deleteKey(body, "vram_mb")
+	}
 	if strings.TrimSpace(m.Cmd()) == "" {
 		return nil, fmt.Errorf("cmd is missing")
 	}
@@ -451,8 +462,15 @@ func (c *Config) check() ([]string, error) {
 			warnings = append(warnings, fmt.Sprintf("%s has failover places and no balance place, so it is never tried first anywhere", name))
 		}
 		m := c.Models[name]
+		onGPU := false
 		for _, p := range append(balance, failover...) {
 			warnings = append(warnings, c.cpuWarnings(m, p)...)
+			for _, d := range append([]string{p.Device()}, p.Occupies...) {
+				onGPU = onGPU || c.Hosts[p.Host()].Devices[d].Kind == KindGPU
+			}
+		}
+		if m.VRAMMB > 0 && !onGPU {
+			warnings = append(warnings, fmt.Sprintf("%s: vram_mb is checked only at a start on a GPU, and no place of it is on one", name))
 		}
 		for _, file := range ggufPaths(m.Cmd()) {
 			if _, ok := m.Files[file]; !ok {

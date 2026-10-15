@@ -34,5 +34,6 @@ A record says what is true now. A decision that changes is edited in place and g
 | [0025](0025-a-safety-stop-takes-the-local-models-off.md) | A safety stop takes the local models off and leaves the daemon up: every class refused and cancelled, the clouds and the other hosts passed, read from a file before the first request | 2026-10-14 |
 | [0026](0026-a-deploy-waits-for-the-requests-running.md) | A deploy waits up to 40 s for the requests running and refuses new ones with 503 `draining`, while off too; the zbox controller SIGKILLs the models through pidfds | 2026-10-14 |
 | [0027](0027-one-agents-md-ours-above-upstreams-guide.md) | One AGENTS.md: InferMux's rules above llama-swap's guide, kept verbatim so upstream's changes merge; CLAUDE.md is upstream's `@AGENTS.md` | 2026-10-15 |
+| [0028](0028-a-start-on-the-gpu-needs-room-on-the-card.md) | A start on the GPU needs room on the card: a model's `vram_mb` against NVML's own free figure, read at the start gate; short, every class gets 503 at once | 2026-10-15 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.

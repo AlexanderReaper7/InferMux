@@ -13,10 +13,16 @@ import (
 // of its own, and a yield refuses, cancels and unloads only the models on the
 // device that yielded.
 
-// Placement is each local model's devices, by its llama-swap name: DeviceGPU,
-// DeviceCPU, or both. A model on a GPU other than NVML's first is on none,
-// since nothing measures it.
-type Placement map[string][]string
+// Placement is each local model's place here, by its llama-swap name.
+type Placement map[string]Placed
+
+// Placed is a local model's devices, DeviceGPU, DeviceCPU, or both, and the
+// VRAM it needs to start on the GPU, 0 unchecked (Fits). A model on a GPU
+// other than NVML's first is on none, since nothing measures it.
+type Placed struct {
+	Devices []string
+	VRAMMB  int
+}
 
 // SetPlacement hands the warden the one config's placement. From then on the
 // CPU is measured, and a model the placement does not name is on every
@@ -35,8 +41,8 @@ func (w *Warden) devicesLocked(model string) []string {
 	if w.placement == nil {
 		return []string{DeviceGPU}
 	}
-	if d, ok := w.placement[model]; ok {
-		return d
+	if p, ok := w.placement[model]; ok {
+		return p.Devices
 	}
 	return []string{DeviceGPU, DeviceCPU}
 }

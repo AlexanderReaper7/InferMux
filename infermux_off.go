@@ -27,22 +27,26 @@ const offPoll = time.Second
 
 // The start gate reads the file itself at each start, so a start is refused
 // from the moment the file is there, not from the next poll, and before the
-// warden exists: preload starts as server.New makes the server.
+// warden exists: preload starts as server.New makes the server. Once the
+// warden exists, a start the file allows still needs room on the card
+// (warden.Fits).
 func init() { process.SetStartGate(gateStart) }
 
-// offWarden answers a refused start with its Retry-After once it exists.
-var offWarden atomic.Pointer[warden.Warden]
+// gateWarden is the warden once it exists: the Retry-After of a start
+// refused while off, and the fit check.
+var gateWarden atomic.Pointer[warden.Warden]
 
-func gateStart(string) error {
+func gateStart(id string) error {
 	reason := offNow()
-	switch w := offWarden.Load(); {
-	case reason == "":
-		return nil
-	case w != nil:
+	switch w := gateWarden.Load(); {
+	case reason != "" && w != nil:
 		return w.OffError(reason)
-	default:
+	case reason != "":
 		return warden.OffError{Reason: reason}
+	case w != nil:
+		return w.Fits(id)
 	}
+	return nil
 }
 
 // offNow is why the local models are off by -off-file, "" when they are on

@@ -292,7 +292,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 				log.Warnf("Remote hosts not set: %v", err)
 			}
 			failovers.Set(routesOf(part))
-			w.SetPlacement(devicesOf(part))
+			w.SetPlacement(placedOf(part))
 			// New places may take a job every old one refused.
 			jobStore.Wake()
 		}
@@ -311,10 +311,10 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	} else {
 		setFailover(cfg.Failover)
 	}
-	// Before the first request and the first job: a daemon started at night
-	// starts off (0025).
+	// Before the first request and the first job: the gate's fit check, and
+	// a daemon started at night starts off (0025).
+	gateWarden.Store(w)
 	if *flagOffFile != "" {
-		offWarden.Store(w)
 		watchOff(ctx, *flagOffFile, w.SetOff)
 	}
 	// Outermost, so a deploy's stop refuses every new request before
@@ -427,10 +427,10 @@ func jobsFile() string {
 	return ""
 }
 
-// devicesOf is each local model's devices as the warden measures them: the
-// CPU, and the GPU at CUDA index 0, which is the one NVML reads (0022). A
-// model on another GPU is on none; derive warns about it.
-func devicesOf(part *placement.Part) warden.Placement {
+// placedOf is each local model's devices as the warden measures them, the
+// CPU and the GPU at CUDA index 0, which is the one NVML reads (0022), and
+// its VRAM need. A model on another GPU is on none; derive warns about it.
+func placedOf(part *placement.Part) warden.Placement {
 	p := warden.Placement{}
 	for name, l := range part.Local {
 		on := []string{}
@@ -447,7 +447,7 @@ func devicesOf(part *placement.Part) warden.Placement {
 				on = append(on, w)
 			}
 		}
-		p[name] = on
+		p[name] = warden.Placed{Devices: on, VRAMMB: l.VRAMMB}
 	}
 	return p
 }

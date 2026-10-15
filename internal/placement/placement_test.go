@@ -222,6 +222,8 @@ func TestRefused(t *testing.T) {
 		{"llama-swap file", hosts, map[string]string{"m": "models:\n  m: {cmd: x}\n"}, "this is a llama-swap file"},
 		{"no cmd", hosts, map[string]string{"m": "ttl: 3\n"}, "cmd is missing"},
 		{"bad hash", hosts, map[string]string{"m": "cmd: x\nfiles: {/x.gguf: {sha256: abc}}\n"}, "sha256 must be 64"},
+		{"no VRAM", hosts, map[string]string{"m": "cmd: x\nvram_mb: 0\n"}, "vram_mb is the VRAM the model holds once serving"},
+		{"VRAM in GB", hosts, map[string]string{"m": "cmd: x\nvram_mb: 3.1\n"}, "vram_mb is the VRAM the model holds once serving"},
 		{"one path, two files", hosts, map[string]string{"m": "cmd: x\nfiles: {/x.gguf: {sha256: " + strings.Repeat("a", 64) + "}}\n", "n": "cmd: x\nfiles: {/x.gguf: {sha256: " + strings.Repeat("b", 64) + "}}\n"}, "m and n name /x.gguf differently"},
 		{"flag", hosts + "balance: {m: [{place: a/gpu, flags: {ctx: 3}}]}\n", model, `"ctx" is not a flag`},
 		{"place setting", hosts + "balance: {m: [{place: a/gpu, weight: 3}]}\n", model, `unknown place setting "weight"`},
@@ -377,5 +379,36 @@ func TestFiles(t *testing.T) {
 	}
 	if part, _ := cfg.Derive("a"); !slices.Equal(part.Local["m"].Files, []string{"/m-mmproj.gguf", "/m.gguf"}) {
 		t.Errorf("m's files: %q", part.Local["m"].Files)
+	}
+}
+
+// vram_mb is InferMux's, not llama-swap's: each instance here carries it,
+// the entry llama-swap loads does not, and a model with no GPU place is
+// warned about, since only a start on a GPU reads it (the user's decision
+// 17 of 2026-10-15).
+func TestVRAMNeed(t *testing.T) {
+	cfg, warnings, err := Parse(files(hosts+"balance: {m: [a/gpu, a/cpu], n: [a/cpu], o: [{place: a/cpu, occupies: [gpu]}]}\n", map[string]string{
+		"m": "cmd: run\nvram_mb: 3100\n",
+		"n": "cmd: run\nvram_mb: 500\n",
+		"o": "cmd: run\nvram_mb: 500\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"n: vram_mb is checked only at a start on a GPU, and no place of it is on one"}
+	if !reflect.DeepEqual(warnings, want) {
+		t.Errorf("warnings\n%q\nwant\n%q", warnings, want)
+	}
+	part, err := cfg.Derive("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for instance, need := range map[string]int{"m": 3100, "m@cpu": 3100, "n": 500} {
+		if got := part.Local[instance].VRAMMB; got != need {
+			t.Errorf("%s: %d, want %d", instance, got, need)
+		}
+	}
+	if strings.Contains(string(part.LlamaSwap), "vram_mb") {
+		t.Errorf("llama-swap's entry has vram_mb:\n%s", part.LlamaSwap)
 	}
 }

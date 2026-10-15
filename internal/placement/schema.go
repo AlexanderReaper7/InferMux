@@ -10,7 +10,7 @@ import (
 // The editor's completion and hover read these (0022, 9). infermux.yaml's
 // schema is built from Config's types and the place settings' table, so a
 // field the loader reads is a field the editor offers; a model file's is
-// llama-swap's own model entry plus files:.
+// llama-swap's own model entry plus files: and vram_mb:.
 //
 // The editor fills two things in from the draft itself: "x-complete-keys"
 // names what a mapping's keys are, "x-complete" what a string is. The kinds
@@ -89,7 +89,8 @@ func Schema() map[string]any {
 	return s
 }
 
-// ModelSchema is models/<name>.yaml's: llama-swap's model entry and files:.
+// ModelSchema is models/<name>.yaml's: llama-swap's model entry, files:
+// and vram_mb:.
 func ModelSchema() map[string]any {
 	var s map[string]any
 	if err := json.Unmarshal(upstreamModel, &s); err != nil {
@@ -105,6 +106,11 @@ func ModelSchema() map[string]any {
 		"propertyNames":        map[string]any{"pattern": "^/"},
 		"additionalProperties": file,
 		"x-complete-keys":      "gguf",
+	}
+	s["properties"].(map[string]any)["vram_mb"] = map[string]any{
+		"type":        "integer",
+		"minimum":     1,
+		"description": "The VRAM the model holds once serving, in MB. A start on the GPU answers 503 at once, for every key, while the card's own free figure is less.",
 	}
 	return s
 }

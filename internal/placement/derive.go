@@ -46,11 +46,13 @@ type Route struct {
 }
 
 // Local is a llama-swap model of this host: the config's model it runs,
-// the devices it occupies, its place's first, and the paths of its files.
+// the devices it occupies, its place's first, the paths of its files, and
+// the VRAM it needs to start on a GPU.
 type Local struct {
 	Model   string   `json:"model"`
 	Devices []string `json:"devices"`
 	Files   []string `json:"files"`
+	VRAMMB  int      `json:"vram_mb,omitempty"`
 }
 
 // Instance is the name a model has on one device of a host. Its first place
@@ -143,7 +145,7 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 			}
 			models.Content = append(models.Content, scalar(instance), entry)
 			members[p.Device()] = append(members[p.Device()], instance)
-			part.Local[instance] = Local{Model: name, Devices: append([]string{p.Device()}, p.Occupies...), Files: files}
+			part.Local[instance] = Local{Model: name, Devices: append([]string{p.Device()}, p.Occupies...), Files: files, VRAMMB: m.VRAMMB}
 		}
 	}
 	doc := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}

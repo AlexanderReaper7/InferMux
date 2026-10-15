@@ -628,11 +628,12 @@ type VerdictState struct {
 	PendingUnload bool                     `json:"pending_unload"`
 	LastUnload    []string                 `json:"last_unload"`
 	// CPU and Placement are the one config's (0022), nil outside it.
-	CPU        *CPUState   `json:"cpu"`
-	Placement  Placement   `json:"placement"`
-	ComfyUI    *comfyState `json:"comfyui"`
-	ProbeError *string     `json:"probe_error"`
-	Resources  *Resources  `json:"resources"`
+	// Placement is each local model's devices, as the UI's Status lists them.
+	CPU        *CPUState           `json:"cpu"`
+	Placement  map[string][]string `json:"placement"`
+	ComfyUI    *comfyState         `json:"comfyui"`
+	ProbeError *string             `json:"probe_error"`
+	Resources  *Resources          `json:"resources"`
 	// Remotes is the other hosts and what they list (0006, 2).
 	Remotes any `json:"remotes"`
 	// Jobs counts the jobs (0023).
@@ -665,10 +666,13 @@ func (w *Warden) State() VerdictState {
 		LastUnload:    w.gpuUnload.last,
 		ProbeError:    w.probeError,
 		Resources:     w.lastResources,
-		Placement:     w.placement,
 		Off:           w.off,
 	}
 	if w.placement != nil {
+		s.Placement = make(map[string][]string, len(w.placement))
+		for name, p := range w.placement {
+			s.Placement[name] = p.Devices
+		}
 		s.CPU = &CPUState{
 			Verdict:       w.cpu.verdict,
 			Policy:        w.cfg.CPU,
