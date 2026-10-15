@@ -250,8 +250,9 @@ func runOf(s, value string) string {
 // The check's answer holds no run of leakRun characters of a value of the
 // file, whatever YAML made of the value before llama-swap quoted it, a
 // comment or a tag cut off (sol's TestSolR16ChangedValue, review 16, H1),
-// and whatever the Go runtime printed of a variable it refused before the
-// loader started (sol's TestSolR16RuntimeEnv).
+// whatever the Go runtime printed of a variable it refused before the loader
+// started (sol's TestSolR16RuntimeEnv), and whatever yaml.v3's type error
+// keeps of a string in an int field, which the second load's number fills.
 func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 	block := "aliases:\n  - ${env.INFERMUX_TEST_KEY}\n"
 	for _, c := range []struct{ value, alias string }{
@@ -285,18 +286,45 @@ func TestACheckAnswerHoldsNoRunOfAValue(t *testing.T) {
 	files := draft(u.f.gguf, "")
 	files["models/qwen.yaml"] += "concurrencyLimit: ${env.INFERMUX_TEST_KEY}\n"
 	got = checkMessage(&u, files)
-	if !strings.Contains(got, "!!str `${env.INFERMUX_TEST_KEY}` into int") || runOf(got, value) != "" {
-		t.Errorf("a type error: %q", got)
+	if !strings.Contains(got, "loads with a stand-in for each, so a value fails it; its error is not shown") || runOf(got, value) != "" {
+		t.Errorf("a type error, which yaml.v3 prints with 7 characters of the value: %q", got)
 	}
 }
 
-// A value YAML reads as a number, a bool or null is the second load's as it
-// is, so a field that reads it does not fail there for a stand-in, and the
-// answer is the error the first load had: a duplicate alias, which
-// llama-swap finds after it has decoded the fields.
-func TestATypedValueIsTheSecondLoadsAsItIs(t *testing.T) {
-	for _, c := range []struct{ field, value string }{
-		{"ttl", "300"}, {"ttl", "0x1F"}, {"ttl", "~"}, {"ttl", ""}, {"unlisted", "true"},
+// The second load has a stand-in for each value it reads, whatever YAML
+// reads the value as alone: where the part puts it, the value can be text, as
+// `300 # rest` is in a quoted alias (sol's TestSolR17TypedCommentLeaks,
+// review 17, H1).
+func TestTheSecondLoadHasNoValueOfTheFile(t *testing.T) {
+	quoted := "aliases: [\"${env.INFERMUX_TEST_KEY}\"]\n"
+	for _, value := range []string{
+		"300 # sk-or-v1-hidden-suffix", "1.5 # sk-or-v1-hidden-suffix", "true # sk-or-v1-hidden-suffix",
+		"~ # sk-or-v1-hidden-suffix", "0x1F", "false",
+	} {
+		u := newConfigUI(t)
+		u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_KEY="+value+"\n")
+		files := draft(u.f.gguf, "")
+		files["infermux.yaml"] = strings.Replace(files["infermux.yaml"], "balance:\n", "balance:\n  other: [here/gpu]\n", 1)
+		files["models/other.yaml"] = strings.Replace(files["models/qwen.yaml"], "files:", quoted+"files:", 1)
+		files["models/qwen.yaml"] += quoted
+		got := checkMessage(&u, files)
+		if !strings.Contains(got, "duplicate alias ${env.INFERMUX_TEST_KEY} found in model: ") || strings.Contains(got, "hidden-suffix") || runOf(got, value) != "" {
+			t.Errorf("%q: %q", value, got)
+		}
+	}
+}
+
+// A stand-in is a number, so a field such as ttl reads it (sol, review 12),
+// and the answer is the error the first load had: a duplicate alias, which
+// llama-swap finds after it has decoded the fields. A bool field fails for
+// it, and the type error shows the stand-in whole, as the variable's name.
+func TestAStandInIsANumber(t *testing.T) {
+	for _, c := range []struct{ field, value, want string }{
+		{"ttl", "300", "duplicate alias dup found in model: "},
+		{"ttl", "0x1F", "duplicate alias dup found in model: "},
+		{"ttl", "~", "duplicate alias dup found in model: "},
+		{"ttl", "", "duplicate alias dup found in model: "},
+		{"unlisted", "true", "cannot unmarshal !!int `${env.INFERMUX_TEST_TYPED}` into bool"},
 	} {
 		u := newConfigUI(t)
 		u.f.store.EnvFile = envFile(t, "INFERMUX_TEST_TYPED="+c.value+"\nINFERMUX_TEST_KEY=sk-or-v1-0123456789\n")
@@ -304,17 +332,8 @@ func TestATypedValueIsTheSecondLoadsAsItIs(t *testing.T) {
 		files["infermux.yaml"] = strings.Replace(files["infermux.yaml"], "balance:\n", "balance:\n  other: [here/gpu]\n", 1)
 		files["models/other.yaml"] = strings.Replace(files["models/qwen.yaml"], "files:", "aliases: [dup]\nfiles:", 1)
 		files["models/qwen.yaml"] += c.field + ": ${env.INFERMUX_TEST_TYPED}\nname: ${env.INFERMUX_TEST_KEY}\naliases: [dup]\n"
-		got := checkMessage(&u, files)
-		if !strings.HasPrefix(got, "here: llama-swap: duplicate alias dup found in model: ") {
-			t.Errorf("%s: %q: %q", c.field, c.value, got)
-		}
-	}
-	for value, want := range map[string]bool{
-		"300": true, "0x1F": true, "1.5": true, "true": true, "~": true, "": true, "300 # c": true,
-		"sk-or-v1-0123": false, "!!int 5": false, "[1]": false, "a: 1": false, "1 2": false,
-	} {
-		if typed(value) != want {
-			t.Errorf("typed(%q) is %v", value, !want)
+		if got := checkMessage(&u, files); !strings.Contains(got, c.want) || strings.Contains(got, "sk-or") {
+			t.Errorf("%s: %q: %q, want %q in it", c.field, c.value, got, c.want)
 		}
 	}
 }

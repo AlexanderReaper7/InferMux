@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/placement"
-	"gopkg.in/yaml.v3"
 )
 
 // The UI loads its host's part with the daemon's environment file, which
@@ -131,9 +130,11 @@ func notAsWritten(value string) string {
 // each value the part or the base reads and without the file's other
 // variables, and the answer is what the second load said, each stand-in shown
 // as the ${env.NAME} it stands for. The first load adds only that it failed.
-// Nothing in the answer is chosen by comparing the draft's text with a value,
-// which would tell whoever writes a guess into the draft whether the guess is
-// part of a key.
+// The second load never has a value of the file, whatever YAML reads the value
+// as alone: where the part puts it, it can be text, as `300 # rest` is in a
+// quoted alias (sol, review 17, H1). Nothing in the answer is chosen by
+// comparing the draft's text with a value, which would tell whoever writes a
+// guess into the draft whether the guess is part of a key.
 func (s *Store) loads(part *placement.Part) error {
 	env := map[string]string{}
 	if s.EnvFile != "" {
@@ -150,16 +151,13 @@ func (s *Store) loads(part *placement.Part) error {
 	stood := map[string]string{}
 	var shown, unread []string
 	for _, name := range slices.Sorted(maps.Keys(env)) {
-		switch {
-		case !reads(name, part.LlamaSwap, base):
+		if !reads(name, part.LlamaSwap, base) {
 			unread = append(unread, name)
-		case typed(env[name]):
-			stood[name] = env[name]
-		default:
-			stand := fmt.Sprintf("_ENV_%02d_", len(shown)/2)
-			stood[name] = stand
-			shown = append(shown, stand, "${env."+name+"}")
+			continue
 		}
+		stand := standIn(len(shown) / 2)
+		stood[name] = stand
+		shown = append(shown, stand, "${env."+name+"}")
 	}
 	again, err := s.load(part, stood)
 	if err != nil {
@@ -175,21 +173,12 @@ func (s *Store) loads(part *placement.Part) error {
 	return fmt.Errorf("the load fails with the env file's values and loads with a stand-in for each%s, so a value fails it; its error is not shown, since it can hold the value", without)
 }
 
-// typed is whether YAML reads value as a number, a bool or null, which a
-// field such as ttl reads, and which a stand-in of another type would fail
-// (sol, review 12). The second load has such a value as it is, so the answer
-// can show a number of the file.
-func typed(value string) bool {
-	var doc yaml.Node
-	if yaml.Unmarshal([]byte(value), &doc) != nil || len(doc.Content) != 1 {
-		return value == ""
-	}
-	n := doc.Content[0]
-	switch n.ShortTag() {
-	case "!!int", "!!float", "!!bool", "!!null":
-		return n.Kind == yaml.ScalarNode && n.Style == 0
-	}
-	return false
+// standIn is the i-th stand-in: a number of 9 digits, which YAML reads as a
+// number where the macro stands alone and as text inside quotes or other
+// text, so a field such as ttl reads it (sol, review 12), and which yaml.v3's
+// type error prints whole, as it does each value of 10 characters or fewer.
+func standIn(i int) string {
+	return fmt.Sprintf("7357%02d357", i)
 }
 
 // reads is whether the part or the base reads the variable name.
