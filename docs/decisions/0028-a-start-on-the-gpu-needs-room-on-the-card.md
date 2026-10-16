@@ -1,12 +1,12 @@
 # 0028. A start on the GPU needs room on the card
 
 - Date: 2026-10-15
-- Status: accepted; built 2026-10-15, running on both hosts; the one model with a `vram_mb` in the signed config is `drama-3`, 6200, since revision 5 of 2026-10-16 (Verification, below)
+- Status: accepted; built 2026-10-15, running on both hosts; in the signed config `drama-3` has `vram_mb: 6200` since revision 5 and `jina-reranker-v3.5` 3000 since revision 7, both of 2026-10-16 (Verification, below)
 - Amends [0004](0004-infermux-request-priority.md): a third exception to "the user's own request is never killed". Keeps [0025](0025-a-safety-stop-takes-the-local-models-off.md)'s start gate, which this check is part of, [0016](0016-a-model-fails-over-between-places.md) (a 503 fails over) and [0002](0002-linux-nvml-router-unload-comfyui.md)'s free VRAM rule for the verdict.
 
 ## Context
 
-strix's reranker, jina-reranker-v3.5 on `strix/gpu` only, has 1.14 GB of weights and holds about 3.1 GB once serving (its model file in nixcfg, measured 2026-10-06). The agent's report on it for decision 17 found the starts that failed under Warframe: other work held 9,009 to 9,176 MB of the card's 10,240 MB, and the reranker's server ran 4.9 to 8.8 s before CUDA could not allocate, with 62 MiB free. hister falls back to its unreranked order when the reranker does not answer, so each of those starts cost its search the wait and nothing else.
+strix's reranker, jina-reranker-v3.5 on `strix/gpu` only, has 1.14 GB of weights and held about 3.1 GB once serving when measured on 2026-10-06, 2.8 GB at most on 2026-10-16 (its model file in nixcfg). The agent's report on it for decision 17 found the starts that failed under Warframe: other work held 9,009 to 9,176 MB of the card's 10,240 MB, and the reranker's server ran 4.9 to 8.8 s before CUDA could not allocate, with 62 MiB free. hister falls back to its unreranked order when the reranker does not answer, so each of those starts cost its search the wait and nothing else.
 
 NVML's process list does not show all of what holds the card. By the user's figure, about 2.2 GB of dma-bufs is in no process's number, so a sum of the list reads more free than the card has.
 
@@ -29,7 +29,7 @@ The agent's calls:
 
 ## Consequences
 
-- The number is the user's to measure and keep: one too low lets a start through that then fails, one too high refuses a start that would fit. The reranker's 3.1 GB is from 2026-10-06, after the first request.
+- The number is the user's to measure and keep: one too low lets a start through that then fails, one too high refuses a start that would fit. The agent picked each as the highest peak measured, of the process's own figure and the rise in the card's used figure, plus about 100 MB, rounded up to the next 100: `drama-3`'s 6,060 MB to 6200, the reranker's 2,853 MiB at its server's 120k-character limit to 3000 (nixcfg's model files, 2026-10-16). The reranker's 3.1 GB of 2026-10-06 was before its server ran flash-attn.
 - Not checked: a preload as the server is made, before the warden exists, which no host's config uses today; and a model on a GPU other than NVML's first (0022).
 - Two starts at once on a GPU that runs several at once each read the same free figure, and both can pass. strix's and the zbox's GPUs run one model at a time.
 - The driver may report a stopped process's VRAM as used for a moment after it exits. Not measured. A refusal right after a swap would show it: the WARN would list the evicted model among what held the card.
@@ -42,4 +42,6 @@ Done, by tests (`go test`, no GPU):
 - `internal/placement`: `vram_mb` reaches each instance's `Local`, not llama-swap's entry; 0 and 3.1 are refused; a model with no GPU place is warned about; the editor's schema has it.
 - `infermux_fit_test.go`: the daemon under the one config, a signed model with `vram_mb: 3100`, and a card with 62 MB free. An unmarked `/v1/rerank` gets the 503 `gpu_no_room` with Retry-After at once, and the model's command never runs. With 4,000 MB free, the same request starts it.
 
-Nineteen mutations each failed them (`docs/verification.md`). Not yet: a refusal on strix's card under a game, which needs `vram_mb` in the signed config (a Publish) and this build deployed.
+Nineteen mutations each failed them (`docs/verification.md`).
+
+Watched on strix, 2026-10-16, after revision 7: an unmarked `/v1/rerank` started the reranker with 6,502 MiB free and answered 200 in 5.5 s cold, 0.54 s warm. With the reranker unloaded and a stand-in CUDA process holding 4,500 MiB, the same request answered 503 `gpu_no_room` with `Retry-After: 300` in 0.20 s, "needs 3000 MB of VRAM and the card has 1720 MB free", the model never started, and the WARN listed the stand-in first. Once it exited, the request answered 200 again in 5.5 s. Not yet: a refusal under a real game, and hister's own search answered with its unreranked order.
