@@ -305,6 +305,39 @@ func TestEnvMayNotPickTheCard(t *testing.T) {
 	}
 }
 
+// A CPU device replaces the flags that put layers on a card, and leaves a
+// command without them, such as dikt-server with its GGUF, to the environment.
+func TestCPUReplacesOnlyLayerFlags(t *testing.T) {
+	cfg, _, err := Parse(files(hosts+"balance: {l: [a/cpu], s: [a/cpu]}\n", map[string]string{
+		"l": "cmd: llama --port ${PORT} --model /l.gguf -ngl 99 -dev CUDA0\n",
+		"s": "cmd: speech --model /s.gguf --port ${PORT}\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := cfg.Derive("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ls := loadLlamaSwap(t, part)
+	cmd := func(name string) string {
+		args, err := config.SanitizeCommand(ls.Models[name].Cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(ls.Models[name].Env, "CUDA_VISIBLE_DEVICES=") {
+			t.Errorf("%s: env %v", name, ls.Models[name].Env)
+		}
+		return strings.Join(args, " ")
+	}
+	if got := cmd("l"); !strings.HasPrefix(got, "llama --port ") || !strings.HasSuffix(got, " --model /l.gguf --device none -ngl 0") {
+		t.Errorf("llama.cpp: %s", got)
+	}
+	if got := cmd("s"); !strings.HasPrefix(got, "speech --model /s.gguf --port ") || strings.Contains(got, "-ngl") || strings.Contains(got, "--device") {
+		t.Errorf("speech: %s", got)
+	}
+}
+
 func TestGPUIndexAndUnknownHost(t *testing.T) {
 	cfg, _, err := Parse(files(hosts+"balance: {m: [b/gpu]}\n", map[string]string{"m": "cmd: x\n"}))
 	if err != nil {

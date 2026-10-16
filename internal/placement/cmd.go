@@ -23,7 +23,6 @@ type flagArg struct {
 var (
 	gpuLayerFlags = []string{"-ngl", "--n-gpu-layers", "--gpu-layers"}
 	deviceFlags   = []string{"-dev", "--device"}
-	modelFlags    = []string{"-m", "--model"}
 	fileFlags     = []string{"-m", "--model", "-mm", "--mmproj", "-md", "--model-draft"}
 )
 
@@ -164,12 +163,13 @@ func ggufPaths(cmd string) []string {
 	return out
 }
 
-// isLlamaCpp is a command that loads a GGUF with --model: llama-server or a
-// fork, which takes --device and -ngl. Others, such as the reranker and
-// immich-ml, are kept off a card by the environment alone.
-func isLlamaCpp(a args) bool {
-	for _, name := range modelFlags {
-		if strings.HasSuffix(a.value(name), ".gguf") {
+// placesLayers is a command that names a card or a number of layers for one,
+// the flags a CPU device replaces (0022). A command without them, such as the
+// reranker, immich-ml or dikt-server, which loads a GGUF but is not
+// llama.cpp, is kept off a card by the environment alone.
+func placesLayers(a args) bool {
+	for _, name := range append(slices.Clone(gpuLayerFlags), deviceFlags...) {
+		if a.has(name) {
 			return true
 		}
 	}

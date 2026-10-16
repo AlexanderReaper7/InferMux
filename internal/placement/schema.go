@@ -34,7 +34,7 @@ var docs = map[string]string{
 	"Config.Failover":   "Where a model or group runs when every balance place is down or refusing, not when one is only busy (0022, 2).",
 	"Host.URL":          "The host's HTTPS address on the tailnet, where the other hosts reach it.",
 	"Host.Devices":      "The host's GPUs and its CPU, by name. A model is placed on host/device.",
-	"Device.Kind":       "gpu or cpu. A GPU's models see only its card; a CPU's see none, and llama.cpp commands get --device none -ngl 0.",
+	"Device.Kind":       "gpu or cpu. A GPU's models see only its card; a CPU's see none, and a command with -ngl or --device gets --device none -ngl 0 in their place.",
 	"Device.Index":      "The GPU's CUDA index, CUDA_VISIBLE_DEVICES for its models. 0 when unset.",
 	"Device.Concurrent": "Run several models at once. Otherwise a model starting stops the one running, as the GPUs have always swapped.",
 	"Cloud.URL":         "The provider's OpenAI-compatible base URL.",

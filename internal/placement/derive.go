@@ -221,7 +221,7 @@ func (c *Config) entry(m *Model, p Place, instance string, opts Options) (*yaml.
 	a := splitCmd(m.Cmd())
 	changed := len(p.Flags) > 0
 	a = applyFlags(a, p.Flags)
-	if device.Kind == KindCPU && isLlamaCpp(a) {
+	if device.Kind == KindCPU && placesLayers(a) {
 		a = a.without(append(slices.Clone(gpuLayerFlags), deviceFlags...)...).set("--device", "none").set("-ngl", "0")
 		changed = true
 	}
