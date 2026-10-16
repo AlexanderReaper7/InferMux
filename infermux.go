@@ -192,9 +192,14 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	}
 	w := warden.NewWithProbes(runner.add(cfg), activeModels{server: active, host: cfg.Host, remote: remotes}, log, probes)
 	// A model that stops before it is ready, most often a start that failed,
-	// leaves a line saying what held the card (0016, 3).
+	// leaves a line saying what held the card (0016, 3). Any end of a start
+	// frees the GPU's start slot for the next (0029).
 	unsubscribe := event.On(func(e swaputil.ProcessStateChangeEvent) {
-		if e.OldState == string(process.StateStarting) && e.NewState == string(process.StateStopped) {
+		if e.OldState != string(process.StateStarting) {
+			return
+		}
+		w.StartEnded(e.ProcessName)
+		if e.NewState == string(process.StateStopped) {
 			go w.NotStarted(e.ProcessName)
 		}
 	})

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/mostlygeek/llama-swap/internal/config"
 	"gopkg.in/yaml.v3"
@@ -122,18 +123,73 @@ func withoutEnv(part []byte) ([]byte, error) {
 			}
 		}
 	}
+	gone := map[string]bool{}
 	for i := 1; i < len(top.Content); i += 2 {
 		if s := top.Content[i]; s.Kind == yaml.MappingNode {
 			var kept []*yaml.Node
 			for j := 0; j+1 < len(s.Content); j += 2 {
 				if !out[s.Content[j]] {
 					kept = append(kept, s.Content[j], s.Content[j+1])
+				} else if top.Content[i-1].Value == "models" {
+					gone[s.Content[j].Value] = true
 				}
 			}
 			s.Content = kept
 		}
 	}
+	withoutModels(top, gone)
 	return yaml.Marshal(&doc)
+}
+
+// withoutModels takes the models left out out of the matrix router's sets,
+// which llama-swap checks against the models at load (0029), and drops a
+// set left empty, and the router when no set is left. Each set Derive writes
+// is its models joined by '&', some through a variable.
+func withoutModels(top *yaml.Node, gone map[string]bool) {
+	if len(gone) == 0 {
+		return
+	}
+	matrix := mapValue(mapValue(mapValue(mapValue(top, "routing"), "router"), "settings"), "matrix")
+	if matrix == nil {
+		return
+	}
+	vars := map[string]string{}
+	if v := mapValue(matrix, "vars"); v != nil {
+		var kept []*yaml.Node
+		for i := 0; i+1 < len(v.Content); i += 2 {
+			vars[v.Content[i].Value] = v.Content[i+1].Value
+			if !gone[v.Content[i+1].Value] {
+				kept = append(kept, v.Content[i], v.Content[i+1])
+			}
+		}
+		v.Content = kept
+	}
+	sets := mapValue(matrix, "sets")
+	if sets == nil {
+		return
+	}
+	var kept []*yaml.Node
+	for i := 0; i+1 < len(sets.Content); i += 2 {
+		var idents []string
+		for _, id := range strings.Split(sets.Content[i+1].Value, "&") {
+			id = strings.TrimSpace(id)
+			model, ok := vars[id]
+			if !ok {
+				model = id
+			}
+			if !gone[model] {
+				idents = append(idents, id)
+			}
+		}
+		if len(idents) > 0 {
+			sets.Content[i+1].Value = strings.Join(idents, " & ")
+			kept = append(kept, sets.Content[i], sets.Content[i+1])
+		}
+	}
+	sets.Content = kept
+	if len(kept) == 0 {
+		deleteKey(top, "routing")
+	}
 }
 
 // within adds n and every node under it to set, aliases not followed.

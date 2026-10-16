@@ -63,6 +63,10 @@ type Device struct {
 	// Concurrent runs several models at once; otherwise a model starting
 	// stops the one running, as the GPUs have always swapped (0022, 7).
 	Concurrent bool `yaml:"concurrent"`
+	// Together are groups of models that stay loaded together on a device
+	// that swaps, by name (0029). Starting one member stops no other member,
+	// and a model outside the group stops them all.
+	Together map[string][]string `yaml:"together"`
 }
 
 const (
@@ -402,6 +406,28 @@ func (c *Config) check() ([]string, error) {
 			default:
 				return nil, fmt.Errorf("device %s/%s: kind is gpu or cpu, not %q", name, dname, d.Kind)
 			}
+			if len(d.Together) > 0 && d.Concurrent {
+				return nil, fmt.Errorf("device %s/%s: together is for a device that swaps, and a concurrent one runs its models together already", name, dname)
+			}
+			for g, members := range d.Together {
+				if !namePattern.MatchString(g) {
+					return nil, fmt.Errorf("device %s/%s: together %q: letters, digits, '.', '_' and '-'", name, dname, g)
+				}
+				if _, clash := c.Models[g]; clash {
+					return nil, fmt.Errorf("device %s/%s: together %s has a model's name", name, dname, g)
+				}
+				if len(members) < 2 {
+					return nil, fmt.Errorf("device %s/%s: together %s needs two models or more", name, dname, g)
+				}
+				for i, m := range members {
+					if _, ok := c.Models[m]; !ok {
+						return nil, fmt.Errorf("device %s/%s: together %s: %s is not a model in %s/", name, dname, g, m, ModelsDir)
+					}
+					if slices.Contains(members[:i], m) {
+						return nil, fmt.Errorf("device %s/%s: together %s names %s twice", name, dname, g, m)
+					}
+				}
+			}
 		}
 	}
 	for name, cl := range c.Clouds {
@@ -487,8 +513,28 @@ func (c *Config) check() ([]string, error) {
 			}
 		}
 	}
+	for name, h := range c.Hosts {
+		for dname, d := range h.Devices {
+			for g, members := range d.Together {
+				for _, m := range members {
+					if !c.placedOn(m, name+"/"+dname) {
+						warnings = append(warnings, fmt.Sprintf("together %s on %s/%s: %s is not placed there, so the group keeps nothing loaded beside it", g, name, dname, m))
+					}
+				}
+			}
+		}
+	}
 	sort.Strings(warnings)
 	return slices.Compact(warnings), nil
+}
+
+// placedOn is whether a lane of model places it on place, host/device.
+func (c *Config) placedOn(model, place string) bool {
+	balance, failover, err := c.Lanes(model)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(append(balance, failover...), func(p Place) bool { return p.Place == place })
 }
 
 func (c *Config) checkPlace(p Place) error {

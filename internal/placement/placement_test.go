@@ -94,11 +94,15 @@ func TestTodayStrix(t *testing.T) {
 	if !rerank.Capabilities.Reranker {
 		t.Error("the reranker lost its capability")
 	}
-	if g := ls.Groups["cpu"]; g.Swap || g.Exclusive || !reflect.DeepEqual(g.Members, []string{"Octen-Embedding-4B.Q8_0@cpu"}) {
-		t.Errorf("cpu group %+v", g)
+	// The GPU swaps, and neither device stops the other's models (0029).
+	if ls.Routing.Router.Use != "matrix" {
+		t.Errorf("router %q", ls.Routing.Router.Use)
 	}
-	if g := ls.Groups["gpu"]; !g.Swap || g.Exclusive || len(g.Members) != 4 {
-		t.Errorf("gpu group %+v", g)
+	if got := evicts(ls, "Qwen3.8-27B-MTP-Q4_K_M", "jina-reranker-v3.5", "Octen-Embedding-4B.Q8_0@cpu"); !slices.Equal(got, []string{"jina-reranker-v3.5"}) {
+		t.Errorf("a chat model's start stopped %v", got)
+	}
+	if got := evicts(ls, "Octen-Embedding-4B.Q8_0@cpu", "Qwen3.8-27B-MTP-Q4_K_M"); len(got) != 0 {
+		t.Errorf("the CPU embedder's start stopped %v", got)
 	}
 	if p, ok := ls.Peers["openrouter"]; !ok || p.ApiKey != "sk-test" || len(p.Models) != 2 {
 		t.Errorf("peers %+v", ls.Peers)

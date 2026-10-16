@@ -35,5 +35,6 @@ A record says what is true now. A decision that changes is edited in place and g
 | [0026](0026-a-deploy-waits-for-the-requests-running.md) | A deploy waits up to 40 s for the requests running and refuses new ones with 503 `draining`, while off too; the zbox controller SIGKILLs the models through pidfds | 2026-10-14 |
 | [0027](0027-one-agents-md-ours-above-upstreams-guide.md) | One AGENTS.md: InferMux's rules above llama-swap's guide, kept verbatim so upstream's changes merge; CLAUDE.md is upstream's `@AGENTS.md` | 2026-10-15 |
 | [0028](0028-a-start-on-the-gpu-needs-room-on-the-card.md) | A start on the GPU needs room on the card: a model's `vram_mb` against NVML's own free figure, read at the start gate; short, every class gets 503 at once | 2026-10-15 |
+| [0029](0029-a-group-stays-loaded-together-on-a-device-that-swaps.md) | A group stays loaded together on a device that swaps: `together` on the device, each host's part on llama-swap's matrix router, and starts on the GPU take turns for the fit check | 2026-10-16 |
 
 The records this project came from stay in Episteme's own log: 0023 (the agent holds no policy), 0024 (brake on contention, a pause has an author), 0041 (the agent applies a configuration it is handed), 0042 (one console behind a tray icon). 0001 above supersedes the first and takes half of the second.

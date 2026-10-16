@@ -2,6 +2,7 @@
 
 - Date: 2026-10-15
 - Status: accepted; built 2026-10-15, running on both hosts; in the signed config `drama-3` has `vram_mb: 6200` since revision 5 and `jina-reranker-v3.5` 3000 since revision 7, both of 2026-10-16 (Verification, below)
+- Amended on 2026-10-16 by the user: starts on the GPU take turns, so a second one reads the card once the first has ended ([0029](0029-a-group-stays-loaded-together-on-a-device-that-swaps.md)).
 - Amends [0004](0004-infermux-request-priority.md): a third exception to "the user's own request is never killed". Keeps [0025](0025-a-safety-stop-takes-the-local-models-off.md)'s start gate, which this check is part of, [0016](0016-a-model-fails-over-between-places.md) (a 503 fails over) and [0002](0002-linux-nvml-router-unload-comfyui.md)'s free VRAM rule for the verdict.
 
 ## Context
@@ -31,7 +32,7 @@ The agent's calls:
 
 - The number is the user's to measure and keep: one too low lets a start through that then fails, one too high refuses a start that would fit. The agent picked each as the highest peak measured, of the process's own figure and the rise in the card's used figure, plus about 100 MB, rounded up to the next 100: `drama-3`'s 6,060 MB to 6200, the reranker's 2,853 MiB at its server's 120k-character limit to 3000 (nixcfg's model files, 2026-10-16). The reranker's 3.1 GB of 2026-10-06 was before its server ran flash-attn.
 - Not checked: a preload as the server is made, before the warden exists, which no host's config uses today; and a model on a GPU other than NVML's first (0022).
-- Two starts at once on a GPU that runs several at once each read the same free figure, and both can pass. strix's and the zbox's GPUs run one model at a time.
+- Two starts at once on one GPU take turns (0029): the check holds the GPU's start slot until the model's start ends, so the second reads the card with the first on it.
 - The driver may report a stopped process's VRAM as used for a moment after it exits. Not measured. A refusal right after a swap would show it: the WARN would list the evicted model among what held the card.
 
 ## Verification

@@ -37,6 +37,7 @@ var docs = map[string]string{
 	"Device.Kind":       "gpu or cpu. A GPU's models see only its card; a CPU's see none, and a command with -ngl or --device gets --device none -ngl 0 in their place.",
 	"Device.Index":      "The GPU's CUDA index, CUDA_VISIBLE_DEVICES for its models. 0 when unset.",
 	"Device.Concurrent": "Run several models at once. Otherwise a model starting stops the one running, as the GPUs have always swapped.",
+	"Device.Together":   "Groups of models that stay loaded together on a device that swaps, by name (0029). Starting one member stops no other member; a model outside the group stops them all. Each member is placed on the device in a lane as usual.",
 	"Cloud.URL":         "The provider's OpenAI-compatible base URL.",
 	"Cloud.APIKey":      "The key, as ${env.VAR}, so it stays in each host's credentials and out of the config.",
 	"Cloud.Models":      "The provider's models that the hosts offer.",
@@ -53,9 +54,12 @@ var enums = map[string][]any{
 var completes = map[string]func(map[string]any){
 	"Config.Balance":  keysAre("lane"),
 	"Config.Failover": keysAre("lane"),
-	"Config.Groups": func(s map[string]any) {
-		s["additionalProperties"].(map[string]any)["items"].(map[string]any)["x-complete"] = "model"
-	},
+	"Config.Groups":   membersAreModels,
+	"Device.Together": membersAreModels,
+}
+
+func membersAreModels(s map[string]any) {
+	s["additionalProperties"].(map[string]any)["items"].(map[string]any)["x-complete"] = "model"
 }
 
 func keysAre(kind string) func(map[string]any) {

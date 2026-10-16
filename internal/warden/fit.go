@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"time"
 )
 
 // The fit check (the user's decision 17 of 2026-10-15). A model with a VRAM
@@ -22,13 +23,40 @@ import (
 // swap has stopped the models it evicts, so their VRAM counts as free. A
 // model with no need, or not on the GPU, fits, and so does one when the card
 // cannot be read: a reading not taken is not evidence of contention.
+//
+// A start on the GPU first takes the card's one start slot, and waits while
+// another model's start holds it (0029). Two members of a group kept loaded
+// together can start at once, and both would read the card before either
+// had allocated. The slot is held until StartEnded, so the second reads a
+// figure the first's VRAM is in.
 func (w *Warden) Fits(model string) error {
 	w.mu.Lock()
+	if !slices.Contains(w.devicesLocked(model), DeviceGPU) {
+		w.mu.Unlock()
+		return nil
+	}
+	if w.gpuStart != "" {
+		w.log.Infof("<%s> waits for <%s> to finish starting on the GPU, so its reading of the card includes that model", model, w.gpuStart)
+		expired := false
+		timer := time.AfterFunc(gpuStartWait, func() {
+			w.mu.Lock()
+			expired = true
+			w.gpuStartDone.Broadcast()
+			w.mu.Unlock()
+		})
+		for w.gpuStart != "" && !expired {
+			w.gpuStartDone.Wait()
+		}
+		timer.Stop()
+		if w.gpuStart != "" {
+			w.log.Warnf("<%s> waited %s for <%s>'s start on the GPU to end, and goes ahead without its end", model, gpuStartWait, w.gpuStart)
+		}
+	}
+	w.gpuStart = model
 	need := w.placement[model].VRAMMB
-	gpu := slices.Contains(w.devicesLocked(model), DeviceGPU)
 	probe, retry := w.freshProbe, w.cfg.Policy.ResumeQuietSeconds
 	w.mu.Unlock()
-	if need == 0 || !gpu {
+	if need == 0 {
 		return nil
 	}
 	res, err := probe()
@@ -40,11 +68,31 @@ func (w *Warden) Fits(model string) error {
 		return nil
 	}
 	if free := *res.VRAMFreeMB; free < need {
+		w.StartEnded(model)
 		w.log.Warnf("<%s> not started: it needs %d MB of VRAM and the card has %d MB free, %s", model, need, free, holders(res))
 		return NoRoomError{Model: model, NeedMB: need, FreeMB: free, RetryAfter: retry}
 	}
 	return nil
 }
+
+// StartEnded is told that a start the gate let through has ended, the model
+// ready or stopped, and frees the GPU's start slot when that model holds it.
+// infermux.go calls it on llama-swap's state change out of starting, which
+// follows every start the gate passes.
+func (w *Warden) StartEnded(model string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.gpuStart == model {
+		w.gpuStart = ""
+		w.gpuStartDone.Broadcast()
+	}
+}
+
+// gpuStartWait is the longest a start waits for the GPU's start slot. The
+// end of a start always frees it, so this is only for an end that is never
+// heard, such as one after the daemon's stop has unsubscribed: then every
+// later start on the GPU would wait for good.
+var gpuStartWait = 60 * time.Second
 
 // NoRoomError is a start refused for want of VRAM, with the answer the gate
 // writes. llama-swap writes it whole to whoever asked for the start: it has

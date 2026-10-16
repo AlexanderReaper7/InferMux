@@ -94,6 +94,10 @@ type Warden struct {
 	announced Verdict
 	// off is set while the local models are off (0025).
 	off *Off
+	// gpuStart is the model whose start holds the GPU's one start slot, ""
+	// when none does, and gpuStartDone is signalled when it is freed (0029).
+	gpuStart     string
+	gpuStartDone *sync.Cond
 
 	stop chan struct{}
 	done chan struct{}
@@ -140,6 +144,7 @@ func NewWithProbes(cfg Config, models Models, log Logger, p Probes) *Warden {
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
 	}
+	w.gpuStartDone = sync.NewCond(&w.mu)
 	w.traffic = newTraffic(cfg.Keys, func() time.Time { return w.now() })
 	w.setComfyUI(cfg.ComfyUIURL)
 	w.comfy = ComfyIdle{BusyAt: w.now()}

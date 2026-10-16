@@ -2,6 +2,7 @@ package placement
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -14,7 +15,8 @@ import (
 type Part struct {
 	Host string
 	// LlamaSwap is what llama-swap loads from its -config-dir: this host's
-	// models, one group per device, and the clouds as peers.
+	// models, the matrix router's sets over its devices, and the clouds as
+	// peers.
 	LlamaSwap []byte
 	// Routes is each model's places as the failover handler tries them,
 	// balance first, for every model on any host, so this host routes a
@@ -108,6 +110,9 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 	}
 	models := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	members := map[string][]string{}
+	// instanceOn is each device's models by the config's name, as their
+	// names here.
+	instanceOn := map[string]map[string]string{}
 	for _, name := range c.ModelNames() {
 		m := c.Models[name]
 		var files []string
@@ -145,6 +150,10 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 			}
 			models.Content = append(models.Content, scalar(instance), entry)
 			members[p.Device()] = append(members[p.Device()], instance)
+			if instanceOn[p.Device()] == nil {
+				instanceOn[p.Device()] = map[string]string{}
+			}
+			instanceOn[p.Device()][name] = instance
 			part.Local[instance] = Local{Model: name, Devices: append([]string{p.Device()}, p.Occupies...), Files: files, VRAMMB: m.VRAMMB}
 		}
 	}
@@ -153,21 +162,7 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 		doc.Content = append(doc.Content, scalar("models"), models)
 	}
 	if len(members) > 0 {
-		groups := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		for _, device := range sortedKeys(members) {
-			sort.Strings(members[device])
-			g := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-			setKey(g, "swap", boolean(!part.Devices[device].Concurrent))
-			// A device's model never stops another device's.
-			setKey(g, "exclusive", boolean(false))
-			list := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-			for _, m := range members[device] {
-				list.Content = append(list.Content, scalar(m))
-			}
-			setKey(g, "members", list)
-			groups.Content = append(groups.Content, scalar(device), g)
-		}
-		doc.Content = append(doc.Content, scalar("groups"), groups)
+		doc.Content = append(doc.Content, scalar("routing"), routing(part.Devices, members, instanceOn))
 	}
 	if len(c.Clouds) > 0 {
 		peers := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
@@ -195,6 +190,122 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 	part.LlamaSwap = out
 	return part, nil
 }
+
+// routing is llama-swap's matrix router over the host's devices (0029). Each
+// set is one way of choosing what runs on every device at once: on a device
+// that swaps, one of its models or one of its together groups; on a
+// concurrent device, all of its models. llama-swap starts only the model
+// asked for and stops the running models outside the cheapest set that has
+// it, so a device's model never stops another device's, a member never stops
+// its group, and any other model on the device stops the group. A set is
+// named by the group or model chosen on each device that swaps, joined by
+// '+', which llama-swap's log line shows.
+func routing(devices map[string]Device, members map[string][]string, instanceOn map[string]map[string]string) *yaml.Node {
+	type choice struct {
+		name   string
+		models []string
+	}
+	sets := []choice{{}}
+	for _, device := range sortedKeys(members) {
+		sort.Strings(members[device])
+		d := devices[device]
+		var alts []choice
+		if d.Concurrent {
+			alts = []choice{{models: members[device]}}
+		} else {
+			grouped := map[string]bool{}
+			for _, g := range sortedKeys(d.Together) {
+				var in []string
+				for _, m := range d.Together[g] {
+					if i, ok := instanceOn[device][m]; ok {
+						in = append(in, i)
+					}
+				}
+				// A group with one member placed here keeps nothing beside it.
+				if len(in) < 2 {
+					continue
+				}
+				sort.Strings(in)
+				for _, i := range in {
+					grouped[i] = true
+				}
+				alts = append(alts, choice{g, in})
+			}
+			for _, i := range members[device] {
+				if !grouped[i] {
+					alts = append(alts, choice{i, []string{i}})
+				}
+			}
+			slices.SortFunc(alts, func(a, b choice) int { return strings.Compare(a.name, b.name) })
+		}
+		var next []choice
+		for _, s := range sets {
+			for _, a := range alts {
+				name := s.name
+				if a.name != "" && name != "" {
+					name += "+"
+				}
+				next = append(next, choice{name + a.name, append(slices.Clone(s.models), a.models...)})
+			}
+		}
+		sets = next
+	}
+	// A name llama-swap's expressions cannot hold, <model>@<device>, is
+	// written as a variable, one no model here is named.
+	local := map[string]bool{}
+	for _, ms := range members {
+		for _, m := range ms {
+			local[m] = true
+		}
+	}
+	vars := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	ident := map[string]string{}
+	n := 0
+	for _, device := range sortedKeys(members) {
+		for _, m := range members[device] {
+			if matrixIdent.MatchString(m) {
+				ident[m] = m
+				continue
+			}
+			key := ""
+			for key == "" || local[key] {
+				n++
+				key = "v" + strconv.Itoa(n)
+			}
+			ident[m] = key
+			vars.Content = append(vars.Content, scalar(key), scalar(m))
+		}
+	}
+	named := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	for _, s := range sets {
+		idents := make([]string, len(s.models))
+		for i, m := range s.models {
+			idents[i] = ident[m]
+		}
+		name := s.name
+		if name == "" {
+			name = "all"
+		}
+		named.Content = append(named.Content, scalar(name), scalar(strings.Join(idents, " & ")))
+	}
+	matrix := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	if len(vars.Content) > 0 {
+		setKey(matrix, "vars", vars)
+	}
+	setKey(matrix, "sets", named)
+	settings := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	setKey(settings, "matrix", matrix)
+	router := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	setKey(router, "use", scalar("matrix"))
+	setKey(router, "settings", settings)
+	out := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	setKey(out, "router", router)
+	return out
+}
+
+// matrixIdent is a name llama-swap's matrix expressions take as it is
+// (internal/matrix/dsl.go, isIdentChar).
+var matrixIdent = regexp.MustCompile(`^[\p{L}\p{Nd}_.-]+$`)
 
 // DeriveAll is every listed host's part. A publisher runs it before signing,
 // so a config that some host cannot run is refused where it is written, not
