@@ -141,22 +141,22 @@ func (s *Session) account(gap int64) {
 // Close ends the session from InferMux's side: a close frame with code and
 // reason to the client, when the stream toward it is between two frames,
 // and then the client's connection, which ends the backend's too. False
-// before the upgrade, when there is no session to close yet. It never waits
-// on a client that is slow to read: a write in progress gets no frame.
+// before the upgrade, when there is no session to close yet. It waits at most
+// a second for a write in progress, which the write deadline then cuts; a
+// cut write gets no frame, since that same deadline fails the frame's write.
 func (s *Session) Close(code int, reason string) bool {
 	if s.upgraded.Load() == 0 || s.ended.Swap(true) {
 		return false
 	}
+	// The connection's deadline is on the real clock, whatever now is.
+	s.conn.SetWriteDeadline(time.Now().Add(time.Second))
+	s.wmu.Lock()
 	sent := false
-	if s.wmu.TryLock() {
-		if s.toClient.between() {
-			// The connection's deadline is on the real clock, whatever now is.
-			s.conn.SetWriteDeadline(time.Now().Add(time.Second))
-			_, err := s.conn.Write(closeFrame(code, reason))
-			sent = err == nil
-		}
-		s.wmu.Unlock()
+	if s.toClient.between() {
+		_, err := s.conn.Write(closeFrame(code, reason))
+		sent = err == nil
 	}
+	s.wmu.Unlock()
 	seen := &closeSeen{code: code, by: "infermux"}
 	if !sent {
 		// What a browser reports for a connection that ended without a

@@ -366,6 +366,61 @@ func TestMidFrameTheConnectionIsClosedWithoutAFrame(t *testing.T) {
 	}
 }
 
+// The proxy's goroutine has written a whole frame but not yet let go of the
+// lock, so the client already has the frame: the warden's
+// TestAnIdleSessionNoLongerHoldsTheCard failed so about 1 run in 3,000.
+func TestAWriteThatHasEndedGetsTheCloseFrameAfterIt(t *testing.T) {
+	s := New(t0, time.Now)
+	conn, client := pipe(t, s)
+	sent := frame(2, true, false, []byte("audio"))
+	got := make(chan []byte)
+	go func() {
+		var all []byte
+		buf := make([]byte, 256)
+		for {
+			n, err := client.Read(buf)
+			all = append(all, buf[:n]...)
+			if err != nil {
+				got <- all
+				return
+			}
+		}
+	}()
+	conn.Write(sent)
+	s.wmu.Lock()
+	closed := make(chan bool)
+	go func() { closed <- s.Close(TryAgainLater, "x") }()
+	time.Sleep(10 * time.Millisecond)
+	s.wmu.Unlock()
+	<-closed
+	if all := <-got; !bytes.Equal(all, append(sent, 0x88, 3, 0x03, 0xf5, 'x')) {
+		t.Fatalf("not the frame and then the close: %x", all)
+	}
+	if r := s.Report(time.Now()); r.CloseCode != TryAgainLater {
+		t.Fatalf("recorded %d", r.CloseCode)
+	}
+}
+
+// A client that reads nothing holds Close for the write deadline, and the
+// write it cut gets no close frame after it.
+func TestASlowClientHoldsCloseForASecond(t *testing.T) {
+	s := New(t0, time.Now)
+	conn, _ := pipe(t, s)
+	go conn.Write(frame(2, true, false, []byte("audio")))
+	for s.wmu.TryLock() {
+		s.wmu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	start := time.Now()
+	s.Close(TryAgainLater, "x")
+	if d := time.Since(start); d < 900*time.Millisecond || d > 3*time.Second {
+		t.Fatalf("Close took %s", d)
+	}
+	if r := s.Report(time.Now()); r.CloseCode != 1006 {
+		t.Fatalf("recorded %d after a write the deadline cut", r.CloseCode)
+	}
+}
+
 func TestTheClientsCloseIsRecorded(t *testing.T) {
 	s := New(t0, time.Now)
 	conn, client := pipe(t, s)
