@@ -230,17 +230,17 @@ func TestAStartWhoseEndIsNeverHeardHoldsTheSlotForAWhileOnly(t *testing.T) {
 	r := underAGame()
 	r.VRAMFreeMB = ip(8000)
 	h, log, _ := fitHarness(t, func() (Resources, error) { return r, nil })
+	started := time.Now()
 	if err := h.w.Fits("chat"); err != nil {
 		t.Fatal(err)
 	}
-	started := time.Now()
 	if err := h.w.Fits("reranker"); err != nil {
 		t.Fatal(err)
 	}
 	if took := time.Since(started); took < gpuStartWait {
-		t.Fatalf("the second start waited %s", took)
+		t.Fatalf("the second start went ahead %s after the first took the slot", took)
 	}
-	if len(log.lines) != 1 || !strings.Contains(log.lines[0], "<reranker> waited 200ms for <chat>'s start on the GPU to end, and goes ahead") {
+	if len(log.lines) != 1 || !strings.Contains(log.lines[0], "<reranker> waited for <chat>'s start on the GPU, which has held the slot for 200ms, and goes ahead without its end") {
 		t.Fatalf("logged %q", log.lines)
 	}
 	// The slot is the second start's now: the first's late end frees nothing.
@@ -250,5 +250,54 @@ func TestAStartWhoseEndIsNeverHeardHoldsTheSlotForAWhileOnly(t *testing.T) {
 	h.w.mu.Unlock()
 	if holder != "reranker" {
 		t.Fatalf("the slot is %q's", holder)
+	}
+}
+
+// The limit is the holder's, not each waiter's: once the first start's
+// limit has run out, one waiting start goes ahead and holds the slot in
+// turn, and the other, though it began waiting during the first's limit,
+// waits for that one's end, not for a limit of its own (review of 0029, 3).
+func TestAStartThatWentAheadHoldsTheSlotForTheNext(t *testing.T) {
+	was := gpuStartWait
+	gpuStartWait = time.Second
+	t.Cleanup(func() { gpuStartWait = was })
+	r := underAGame()
+	r.VRAMFreeMB = ip(8000)
+	h, _, _ := fitHarness(t, func() (Resources, error) { return r, nil })
+	h.w.SetPlacement(Placement{
+		"chat":     {Devices: []string{DeviceGPU}},
+		"reranker": {Devices: []string{DeviceGPU}, VRAMMB: 3000},
+		"agent":    {Devices: []string{DeviceGPU}, VRAMMB: 3100},
+	})
+	if err := h.w.Fits("chat"); err != nil {
+		t.Fatal(err)
+	}
+	type went struct {
+		model string
+		err   error
+	}
+	ahead := make(chan went, 2)
+	start := func(model string) { ahead <- went{model, h.w.Fits(model)} }
+	go start("reranker")
+	time.Sleep(gpuStartWait / 2)
+	go start("agent")
+	first := <-ahead
+	if first.err != nil {
+		t.Fatal(first.err)
+	}
+	// A limit of the other's own would end within half a limit of this.
+	select {
+	case next := <-ahead:
+		t.Fatalf("<%s> went ahead (%v) while <%s>'s start held the slot", next.model, next.err, first.model)
+	case <-time.After(gpuStartWait * 3 / 4):
+	}
+	h.w.StartEnded(first.model)
+	select {
+	case next := <-ahead:
+		if next.err != nil {
+			t.Fatal(next.err)
+		}
+	case <-time.After(gpuStartWait / 2):
+		t.Fatalf("<%s>'s end did not let the other start go ahead", first.model)
 	}
 }

@@ -95,8 +95,10 @@ type Warden struct {
 	// off is set while the local models are off (0025).
 	off *Off
 	// gpuStart is the model whose start holds the GPU's one start slot, ""
-	// when none does, and gpuStartDone is signalled when it is freed (0029).
+	// when none does, since gpuStartAt, and gpuStartDone is signalled when it
+	// is freed (0029).
 	gpuStart     string
+	gpuStartAt   time.Time
 	gpuStartDone *sync.Cond
 
 	stop chan struct{}

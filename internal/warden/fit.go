@@ -37,22 +37,24 @@ func (w *Warden) Fits(model string) error {
 	}
 	if w.gpuStart != "" {
 		w.log.Infof("<%s> waits for <%s> to finish starting on the GPU, so its reading of the card includes that model", model, w.gpuStart)
-		expired := false
-		timer := time.AfterFunc(gpuStartWait, func() {
+	}
+	// The limit runs from when the holder took the slot, so a start that
+	// went ahead without an end is waited for in turn by the next.
+	for w.gpuStart != "" {
+		left := time.Until(w.gpuStartAt.Add(gpuStartWait))
+		if left <= 0 {
+			w.log.Warnf("<%s> waited for <%s>'s start on the GPU, which has held the slot for %s, and goes ahead without its end", model, w.gpuStart, gpuStartWait)
+			break
+		}
+		timer := time.AfterFunc(left, func() {
 			w.mu.Lock()
-			expired = true
 			w.gpuStartDone.Broadcast()
 			w.mu.Unlock()
 		})
-		for w.gpuStart != "" && !expired {
-			w.gpuStartDone.Wait()
-		}
+		w.gpuStartDone.Wait()
 		timer.Stop()
-		if w.gpuStart != "" {
-			w.log.Warnf("<%s> waited %s for <%s>'s start on the GPU to end, and goes ahead without its end", model, gpuStartWait, w.gpuStart)
-		}
 	}
-	w.gpuStart = model
+	w.gpuStart, w.gpuStartAt = model, time.Now()
 	need := w.placement[model].VRAMMB
 	probe, retry := w.freshProbe, w.cfg.Policy.ResumeQuietSeconds
 	w.mu.Unlock()
@@ -88,8 +90,8 @@ func (w *Warden) StartEnded(model string) {
 	}
 }
 
-// gpuStartWait is the longest a start waits for the GPU's start slot. The
-// end of a start always frees it, so this is only for an end that is never
+// gpuStartWait is the longest one start holds the GPU's start slot against
+// the others. The end of a start always frees it, so this is only for an end that is never
 // heard, such as one after the daemon's stop has unsubscribed: then every
 // later start on the GPU would wait for good.
 var gpuStartWait = 60 * time.Second
