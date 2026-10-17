@@ -458,8 +458,11 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			ctx = stream.With(ctx, session)
 		}
 		devices := []string{DeviceGPU, DeviceCPU}
-		if name, ok := w.local(model); ok && known {
+		name, ok := w.local(model)
+		if ok && known {
 			devices = w.devices(name)
+		} else {
+			name = ""
 		}
 		stop := func(device, why string) { cancel(yielded{device}) }
 		if pause := PauserOf(r.Context()); pause != nil {
@@ -472,7 +475,7 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 				pause(p)
 			}
 		}
-		id, refusedBy := w.traffic.begin(class, r.URL.Path, devices, stop, session)
+		id, refusedBy := w.traffic.begin(name, class, r.URL.Path, devices, stop, session)
 		if refusedBy == offDevice {
 			w.refuseOff(rw)
 			return

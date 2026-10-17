@@ -434,7 +434,8 @@ func jobsFile() string {
 
 // placedOf is each local model's devices as the warden measures them, the
 // CPU and the GPU at CUDA index 0, which is the one NVML reads (0022), and
-// its VRAM need. A model on another GPU is on none; derive warns about it.
+// its VRAM need and group. A model on another GPU is on none; derive warns
+// about it.
 func placedOf(part *placement.Part) warden.Placement {
 	p := warden.Placement{}
 	for name, l := range part.Local {
@@ -452,7 +453,7 @@ func placedOf(part *placement.Part) warden.Placement {
 				on = append(on, w)
 			}
 		}
-		p[name] = warden.Placed{Devices: on, VRAMMB: l.VRAMMB}
+		p[name] = warden.Placed{Devices: on, VRAMMB: l.VRAMMB, Together: l.Together}
 	}
 	return p
 }

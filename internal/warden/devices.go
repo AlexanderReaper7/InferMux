@@ -16,12 +16,14 @@ import (
 // Placement is each local model's place here, by its llama-swap name.
 type Placement map[string]Placed
 
-// Placed is a local model's devices, DeviceGPU, DeviceCPU, or both, and the
-// VRAM it needs to start on the GPU, 0 unchecked (Fits). A model on a GPU
-// other than NVML's first is on none, since nothing measures it.
+// Placed is a local model's devices, DeviceGPU, DeviceCPU, or both, the
+// VRAM it needs to start on the GPU, 0 unchecked (Fits), and the models kept
+// loaded beside it in a together group (0029). A model on a GPU other than
+// NVML's first is on none, since nothing measures it.
 type Placed struct {
-	Devices []string
-	VRAMMB  int
+	Devices  []string
+	VRAMMB   int
+	Together []string
 }
 
 // SetPlacement hands the warden the one config's placement. From then on the

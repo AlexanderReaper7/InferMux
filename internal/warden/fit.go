@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,14 @@ import (
 // together can start at once, and both would read the card before either
 // had allocated. The slot is held until StartEnded, so the second reads a
 // figure the first's VRAM is in.
+//
+// A group member that does not fit beside its loaded siblings stops them and
+// reads the card once more (0029): the pair that fits on a quiet card does
+// not fit beside every desktop, and the one asked for wins. A sibling with a
+// request in flight, or an open WebSocket, is kept and the start refused, so
+// no request is killed for room (0004), and so are siblings whose vram_mb
+// with the free figure falls short of the need. Any model outside the group stops
+// the whole group, as the matrix router has it.
 func (w *Warden) Fits(model string) error {
 	w.mu.Lock()
 	if !slices.Contains(w.devicesLocked(model), DeviceGPU) {
@@ -70,11 +79,65 @@ func (w *Warden) Fits(model string) error {
 		return nil
 	}
 	if free := *res.VRAMFreeMB; free < need {
-		w.StartEnded(model)
-		w.log.Warnf("<%s> not started: it needs %d MB of VRAM and the card has %d MB free, %s", model, need, free, holders(res))
-		return NoRoomError{Model: model, NeedMB: need, FreeMB: free, RetryAfter: retry}
+		if stopped := w.evictTogether(model, need, free); len(stopped) > 0 {
+			res, err = probe()
+			if err == nil && res.VRAMFreeMB == nil {
+				err = fmt.Errorf("no free figure")
+			}
+			if err != nil {
+				w.log.Warnf("<%s> needs %d MB of VRAM and the card could not be read after its group made room, so it starts: %v", model, need, err)
+				return nil
+			}
+		}
+		if free := *res.VRAMFreeMB; free < need {
+			w.StartEnded(model)
+			w.log.Warnf("<%s> not started: it needs %d MB of VRAM and the card has %d MB free, %s", model, need, free, holders(res))
+			return NoRoomError{Model: model, NeedMB: need, FreeMB: free, RetryAfter: retry}
+		}
 	}
 	return nil
+}
+
+// evictTogether stops model's loaded siblings in its together groups, for a
+// start that needs more VRAM than is free, and returns them. It stops none
+// while one of them has a request: claim holds back a request that arrives
+// meanwhile until they have stopped.
+func (w *Warden) evictTogether(model string, need, free int) []string {
+	w.mu.Lock()
+	placement := w.placement
+	w.mu.Unlock()
+	together := placement[model].Together
+	if len(together) == 0 {
+		return nil
+	}
+	running := w.models.Running()
+	var loaded []string
+	// held is what the loaded siblings need, and known whether each has a
+	// figure: a stop that cannot make room, such as under a game, stops none.
+	held, known := 0, true
+	for _, s := range together {
+		if _, ok := running[s]; ok {
+			loaded = append(loaded, s)
+			held += placement[s].VRAMMB
+			known = known && placement[s].VRAMMB > 0
+		}
+	}
+	if len(loaded) == 0 {
+		return nil
+	}
+	if known && free+held < need {
+		w.log.Infof("<%s> needs %d MB of VRAM and the card has %d MB free, and stopping its group's %s would free about %d MB, so they stay loaded", model, need, free, strings.Join(loaded, ", "), held)
+		return nil
+	}
+	busy, release := w.traffic.claim(loaded)
+	if busy != "" {
+		w.log.Infof("<%s> needs %d MB of VRAM and the card has %d MB free, and <%s> of its group stays loaded: it has a request", model, need, free, busy)
+		return nil
+	}
+	defer release()
+	stopped := w.models.Unload(loaded)
+	w.log.Infof("<%s> needs %d MB of VRAM and the card has %d MB free, so its group's %s stopped to make room", model, need, free, strings.Join(stopped, ", "))
+	return stopped
 }
 
 // StartEnded is told that a start the gate let through has ended, the model

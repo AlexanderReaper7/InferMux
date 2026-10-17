@@ -55,6 +55,9 @@ type Local struct {
 	Devices []string `json:"devices"`
 	Files   []string `json:"files"`
 	VRAMMB  int      `json:"vram_mb,omitempty"`
+	// Together is the models kept loaded beside it in a together group on
+	// its device, by their names here (0029).
+	Together []string `json:"together,omitempty"`
 }
 
 // Instance is the name a model has on one device of a host. Its first place
@@ -155,6 +158,29 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 			}
 			instanceOn[p.Device()][name] = instance
 			part.Local[instance] = Local{Model: name, Devices: append([]string{p.Device()}, p.Occupies...), Files: files, VRAMMB: m.VRAMMB}
+		}
+	}
+	for device, d := range part.Devices {
+		for _, members := range d.Together {
+			var in []string
+			for _, m := range members {
+				if i, ok := instanceOn[device][m]; ok {
+					in = append(in, i)
+				}
+			}
+			if len(in) < 2 {
+				continue
+			}
+			for _, i := range in {
+				l := part.Local[i]
+				for _, o := range in {
+					if o != i && !slices.Contains(l.Together, o) {
+						l.Together = append(l.Together, o)
+					}
+				}
+				sort.Strings(l.Together)
+				part.Local[i] = l
+			}
 		}
 	}
 	doc := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}

@@ -37,8 +37,9 @@ type groupRig struct {
 	front      *httptest.Server
 }
 
-// newGroupRig starts it. agentCmd is the agent's command after its touch.
-func newGroupRig(t *testing.T, agentCmd string) *groupRig {
+// newGroupRig starts it. agentCmd is the agent's command after its touch;
+// freeWith is the card's free VRAM with the models running, 8000 MB if nil.
+func newGroupRig(t *testing.T, agentCmd string, freeWith func(running map[string]string) int) *groupRig {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("STATE_DIRECTORY", dir)
@@ -87,6 +88,9 @@ func newGroupRig(t *testing.T, agentCmd string) *groupRig {
 	was := probes
 	probes.GPU = func() (warden.Resources, error) {
 		zero, free := 0.0, 8000
+		if freeWith != nil {
+			free = freeWith(rig.srv.RunningModelStates())
+		}
 		return warden.Resources{ForeignGPUPercent: &zero, GPUPercent: &zero, VRAMFreeMB: &free, VRAMUsedMB: 10240 - free, VRAMTotalMB: 10240, SampledAt: time.Now()}, nil
 	}
 	t.Cleanup(func() { probes = was; gateWarden.Store(nil) })
@@ -188,7 +192,7 @@ func (r *groupRig) running() []string {
 // agent is on; once both are up neither has stopped the other; and a chat
 // model on the same GPU stops both.
 func TestAGroupStaysLoadedTogetherAndItsStartsTakeTurns(t *testing.T) {
-	r := newGroupRig(t, "exec sleep 3600")
+	r := newGroupRig(t, "exec sleep 3600", nil)
 	agent := r.ask("agent")
 	r.until("the agent's command ran", func() bool { return r.ran("agent") })
 	reranker := r.ask("reranker")
@@ -218,7 +222,7 @@ func TestAGroupStaysLoadedTogetherAndItsStartsTakeTurns(t *testing.T) {
 // waiting behind the agent starts once the agent's server has exited, not at
 // the slot's limit (review of 0029, 2).
 func TestAFailedStartFreesTheGPUForTheNext(t *testing.T) {
-	r := newGroupRig(t, "sleep 1; exit 1")
+	r := newGroupRig(t, "sleep 1; exit 1", nil)
 	agent := r.ask("agent")
 	r.until("the agent's command ran", func() bool { return r.ran("agent") })
 	reranker := r.ask("reranker")
@@ -236,7 +240,7 @@ func TestAFailedStartFreesTheGPUForTheNext(t *testing.T) {
 // file and the gate alone answers, as it must between two polls.
 func TestAnOffFileWrittenWhileAStartWaitsRefusesIt(t *testing.T) {
 	off := filepath.Join(t.TempDir(), "off")
-	r := newGroupRig(t, "exec sleep 3600")
+	r := newGroupRig(t, "exec sleep 3600", nil)
 	*flagOffFile = off
 	r.ask("agent")
 	r.until("the agent's command ran", func() bool { return r.ran("agent") })
@@ -259,5 +263,38 @@ func TestAnOffFileWrittenWhileAStartWaitsRefusesIt(t *testing.T) {
 	}
 	if code := r.answer("the reranker", r.ask("reranker")); code != http.StatusOK {
 		t.Fatalf("the reranker answered %d once the off file was gone", code)
+	}
+}
+
+// Beside a desktop that leaves 5,000 MB free, the agent's 3,000 MB does not
+// fit beside the reranker's: the agent's start stops the idle reranker,
+// reads the card again and starts, where it had answered gpu_no_room (0029,
+// the agent's recommendation of the open decision).
+func TestAGroupMemberThatDoesNotFitStopsItsIdleSiblingAndStarts(t *testing.T) {
+	r := newGroupRig(t, "exec sleep 3600", func(running map[string]string) int {
+		free := 5000
+		for name := range running {
+			if name == "agent" || name == "reranker" {
+				free -= 3000
+			}
+		}
+		return free
+	})
+	r.agentReady.Store(true)
+	if code := r.answer("the reranker", r.ask("reranker")); code != http.StatusOK {
+		t.Fatalf("the reranker answered %d", code)
+	}
+	if code := r.answer("the agent", r.ask("agent")); code != http.StatusOK {
+		t.Fatalf("the agent answered %d beside the reranker", code)
+	}
+	if got := r.running(); !slices.Equal(got, []string{"agent"}) {
+		t.Fatalf("running %v, want the agent alone", got)
+	}
+	// And back: the reranker's start stops the idle agent in turn.
+	if code := r.answer("the reranker", r.ask("reranker")); code != http.StatusOK {
+		t.Fatalf("the reranker answered %d beside the agent", code)
+	}
+	if got := r.running(); !slices.Equal(got, []string{"reranker"}) {
+		t.Fatalf("running %v, want the reranker alone", got)
 	}
 }

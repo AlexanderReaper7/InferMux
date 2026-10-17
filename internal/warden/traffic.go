@@ -55,6 +55,8 @@ func deviceName(device string) string {
 }
 
 type flight struct {
+	// model is the local model the request names, "" for none known here.
+	model   string
 	class   Class
 	path    string
 	started time.Time
@@ -124,10 +126,13 @@ type traffic struct {
 	resumed         []func()
 	// off is why every request is refused, "" while the models are on (0025).
 	off string
+	// evicting is the models a group member's start is stopping for room
+	// (0029), each with the channel closed once they have stopped.
+	evicting map[string]chan struct{}
 }
 
 func newTraffic(keys *KeyFile, now func() time.Time) *traffic {
-	t := &traffic{now: now, flights: map[uint64]*flight{}, paused: map[string]bool{}, lastOn: map[string]time.Time{}}
+	t := &traffic{now: now, flights: map[uint64]*flight{}, paused: map[string]bool{}, lastOn: map[string]time.Time{}, evicting: map[string]chan struct{}{}}
 	t.setKeys(keys)
 	return t
 }
@@ -195,9 +200,17 @@ func isInference(r *http.Request) bool {
 // device. The pause check and the registration share one lock with pause(),
 // so a batch request is either refused or registered before the yield, never
 // neither. session is a WebSocket's, nil for any other request.
-func (t *traffic) begin(class Class, path string, devices []string, cancel func(device, why string), session *stream.Session) (uint64, string) {
+func (t *traffic) begin(model string, class Class, path string, devices []string, cancel func(device, why string), session *stream.Session) (uint64, string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// A request for a model being stopped for room waits until it has
+	// stopped, and then starts it again, rather than reach the model as it
+	// is killed (0029).
+	for ch := t.evicting[model]; model != "" && ch != nil; ch = t.evicting[model] {
+		t.mu.Unlock()
+		<-ch
+		t.mu.Lock()
+	}
 	if t.off != "" {
 		if class == Batch {
 			t.refused++
@@ -214,7 +227,7 @@ func (t *traffic) begin(class Class, path string, devices []string, cancel func(
 	}
 	t.next++
 	now := t.now()
-	t.flights[t.next] = &flight{class: class, path: path, started: now, devices: devices, cancel: cancel, session: session}
+	t.flights[t.next] = &flight{model: model, class: class, path: path, started: now, devices: devices, cancel: cancel, session: session}
 	if class == Interactive {
 		t.lastInteractive = now
 		for _, d := range devices {
@@ -231,6 +244,31 @@ func (f *flight) on(device string) bool {
 
 // end unregisters a request. A request's end is interactive activity; a
 // session's end is not, only its last data frame was (0018, 6).
+// claim takes models for an eviction when none of them has a request, an
+// idle WebSocket included, and returns the busy one otherwise. Until release
+// a request for one of them waits in begin, so the eviction kills none.
+func (t *traffic) claim(models []string) (busy string, release func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, f := range t.flights {
+		if slices.Contains(models, f.model) {
+			return f.model, nil
+		}
+	}
+	ch := make(chan struct{})
+	for _, m := range models {
+		t.evicting[m] = ch
+	}
+	return "", func() {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		for _, m := range models {
+			delete(t.evicting, m)
+		}
+		close(ch)
+	}
+}
+
 func (t *traffic) end(id uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

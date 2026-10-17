@@ -90,6 +90,13 @@ balance:
 	if !strings.Contains(string(part.LlamaSwap), "v1: embed@gpu") {
 		t.Errorf("no variable for embed@gpu:\n%s", part.LlamaSwap)
 	}
+	// The warden hears each member's siblings, by their names here, for the
+	// start that does not fit beside them.
+	for name, want := range map[string][]string{"agent": {"reranker"}, "reranker": {"agent"}, "chat": nil, "embed": nil, "embed@gpu": nil} {
+		if got := part.Local[name].Together; !slices.Equal(got, want) {
+			t.Errorf("%s is together with %v, want %v", name, got, want)
+		}
+	}
 
 	// b has no group: its GPU swaps one model at a time.
 	part, err = cfg.Derive("b")
@@ -165,6 +172,9 @@ balance:
 	ls := loadLlamaSwap(t, part)
 	if got := evicts(ls, "chat", "agent"); !slices.Equal(got, []string{"agent"}) {
 		t.Errorf("chat beside the agent stopped %v", got)
+	}
+	if got := part.Local["agent"].Together; got != nil {
+		t.Errorf("the agent is together with %v", got)
 	}
 }
 
