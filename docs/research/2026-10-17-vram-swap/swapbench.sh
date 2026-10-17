@@ -4,6 +4,8 @@
 # memory, and under unified memory with a Vulkan stand-in for a game holding
 # the rest of the card, and llama-server's --sleep-idle-seconds.
 # Run only while InferMux holds no GPU model and no game runs. Throwaway.
+# Starts its own llama-server, which the user's rule of 2026-10-17 now forbids (only InferMux
+# may host a model). Kept as the record of how the numbers in the write-up were taken; do not run it.
 set -u
 cd "$(dirname "$0")"
 OUT=${OUT:-$HOME/Projects/scratch/vram-research/out/swapbench-$(date +%H%M)}
