@@ -15,7 +15,7 @@ This file is rules and navigation only, with llama-swap's own guide below them. 
 
 | path | what it is |
 |---|---|
-| `internal/warden/` | ours: config, policy, probe, the CPU's meter and each model's devices (`cpu.go`, `devices.go`, 0022), the fit check at a start on the GPU and the GPU's start slot (`fit.go`, 0028, 0029), ComfyUI, consumers, request classes, stuck agents, the loop and `/warden/*` |
+| `internal/warden/` | ours: config, policy, probe, the CPU's meter and each model's devices (`cpu.go`, `devices.go`, 0022), the fit check at a start on the GPU, the GPU's start slot, and a group member's room made by stopping its idle siblings (`fit.go`, 0028, 0029), ComfyUI, consumers, request classes, stuck agents, the loop and `/warden/*` |
 | `internal/remote/` | ours: the other InferMux hosts' models, discovered and forwarded to (0006) |
 | `internal/placement/` | ours: the one config (0022): hosts, devices, groups, the `balance` and `failover` lanes, a model's `vram_mb` (0028), a device's `together` groups (0029), and each host's part derived from it, llama-swap's file with its matrix router included and loaded with the host's `-config` |
 | `internal/configstore/`, `cmd/infermux-config/` | ours: the config's signature, the daemon's kept versions and conflicts, and the terminal tool that makes the key and signs (0022) |

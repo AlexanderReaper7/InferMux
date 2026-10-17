@@ -63,6 +63,17 @@ The pair needs 7.4 GB, which leaves the desktop 2.8 GB of strix's card. It held 
 
 The agent recommends 1, with 2 as a cheap addition: the desktop's share moved by 1.5 GB within a day, so a threshold alone will be crossed again.
 
+### If merged: option 1 on branch `group-evict-on-no-room`
+
+Built by the overnight session on 2026-10-17, unmerged until the user picks. A member's start that the card's free figure does not cover stops its loaded siblings and reads the card once more (`evictTogether` in `internal/warden/fit.go`). Derive hands each local model its siblings (`Local.Together`), and `placedOf` passes them to the warden. The agent's calls, each open to the user:
+
+- A sibling with a request in flight, or an open WebSocket, stays loaded and the start answers `gpu_no_room` as before. Waiting for its end would hold the GPU's start slot for as long as that request runs.
+- A request for a sibling that arrives while it is being stopped waits in the gate until it has stopped, then starts it again, so the stop kills no request (0004).
+- Siblings whose `vram_mb` with the free figure still fall short, as under a game, stay loaded: stopping them could not make room.
+- One reading after the stop, as asked. A driver slow to free the stopped server's VRAM would refuse the start as before.
+
+Beside a desktop above 2.8 GB, a deep search then swaps the agent and the reranker for each other as the swap does today, and keeps them together whenever the card has room. Merging does not publish `together`: that still needs a deploy, since today's daemons refuse the field.
+
 ## Verification
 
 Done, by tests (`go test`, no GPU):
@@ -74,5 +85,7 @@ Done, by tests (`go test`, no GPU):
 Thirteen mutations each failed them: the slot's wait removed (the warden's tests and the daemon's), a refused start keeping the slot, any end freeing it, the group ignored by the derivation, the event wiring removed (which hung the daemon test until the limit was added), the matrix pruning removed, the warning removed, a group on a concurrent device allowed, and from the review of 2026-10-17: only a start that became ready freeing the slot, the limit counted per waiter, the gate's second read of the off file removed, a start that read refuses keeping the slot, and a variable taking a local model's name. The first test of the off file passed without the fix, since the daemon's watcher cancelled the waiting request first; the test now sets the flag after the daemon starts, so the gate alone answers.
 
 Watched on strix, 2026-10-17, under revision 10 (`vram_mb: 4200`) and the daemon without 0029: with SemSearch's eval holding 4,030 MB in its own server, an unmarked request for the agent answered 503 `gpu_no_room`, "needs 4200 MB of VRAM and the card has 1741 MB free", in 0.008 s, and nothing started (0028's check on the new model).
+
+On branch `group-evict-on-no-room`: `internal/warden/together_test.go` has a member that does not fit stop its idle sibling and start after a second reading; a sibling with a request kept and the start refused; siblings whose stop could not make room under a game kept; a model outside the group stopping no member; a request for the sibling held back until its stop has ended. `TestAGroupMemberThatDoesNotFitStopsItsIdleSiblingAndStarts` runs the same through the daemon, beside a desktop that leaves room for one member: the agent stops the reranker and answers 200, and the reranker then stops the agent. `TestAGroupStaysLoadedTogether` checks each member's siblings in the derived part. Six mutations each failed them: the eviction removed, a busy sibling ignored, the request's wait removed, the stop that cannot make room allowed, derive dropping the siblings, and `placedOf` dropping them.
 
 Not yet: deployed, a group in the signed config, the agent's model on the card beside the reranker, and the WARN of a start that waited out the limit.
