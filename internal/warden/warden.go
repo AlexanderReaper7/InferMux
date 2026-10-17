@@ -100,6 +100,9 @@ type Warden struct {
 	gpuStart     string
 	gpuStartAt   time.Time
 	gpuStartDone *sync.Cond
+	// failedStarts is each model whose last start on the GPU stopped before
+	// it was ready, with the card's free figure then.
+	failedStarts map[string]failedStart
 
 	stop chan struct{}
 	done chan struct{}
@@ -130,21 +133,22 @@ func NewWithProbes(cfg Config, models Models, log Logger, p Probes) *Warden {
 		cpuProbe = newCPUProbe(cfg)
 	}
 	w := &Warden{
-		cfg:         cfg,
-		models:      models,
-		log:         log,
-		probe:       probe,
-		cpuProbe:    cpuProbe,
-		freshProbe:  fresh,
-		given:       p,
-		now:         time.Now,
-		announcer:   newAnnouncer(cfg.Consumers, log),
-		own:         initialVerdict(),
-		verdict:     initialVerdict(),
-		whenQuiet:   map[string]func(){},
-		quietLogged: map[string]bool{},
-		stop:        make(chan struct{}),
-		done:        make(chan struct{}),
+		cfg:          cfg,
+		models:       models,
+		log:          log,
+		probe:        probe,
+		cpuProbe:     cpuProbe,
+		freshProbe:   fresh,
+		given:        p,
+		now:          time.Now,
+		announcer:    newAnnouncer(cfg.Consumers, log),
+		own:          initialVerdict(),
+		verdict:      initialVerdict(),
+		whenQuiet:    map[string]func(){},
+		quietLogged:  map[string]bool{},
+		failedStarts: map[string]failedStart{},
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 	w.gpuStartDone = sync.NewCond(&w.mu)
 	w.traffic = newTraffic(cfg.Keys, func() time.Time { return w.now() })
@@ -776,6 +780,19 @@ func (w *Warden) NotStarted(model string) {
 		return
 	}
 	w.log.Warnf("<%s> stopped before it was ready; the card had %s", model, holders(res))
+	if res.VRAMFreeMB != nil {
+		w.mu.Lock()
+		w.failedStarts[model] = failedStart{freeMB: *res.VRAMFreeMB, at: w.now()}
+		w.mu.Unlock()
+	}
+}
+
+// Ready is told that a model's start became ready, which ends the hold a
+// failed start before it put on the model.
+func (w *Warden) Ready(model string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.failedStarts, model)
 }
 
 // holders is a reading's VRAM and the processes holding it, the most first.

@@ -301,3 +301,72 @@ func TestAStartThatWentAheadHoldsTheSlotForTheNext(t *testing.T) {
 		t.Fatalf("<%s>'s end did not let the other start go ahead", first.model)
 	}
 }
+
+// Octen on strix's card beside a 4.5 GB desktop (2026-10-17): with no need in
+// its model file, every request started it, and each start failed after a
+// second with 5,682 MB free, about once a second through the night. A start
+// that stopped before it was ready is not tried again while the card has no
+// more free than it had then, for failedStartHold: the next is refused at
+// once, so failover moves on.
+func TestAStartThatFailedIsNotRetriedUntilTheCardHasMoreRoom(t *testing.T) {
+	r := underAGame()
+	r.VRAMFreeMB = ip(5682)
+	h, log, _ := fitHarness(t, func() (Resources, error) { return r, nil })
+	if err := h.w.Fits("chat"); err != nil {
+		t.Fatal(err)
+	}
+	h.w.StartEnded("chat")
+	h.w.NotStarted("chat")
+	log.lines = nil
+
+	err := h.w.Fits("chat")
+	var failed StartFailedError
+	if !errors.As(err, &failed) {
+		t.Fatalf("started again: %v", err)
+	}
+	if failed.StatusCode() != http.StatusServiceUnavailable || failed.Header().Get("Retry-After") == "" {
+		t.Fatalf("%d %v", failed.StatusCode(), failed.Header())
+	}
+	if body := string(failed.Body()); !strings.Contains(body, `"type":"gpu_start_failed"`) || !strings.Contains(body, "chat stopped before it was ready with 5682 MB free") {
+		t.Fatalf("body %s", body)
+	}
+	if len(log.lines) != 1 || !strings.Contains(log.lines[0], "<chat> not started: its last start on the GPU stopped before it was ready with 5682 MB free, and the card has 5682 MB free") {
+		t.Fatalf("logged %q", log.lines)
+	}
+	// The refusal frees the start slot.
+	if err := h.w.Fits("reranker"); err != nil && !errors.As(err, new(NoRoomError)) {
+		t.Fatal(err)
+	}
+	h.w.StartEnded("reranker")
+
+	// More room than at the failure: the start goes ahead.
+	r.VRAMFreeMB = ip(5700)
+	if err := h.w.Fits("chat"); err != nil {
+		t.Fatalf("with more room: %v", err)
+	}
+	h.w.StartEnded("chat")
+}
+
+// The hold ends, so a start that failed for a reason the card's figure does
+// not show is tried again; and a start that became ready clears it.
+func TestAFailedStartIsHeldForAWhileOnly(t *testing.T) {
+	r := underAGame()
+	r.VRAMFreeMB = ip(5682)
+	h, _, _ := fitHarness(t, func() (Resources, error) { return r, nil })
+	h.w.NotStarted("chat")
+	h.clock = h.clock.Add(failedStartHold - time.Second)
+	if err := h.w.Fits("chat"); !errors.As(err, new(StartFailedError)) {
+		t.Fatalf("not held: %v", err)
+	}
+	h.clock = h.clock.Add(time.Second)
+	if err := h.w.Fits("chat"); err != nil {
+		t.Fatalf("after the hold: %v", err)
+	}
+	h.w.StartEnded("chat")
+
+	h.w.NotStarted("chat")
+	h.w.Ready("chat")
+	if err := h.w.Fits("chat"); err != nil {
+		t.Fatalf("after a ready start: %v", err)
+	}
+}

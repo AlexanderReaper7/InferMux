@@ -313,6 +313,15 @@ func TestProxy_AModelThatDoesNotStartFailsOver(t *testing.T) {
 			t.Fatalf("no line for what held the card in:\n%s", logged.String())
 		}
 	}
+	// Its next start, with the card no freer, is refused at once rather
+	// than run to fail again, and the request still fails over (0028).
+	if code, body, place := post("embed"); code != 200 || body != "up" || place != "test/up" {
+		t.Fatalf("after a failed start: %d %q at %q, want the next place's 200", code, body, place)
+	}
+	<-served
+	if !strings.Contains(logged.String(), "<dies> not started: its last start on the GPU stopped before it was ready") {
+		t.Errorf("the failed start was tried again:\n%s", logged.String())
+	}
 	for _, c := range []struct{ name, model, sent string }{
 		{"a model's own 500", "own", answers["broken"]},
 		{"a model's 500 in llama-swap's words", "mimics", answers["mimic"]},

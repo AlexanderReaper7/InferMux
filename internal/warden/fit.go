@@ -56,9 +56,14 @@ func (w *Warden) Fits(model string) error {
 	}
 	w.gpuStart, w.gpuStartAt = model, time.Now()
 	need := w.placement[model].VRAMMB
-	probe, retry := w.freshProbe, w.cfg.Policy.ResumeQuietSeconds
+	failed, held := w.failedStarts[model]
+	if held && !w.now().Before(failed.at.Add(failedStartHold)) {
+		delete(w.failedStarts, model)
+		held = false
+	}
+	probe, retry, now := w.freshProbe, w.cfg.Policy.ResumeQuietSeconds, w.now()
 	w.mu.Unlock()
-	if need == 0 {
+	if need == 0 && !held {
 		return nil
 	}
 	res, err := probe()
@@ -66,10 +71,25 @@ func (w *Warden) Fits(model string) error {
 		err = fmt.Errorf("no free figure")
 	}
 	if err != nil {
-		w.log.Warnf("<%s> needs %d MB of VRAM and the card could not be read, so it starts: %v", model, need, err)
+		if need > 0 {
+			w.log.Warnf("<%s> needs %d MB of VRAM and the card could not be read, so it starts: %v", model, need, err)
+		} else {
+			w.log.Warnf("<%s>'s last start on the GPU stopped before it was ready and the card could not be read, so it starts: %v", model, err)
+		}
 		return nil
 	}
-	if free := *res.VRAMFreeMB; free < need {
+	free := *res.VRAMFreeMB
+	// A start that stopped before it was ready, most often for want of
+	// VRAM, fails again while the card has no more room than it had then.
+	// Without this, each request for a model the card cannot hold started
+	// it, and Octen's starts failed about once a second (2026-10-17).
+	if held && free <= failed.freeMB {
+		w.StartEnded(model)
+		w.log.Warnf("<%s> not started: its last start on the GPU stopped before it was ready with %d MB free, and the card has %d MB free, %s", model, failed.freeMB, free, holders(res))
+		left := int(failed.at.Add(failedStartHold).Sub(now).Seconds() + 0.999)
+		return StartFailedError{Model: model, FailedMB: failed.freeMB, FreeMB: free, RetryAfter: max(left, 1)}
+	}
+	if free < need {
 		w.StartEnded(model)
 		w.log.Warnf("<%s> not started: it needs %d MB of VRAM and the card has %d MB free, %s", model, need, free, holders(res))
 		return NoRoomError{Model: model, NeedMB: need, FreeMB: free, RetryAfter: retry}
@@ -122,3 +142,37 @@ func (e NoRoomError) Header() http.Header {
 }
 
 func (e NoRoomError) Body() []byte { return refusalBody("gpu_no_room", e.Error()) }
+
+// failedStartHold is how long a start that stopped before it was ready keeps
+// the next start of that model on the GPU from going ahead, while the card
+// has no more free than it had then.
+const failedStartHold = 60 * time.Second
+
+// failedStart is the card's free figure when a model's start on the GPU
+// stopped before it was ready, and when.
+type failedStart struct {
+	freeMB int
+	at     time.Time
+}
+
+// StartFailedError is a start refused because the model's last start on the
+// GPU stopped before it was ready with as much free as the card has now. A
+// 503, so failover tries the model's next place, as for NoRoomError.
+type StartFailedError struct {
+	Model      string
+	FailedMB   int
+	FreeMB     int
+	RetryAfter int
+}
+
+func (e StartFailedError) Error() string {
+	return fmt.Sprintf("%s stopped before it was ready with %d MB free, and the card has %d MB free", e.Model, e.FailedMB, e.FreeMB)
+}
+
+func (e StartFailedError) StatusCode() int { return http.StatusServiceUnavailable }
+
+func (e StartFailedError) Header() http.Header {
+	return http.Header{"Content-Type": {"application/json"}, "Retry-After": {strconv.Itoa(e.RetryAfter)}}
+}
+
+func (e StartFailedError) Body() []byte { return refusalBody("gpu_start_failed", e.Error()) }
