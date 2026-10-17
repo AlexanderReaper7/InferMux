@@ -2,7 +2,8 @@
 
 - Date: 2026-09-28
 - Status: accepted
-- Rule: the warden runs on NixOS as a systemd service. It measures through NVML, yields by telling the llama.cpp router to unload its models, and treats ComfyUI's queue as contention and its idle time as a reason to send `/free`.
+- Amended by [0030](0030-comfyui-runs-under-infermux.md) on 2026-10-17: ComfyUI is InferMux's model `comfyui_auto` on strix, started and stopped by InferMux. A yield frees it through `/free` once its queue is empty and never stops it (the rule).
+- Rule: the warden runs on NixOS as a systemd service. It measures through NVML, yields by telling the llama.cpp router to unload its models, and treats ComfyUI's queue as contention and its idle time as a reason to send `/free`. ComfyUI runs as the model `comfyui_auto` beside the GPU's swap (0030); a yield's unload leaves it running, and its `/free` goes out as soon as its queue is empty while other work contends.
 - Keeps 0001 whole: the warden decides and pushes, a pause is a message and not a lease, a failed probe leaves the verdict alone, `loading` counts as loaded.
 
 ## Context

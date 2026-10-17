@@ -84,6 +84,8 @@ func (w *Warden) UnloadNow() ([]string, error) {
 		return nil, fmt.Errorf("%d interactive request(s) in flight", n)
 	}
 	w.closeSessions("", "infermux: the models were unloaded by hand")
+	// ComfyUI stops with the rest, its job interrupted first (0030).
+	w.clearComfyUI()
 	unloaded := w.models.UnloadAll()
 	w.mu.Lock()
 	w.gpuUnload.pending, w.cpu.unload.pending = false, false
@@ -146,11 +148,12 @@ func (w *Warden) Reload(cfg Config) {
 	w.logPolicy("Warden settings reloaded:")
 }
 
-// WhenNoInteractive runs fn once no interactive request is in flight: now, if
-// none is, or when the last one ends. Used for llama-swap's config reload,
-// which stops every model, so that a change saved in the UI cannot cut off a
-// reply the user is waiting for (0005). A second call under the same name
-// before the first ran replaces it.
+// WhenNoInteractive runs fn once no interactive request is in flight and
+// ComfyUI has no job: now, if so, or when the last one ends. Used for
+// llama-swap's config reload, which stops every model, so that a change
+// saved in the UI cannot cut off a reply the user is waiting for (0005), nor
+// a render (0030). A second call under the same name before the first ran
+// replaces it.
 func (w *Warden) WhenNoInteractive(name string, fn func()) {
 	w.mu.Lock()
 	w.whenQuiet[name] = fn
@@ -160,16 +163,23 @@ func (w *Warden) WhenNoInteractive(name string, fn func()) {
 
 func (w *Warden) runWhenQuiet() {
 	n := w.traffic.interactiveInFlight()
+	_, comfy := w.comfyUIRunning()
 	w.mu.Lock()
 	if len(w.whenQuiet) == 0 {
 		w.mu.Unlock()
 		return
 	}
-	if n > 0 {
+	// A reload stops ComfyUI too while it is one of the models, and a render
+	// is no HTTP request in flight (0030).
+	jobs := 0
+	if comfy {
+		jobs = w.comfyJobs + w.comfyPending
+	}
+	if n > 0 || jobs > 0 {
 		for name := range w.whenQuiet {
 			if !w.quietLogged[name] {
 				w.quietLogged[name] = true
-				w.log.Infof("%s waits: %d interactive request(s) in flight", name, n)
+				w.log.Infof("%s waits: %d interactive request(s) in flight, %d ComfyUI job(s)", name, n, jobs)
 			}
 		}
 		w.mu.Unlock()

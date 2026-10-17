@@ -193,13 +193,14 @@ func (c *Config) DeriveFor(host string, opts Options) (*Part, error) {
 
 // routing is llama-swap's matrix router over the host's devices (0029). Each
 // set is one way of choosing what runs on every device at once: on a device
-// that swaps, one of its models or one of its together groups; on a
-// concurrent device, all of its models. llama-swap starts only the model
-// asked for and stops the running models outside the cheapest set that has
-// it, so a device's model never stops another device's, a member never stops
-// its group, and any other model on the device stops the group. A set is
-// named by the group or model chosen on each device that swaps, joined by
-// '+', which llama-swap's log line shows.
+// that swaps, one of its models or one of its together groups, each with the
+// device's beside models (0030); on a concurrent device, all of its models.
+// llama-swap starts only the model asked for and stops the running models
+// outside the cheapest set that has it, so a device's model never stops
+// another device's, a member never stops its group, any other model on the
+// device stops the group, and nothing stops a beside model. A set is named by
+// the group or model chosen on each device that swaps, joined by '+', which
+// llama-swap's log line shows.
 func routing(devices map[string]Device, members map[string][]string, instanceOn map[string]map[string]string) *yaml.Node {
 	type choice struct {
 		name   string
@@ -213,7 +214,17 @@ func routing(devices map[string]Device, members map[string][]string, instanceOn 
 		if d.Concurrent {
 			alts = []choice{{models: members[device]}}
 		} else {
+			// A model beside the device's others is in each of its choices,
+			// so no choice stops it (0030).
+			var beside []string
 			grouped := map[string]bool{}
+			for _, m := range d.Beside {
+				if i, ok := instanceOn[device][m]; ok {
+					beside = append(beside, i)
+					grouped[i] = true
+				}
+			}
+			sort.Strings(beside)
 			for _, g := range sortedKeys(d.Together) {
 				var in []string
 				for _, m := range d.Together[g] {
@@ -237,6 +248,12 @@ func routing(devices map[string]Device, members map[string][]string, instanceOn 
 				}
 			}
 			slices.SortFunc(alts, func(a, b choice) int { return strings.Compare(a.name, b.name) })
+			if len(alts) == 0 {
+				alts = []choice{{}}
+			}
+			for i := range alts {
+				alts[i].models = append(alts[i].models, beside...)
+			}
 		}
 		var next []choice
 		for _, s := range sets {

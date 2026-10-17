@@ -43,6 +43,10 @@ type Resources struct {
 	Processes   []Process `json:"processes"`
 	SampledAt   time.Time `json:"sampled_at"`
 	ComfyUIJobs *int      `json:"comfyui_jobs"`
+	// ComfyUI's processes, by comfyui_unit: their share of ForeignGPUPercent
+	// and the VRAM they hold (0030). Zero without comfyui_unit.
+	ComfyUIGPUPercent float64 `json:"comfyui_gpu_percent"`
+	ComfyUIVRAMMB     int     `json:"comfyui_vram_mb"`
 }
 
 type Process struct {
@@ -66,8 +70,10 @@ type Attribution struct {
 	OurUnits map[string]bool
 	Desktop  map[string]bool
 	Priority map[string]bool
-	Name     func(pid uint32) string
-	Unit     func(pid uint32) string
+	// ComfyUI is comfyui_unit, "" when unset.
+	ComfyUI string
+	Name    func(pid uint32) string
+	Unit    func(pid uint32) string
 }
 
 func newAttribution(cfg Config, proc string) Attribution {
@@ -90,6 +96,7 @@ func newAttribution(cfg Config, proc string) Attribution {
 		OurUnits: ours,
 		Desktop:  desktop,
 		Priority: priority,
+		ComfyUI:  cfg.ComfyUIUnit,
 		Name:     func(pid uint32) string { return ProcessName(proc, strconv.Itoa(int(pid))) },
 		Unit:     func(pid uint32) string { return ProcessUnit(proc, strconv.Itoa(int(pid))) },
 	}
@@ -133,8 +140,8 @@ func Summarise(vram map[uint32]int, util map[uint32]float64, compute map[uint32]
 		return processes[i].PID < processes[j].PID
 	})
 
-	var foreign, ours, desktop float64
-	var ourVRAM int
+	var foreign, ours, desktop, comfy float64
+	var ourVRAM, comfyVRAM int
 	culprits := []string{}
 	priority := []string{}
 	for _, p := range processes {
@@ -151,6 +158,10 @@ func Summarise(vram map[uint32]int, util map[uint32]float64, compute map[uint32]
 			desktop += p.Percent
 		default:
 			foreign += p.Percent
+			if a.ComfyUI != "" && p.Unit == a.ComfyUI {
+				comfy += p.Percent
+				comfyVRAM += p.VRAMMB
+			}
 			// Who to name in a verdict: the foreign processes doing work.
 			if p.Percent > 0 && len(culprits) < 3 {
 				culprits = append(culprits, p.Name)
@@ -177,6 +188,8 @@ func Summarise(vram map[uint32]int, util map[uint32]float64, compute map[uint32]
 		Priority:          priority,
 		Processes:         processes,
 		SampledAt:         time.Now(),
+		ComfyUIGPUPercent: round1(comfy),
+		ComfyUIVRAMMB:     comfyVRAM,
 	}
 }
 

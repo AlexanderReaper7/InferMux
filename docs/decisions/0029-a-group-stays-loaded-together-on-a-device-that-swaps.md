@@ -2,6 +2,7 @@
 
 - Date: 2026-10-16
 - Status: accepted; built 2026-10-16, not deployed; the agent's model is in the signed config, its group is not, and publishing it waits for an open decision (Open, below)
+- Amended by [0030](0030-comfyui-runs-under-infermux.md) on 2026-10-17: `beside` on a device that swaps keeps a model in every set, `together` groups included, and ComfyUI's start takes no start slot.
 - Amends [0022](0022-one-signed-config-placed-by-device.md), item 7 (a device swaps one model at a time, or runs several at once) and the derivation's groups with `exclusive: false`, and [0028](0028-a-start-on-the-gpu-needs-room-on-the-card.md) (two starts at once on one GPU). Keeps 0028's check and 0002's free VRAM rule for the verdict.
 
 ## Context

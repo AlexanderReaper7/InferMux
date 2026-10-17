@@ -105,15 +105,15 @@ func TestAPauseWithNoObservationBehindItCanStillLift(t *testing.T) {
 func TestComfyUIIsFreedOnceAfterTheIdleWindow(t *testing.T) {
 	p := DefaultConfig().Policy
 	state := ComfyIdle{BusyAt: t0}
-	state, due := ComfyUIFreeDue(state, ip(0), t0.Add(599*time.Second), p)
+	state, due := ComfyUIFreeDue(state, ip(0), t0.Add(599*time.Second), false, p)
 	if due {
 		t.Fatal("freed early")
 	}
-	state, due = ComfyUIFreeDue(state, ip(0), t0.Add(600*time.Second), p)
+	state, due = ComfyUIFreeDue(state, ip(0), t0.Add(600*time.Second), false, p)
 	if !due || !state.Freed {
 		t.Fatal("not freed after the window")
 	}
-	if _, due = ComfyUIFreeDue(state, ip(0), t0.Add(2000*time.Second), p); due {
+	if _, due = ComfyUIFreeDue(state, ip(0), t0.Add(2000*time.Second), false, p); due {
 		t.Fatal("freed twice in one idle stretch")
 	}
 }
@@ -121,7 +121,7 @@ func TestComfyUIIsFreedOnceAfterTheIdleWindow(t *testing.T) {
 func TestAJobRestartsTheIdleClock(t *testing.T) {
 	p := DefaultConfig().Policy
 	state := ComfyIdle{BusyAt: t0, Freed: true}
-	state, _ = ComfyUIFreeDue(state, ip(2), t0.Add(1000*time.Second), p)
+	state, _ = ComfyUIFreeDue(state, ip(2), t0.Add(1000*time.Second), false, p)
 	if state.Freed || !state.BusyAt.Equal(t0.Add(1000*time.Second)) {
 		t.Fatalf("got %+v", state)
 	}
@@ -129,7 +129,7 @@ func TestAJobRestartsTheIdleClock(t *testing.T) {
 
 func TestAnUnreadableQueueMovesNothing(t *testing.T) {
 	state := ComfyIdle{BusyAt: t0}
-	after, due := ComfyUIFreeDue(state, nil, t0.Add(time.Hour), DefaultConfig().Policy)
+	after, due := ComfyUIFreeDue(state, nil, t0.Add(time.Hour), true, DefaultConfig().Policy)
 	if due || after != state {
 		t.Fatalf("got %+v %v", after, due)
 	}

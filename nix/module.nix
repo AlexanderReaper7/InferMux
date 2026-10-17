@@ -274,6 +274,18 @@ in
       '';
     };
 
+    comfyuiListen = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "127.0.0.1:8188";
+      description = ''
+        A loopback address that serves ComfyUI's model, `comfyui_auto`, at
+        its root and with no key, for Tailscale's serve to put a browser on
+        (0030). Every path there is ComfyUI's, so it reaches nothing else.
+        Null: ComfyUI only at `/comfyui/` on the main port, behind a key.
+      '';
+    };
+
     offFile = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -572,6 +584,10 @@ in
             ++ lib.optionals (cfg.offFile != null) [
               "-off-file"
               cfg.offFile
+            ]
+            ++ lib.optionals (cfg.comfyuiListen != null) [
+              "-comfyui-listen"
+              cfg.comfyuiListen
             ]
           );
           Restart = "always";

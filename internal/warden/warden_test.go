@@ -26,6 +26,8 @@ type fakeModels struct {
 	running  map[string]string
 	unloads  int
 	unloaded []string
+	// noComfyUI is a host with no comfyui_auto among its models.
+	noComfyUI bool
 }
 
 func (m *fakeModels) Running() map[string]string {
@@ -41,6 +43,12 @@ func (m *fakeModels) Running() map[string]string {
 // Qualify reads the body and puts it back, as llama-swap's does. A name with
 // a slash is another host's or a peer's; a bare one is this host's.
 func (m *fakeModels) Qualify(r *http.Request) (string, bool, bool) {
+	if r.URL.Path == "/comfyui" || strings.HasPrefix(r.URL.Path, "/comfyui/") {
+		if m.noComfyUI {
+			return "", false, false
+		}
+		return "this/comfyui_auto", true, true
+	}
 	if r.Body == nil {
 		return "", false, false
 	}

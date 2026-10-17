@@ -165,7 +165,12 @@ type ComfyIdle struct {
 // seen, because a free also empties the cache ComfyUI would reuse for the next
 // job. An unreadable queue (nil) moves nothing, the same no-opinion rule as a
 // failed probe.
-func ComfyUIFreeDue(previous ComfyIdle, jobs *int, now time.Time, p Policy) (ComfyIdle, bool) {
+//
+// others is contention apart from ComfyUI's own (OthersContend): then the
+// free is due as soon as the queue is empty, not after the idle window. A
+// game seen only by its load lets a render finish and then gets the card
+// (0030).
+func ComfyUIFreeDue(previous ComfyIdle, jobs *int, now time.Time, others bool, p Policy) (ComfyIdle, bool) {
 	if jobs == nil {
 		return previous, false
 	}
@@ -175,8 +180,25 @@ func ComfyUIFreeDue(previous ComfyIdle, jobs *int, now time.Time, p Policy) (Com
 	if previous.Freed {
 		return previous, false
 	}
-	if now.Sub(previous.BusyAt).Seconds() < float64(p.ComfyUIIdleSeconds) {
+	if !others && now.Sub(previous.BusyAt).Seconds() < float64(p.ComfyUIIdleSeconds) {
 		return previous, false
 	}
 	return ComfyIdle{BusyAt: previous.BusyAt, Freed: true}, true
+}
+
+// OthersContend is IsContended with ComfyUI's own work taken out: its queue,
+// its processes' load, and the VRAM they hold, which counts as free. A
+// ComfyUI cache alone is no one else's work, while a game's load or VRAM is.
+func OthersContend(r Resources, modelsLoaded bool, p Policy) bool {
+	r.ComfyUIJobs = nil
+	if r.ForeignGPUPercent != nil {
+		foreign := max(*r.ForeignGPUPercent-r.ComfyUIGPUPercent, 0)
+		r.ForeignGPUPercent = &foreign
+	}
+	if r.VRAMFreeMB != nil {
+		free := *r.VRAMFreeMB + r.ComfyUIVRAMMB
+		r.VRAMFreeMB = &free
+	}
+	contended, _ := IsContended(r, modelsLoaded, p)
+	return contended
 }

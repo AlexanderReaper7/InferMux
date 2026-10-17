@@ -48,6 +48,21 @@ func comfyUIFree(url string) error {
 	return err
 }
 
+// comfyUIClear empties ComfyUI's queue and interrupts the job it runs, so
+// it ends the job itself and its tab shows the job as interrupted, before
+// the warden stops it (0030). The queue goes first, or ComfyUI would start
+// the next job the moment the interrupt ends the first.
+func comfyUIClear(url string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	base := strings.TrimRight(url, "/")
+	if _, err := postJSON(ctx, base+"/queue", map[string]bool{"clear": true}); err != nil {
+		return err
+	}
+	_, err := postJSON(ctx, base+"/interrupt", map[string]any{})
+	return err
+}
+
 func getJSON(ctx context.Context, url string, into any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

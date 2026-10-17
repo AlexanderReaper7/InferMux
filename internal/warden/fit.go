@@ -29,9 +29,13 @@ import (
 // together can start at once, and both would read the card before either
 // had allocated. The slot is held until StartEnded, so the second reads a
 // figure the first's VRAM is in.
+//
+// ComfyUI's own start takes no slot and is not checked: it loads no weights
+// until a job asks for them, and each other model's start sends it /free
+// once the slot is taken (0030).
 func (w *Warden) Fits(model string) error {
 	w.mu.Lock()
-	if !slices.Contains(w.devicesLocked(model), DeviceGPU) {
+	if !slices.Contains(w.devicesLocked(model), DeviceGPU) || model == w.comfyModel {
 		w.mu.Unlock()
 		return nil
 	}
@@ -55,6 +59,9 @@ func (w *Warden) Fits(model string) error {
 		timer.Stop()
 	}
 	w.gpuStart, w.gpuStartAt = model, time.Now()
+	w.mu.Unlock()
+	w.freeComfyUIFor(model)
+	w.mu.Lock()
 	need := w.placement[model].VRAMMB
 	failed, held := w.failedStarts[model]
 	if held && !w.now().Before(failed.at.Add(failedStartHold)) {

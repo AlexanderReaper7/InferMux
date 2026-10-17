@@ -67,6 +67,10 @@ type Device struct {
 	// that swaps, by name (0029). Starting one member stops no other member,
 	// and a model outside the group stops them all.
 	Together map[string][]string `yaml:"together"`
+	// Beside are models that stay loaded beside whatever a device that swaps
+	// runs, by name (0030). A swap never stops one, and starting one stops
+	// nothing. ComfyUI is the one: it frees its own VRAM through its API.
+	Beside []string `yaml:"beside"`
 }
 
 const (
@@ -428,6 +432,22 @@ func (c *Config) check() ([]string, error) {
 					}
 				}
 			}
+			if len(d.Beside) > 0 && d.Concurrent {
+				return nil, fmt.Errorf("device %s/%s: beside is for a device that swaps, and a concurrent one runs its models together already", name, dname)
+			}
+			for i, m := range d.Beside {
+				if _, ok := c.Models[m]; !ok {
+					return nil, fmt.Errorf("device %s/%s: beside: %s is not a model in %s/", name, dname, m, ModelsDir)
+				}
+				if slices.Contains(d.Beside[:i], m) {
+					return nil, fmt.Errorf("device %s/%s: beside names %s twice", name, dname, m)
+				}
+				for _, g := range sortedKeys(d.Together) {
+					if slices.Contains(d.Together[g], m) {
+						return nil, fmt.Errorf("device %s/%s: %s is beside every model and in together %s, which keeps it beside only the group's", name, dname, m, g)
+					}
+				}
+			}
 		}
 	}
 	for name, cl := range c.Clouds {
@@ -520,6 +540,11 @@ func (c *Config) check() ([]string, error) {
 					if !c.placedOn(m, name+"/"+dname) {
 						warnings = append(warnings, fmt.Sprintf("together %s on %s/%s: %s is not placed there, so the group keeps nothing loaded beside it", g, name, dname, m))
 					}
+				}
+			}
+			for _, m := range d.Beside {
+				if !c.placedOn(m, name+"/"+dname) {
+					warnings = append(warnings, fmt.Sprintf("beside on %s/%s: %s is not placed there, so nothing stays loaded beside the device's models", name, dname, m))
 				}
 			}
 		}

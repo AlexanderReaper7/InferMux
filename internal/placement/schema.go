@@ -38,6 +38,7 @@ var docs = map[string]string{
 	"Device.Index":      "The GPU's CUDA index, CUDA_VISIBLE_DEVICES for its models. 0 when unset.",
 	"Device.Concurrent": "Run several models at once. Otherwise a model starting stops the one running, as the GPUs have always swapped.",
 	"Device.Together":   "Groups of models that stay loaded together on a device that swaps, by name (0029). Starting one member stops no other member; a model outside the group stops them all. Each member is placed on the device in a lane as usual.",
+	"Device.Beside":     "Models that stay loaded beside whatever a device that swaps runs, by name (0030). A swap never stops one, and starting one stops nothing. For ComfyUI, which frees its own VRAM through its API. Each is placed on the device in a lane as usual.",
 	"Cloud.URL":         "The provider's OpenAI-compatible base URL.",
 	"Cloud.APIKey":      "The key, as ${env.VAR}, so it stays in each host's credentials and out of the config.",
 	"Cloud.Models":      "The provider's models that the hosts offer.",
@@ -56,10 +57,15 @@ var completes = map[string]func(map[string]any){
 	"Config.Failover": keysAre("lane"),
 	"Config.Groups":   membersAreModels,
 	"Device.Together": membersAreModels,
+	"Device.Beside":   itemsAreModels,
 }
 
 func membersAreModels(s map[string]any) {
 	s["additionalProperties"].(map[string]any)["items"].(map[string]any)["x-complete"] = "model"
+}
+
+func itemsAreModels(s map[string]any) {
+	s["items"].(map[string]any)["x-complete"] = "model"
 }
 
 func keysAre(kind string) func(map[string]any) {

@@ -98,6 +98,20 @@ func TestOurGenerationIsSplitFromEveryoneElses(t *testing.T) {
 	if *r.VRAMFreeMB != 1240 {
 		t.Fatalf("free %v", *r.VRAMFreeMB)
 	}
+	if r.ComfyUIGPUPercent != 0 || r.ComfyUIVRAMMB != 0 {
+		t.Fatalf("ComfyUI without comfyui_unit: %v%% %d MB", r.ComfyUIGPUPercent, r.ComfyUIVRAMMB)
+	}
+	// With comfyui_unit, ComfyUI's share of the foreign load and its VRAM
+	// are read apart (0030), and it is still foreign.
+	a.ComfyUI = "comfyui.service"
+	r = Summarise(
+		map[uint32]int{1: 6000, 2: 2000, 3: 4000},
+		map[uint32]float64{1: 90, 2: 30, 3: 5},
+		nil, 9000, 10240, f64(100), a,
+	)
+	if *r.ForeignGPUPercent != 35 || r.ComfyUIGPUPercent != 5 || r.ComfyUIVRAMMB != 4000 {
+		t.Fatalf("foreign %v, ComfyUI %v%% %d MB", *r.ForeignGPUPercent, r.ComfyUIGPUPercent, r.ComfyUIVRAMMB)
+	}
 }
 
 // The 2026-10-02 incident: T3 Code drawing its own streamed reply, and the

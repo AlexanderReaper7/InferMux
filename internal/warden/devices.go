@@ -214,15 +214,16 @@ func (w *Warden) settle(device string) {
 }
 
 // unloadOn stops the running models on device. Outside the one config that
-// is every model, as it always was.
+// is every model, as it always was. ComfyUI is never one: a yield frees it
+// through its own API once its queue is empty (0030).
 func (w *Warden) unloadOn(device string) []string {
 	w.mu.Lock()
-	whole := w.placement == nil
+	whole, comfy := w.placement == nil, w.comfyModel
 	w.mu.Unlock()
-	if whole {
+	if whole && comfy == "" {
 		return w.models.UnloadAll()
 	}
-	return w.models.Unload(w.runningOn(device))
+	return w.models.Unload(w.othersOn(device))
 }
 
 // runningOn is the running models on device, sorted.

@@ -2,7 +2,7 @@
 
 One endpoint for the local models, which gives the GPU back when something else needs it, and never kills the prompt the user just sent.
 
-InferMux is [llama-swap](https://github.com/mostlygeek/llama-swap) with a GPU warden built in. llama-swap starts one model server per request on demand and swaps them one at a time, behind OpenAI and Anthropic compatible APIs. The warden watches the card through NVML. When a game or a ComfyUI job needs it, the warden unloads the model, cancels batch work, tells its consumers to pause, and frees an idle ComfyUI. Every client has a key, and the key says whether its requests are batch or the user's own. The user's own are let through, and the model is not unloaded under them. Two hosts each running InferMux serve each other's models, so one URL reaches all of them ([0006](docs/decisions/0006-two-hosts-keys-and-the-cloud.md)).
+InferMux is [llama-swap](https://github.com/mostlygeek/llama-swap) with a GPU warden built in. llama-swap starts one model server per request on demand and swaps them one at a time, behind OpenAI and Anthropic compatible APIs. The warden watches the card through NVML. When a game or a ComfyUI job needs it, the warden unloads the model, cancels batch work, tells its consumers to pause, and frees an idle ComfyUI. ComfyUI itself runs as one of the models, kept up beside the others and freed before each of them starts ([0030](docs/decisions/0030-comfyui-runs-under-infermux.md)). Every client has a key, and the key says whether its requests are batch or the user's own. The user's own are let through, and the model is not unloaded under them. Two hosts each running InferMux serve each other's models, so one URL reaches all of them ([0006](docs/decisions/0006-two-hosts-keys-and-the-cloud.md)).
 
 It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-warden-decides-and-says-so.md)), a Windows program until 2026-09-28 ([0002](docs/decisions/0002-linux-nvml-router-unload-comfyui.md)), and llama-warden, a Python sidecar to llama.cpp's router, until 2026-10-03 ([0004](docs/decisions/0004-infermux-request-priority.md)).
 
@@ -124,6 +124,17 @@ Retry-After: 300
 {"error":{"type":"gpu_yielded","message":"batch requests wait while the GPU is yielded: ComfyUI has 1 job queued"}}
 ```
 
+## ComfyUI
+
+ComfyUI runs as the model `comfyui_auto`, llama-swap's ComfyUI endpoint at `/comfyui/`, and keeps managing its own models ([0030](docs/decisions/0030-comfyui-runs-under-infermux.md)). With `beside: [comfyui_auto]` on its device in the one config it stays up whatever the device swaps:
+
+- Before any other model starts on the GPU, an idle ComfyUI gets `/free`, and the start waits up to 10 s for NVML to show ComfyUI's VRAM back (`comfyui_unit`). A render in progress is left alone.
+- A job through InferMux (`POST /comfyui/prompt` or `/comfyui/api/prompt`) yields the card and unloads the GPU's other models before it reaches ComfyUI, unless an interactive request is in flight on one.
+- A yield never stops ComfyUI. While other work contends it gets `/free` as soon as its queue is empty, otherwise after `comfyui_idle_seconds`.
+- A priority process, `/warden/unload` and `infermux-hold` clear its queue, interrupt its job and stop it. The off file stops it at once.
+
+`-comfyui-listen 127.0.0.1:8188` (the module's `comfyuiListen`) serves ComfyUI at that address's root with no key, for `tailscale serve` to put a browser on. Every path there is ComfyUI's, so it reaches nothing else; the browser's name goes in `trusted_hosts`. On :5001, `/comfyui/` needs a key like any model.
+
 ## Streams
 
 A WebSocket that names its model in the query reaches that model's server at the path and query it was sent with: `/v1/realtime?model=x` (OpenAI's realtime), `/v1/listen?model=x` (Deepgram's), `/asr?model=x` (WhisperLiveKit's). `/upstream/<model>/<path>` reaches any path of the model's server as before. Every frame passes through unchanged, binary ones included; InferMux does not translate between protocols. A chunked reply, such as `/v1/audio/speech`, and SSE pass through chunk by chunk.
@@ -147,7 +158,7 @@ Under the one config a model's `balance` and `failover` lanes decide where its r
 ## What it does on a yield
 
 1. Cancels every batch request in flight, and closes every batch session with 1013. A job's request is paused instead (see Jobs).
-2. Unloads every model, once. If an interactive request is in flight or ended less than `interactive_recent_seconds` ago, the unload waits until it has been quiet that long; a session is in flight while it moves data. The sessions still open are closed with 1013 first. A resume forgives an unload still owed.
+2. Unloads every model but ComfyUI, once (see ComfyUI). If an interactive request is in flight or ended less than `interactive_recent_seconds` ago, the unload waits until it has been quiet that long; a session is in flight while it moves data. The sessions still open are closed with 1013 first. A resume forgives an unload still owed.
 3. Sends one POST to every configured consumer, repeated every five minutes until it lands:
 
 ```json

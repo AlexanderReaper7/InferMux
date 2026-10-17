@@ -64,6 +64,11 @@ type flight struct {
 	cancel func(device, why string)
 	// session is a WebSocket's, nil for any other request.
 	session *stream.Session
+	// comfy is a request to ComfyUI (0030). It is refused and cancelled as
+	// any other, but is not interactive activity on its device: ComfyUI is
+	// never unloaded under it, and its work is what the GPU's other models
+	// make room for.
+	comfy bool
 }
 
 // inFlight is whether f counts as a request in flight at now: a request, a
@@ -196,16 +201,25 @@ func isInference(r *http.Request) bool {
 // so a batch request is either refused or registered before the yield, never
 // neither. session is a WebSocket's, nil for any other request.
 func (t *traffic) begin(class Class, path string, devices []string, cancel func(device, why string), session *stream.Session) (uint64, string) {
+	return t.add(&flight{class: class, path: path, devices: devices, cancel: cancel, session: session})
+}
+
+// beginComfyUI is begin for a request to ComfyUI (flight.comfy).
+func (t *traffic) beginComfyUI(class Class, path string, devices []string, cancel func(device, why string)) (uint64, string) {
+	return t.add(&flight{class: class, path: path, devices: devices, cancel: cancel, comfy: true})
+}
+
+func (t *traffic) add(f *flight) (uint64, string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.off != "" {
-		if class == Batch {
+		if f.class == Batch {
 			t.refused++
 		}
 		return 0, offDevice
 	}
-	if class == Batch {
-		for _, d := range devices {
+	if f.class == Batch {
+		for _, d := range f.devices {
 			if t.paused[d] {
 				t.refused++
 				return 0, d
@@ -214,10 +228,11 @@ func (t *traffic) begin(class Class, path string, devices []string, cancel func(
 	}
 	t.next++
 	now := t.now()
-	t.flights[t.next] = &flight{class: class, path: path, started: now, devices: devices, cancel: cancel, session: session}
-	if class == Interactive {
+	f.started = now
+	t.flights[t.next] = f
+	if f.class == Interactive && !f.comfy {
 		t.lastInteractive = now
-		for _, d := range devices {
+		for _, d := range f.devices {
 			t.lastOn[d] = now
 		}
 	}
@@ -239,7 +254,7 @@ func (t *traffic) end(id uint64) {
 		return
 	}
 	delete(t.flights, id)
-	if f.class != Interactive {
+	if f.class != Interactive || f.comfy {
 		return
 	}
 	end := t.now()
@@ -380,7 +395,7 @@ func (t *traffic) interactiveInFlight() int {
 
 // interactiveRecent is true while an interactive request is in flight on
 // device, "" for any, and for window after the last one there ended or an
-// idle session's last data.
+// idle session's last data. A request to ComfyUI is none (flight.comfy).
 func (t *traffic) interactiveRecent(window time.Duration, device string) (bool, time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -390,7 +405,7 @@ func (t *traffic) interactiveRecent(window time.Duration, device string) (bool, 
 		latest = t.lastOn[device]
 	}
 	for _, f := range t.flights {
-		if f.class != Interactive || !f.on(device) {
+		if f.class != Interactive || f.comfy || !f.on(device) {
 			continue
 		}
 		yes, last := f.inFlight(now)

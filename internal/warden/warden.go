@@ -71,11 +71,18 @@ type Warden struct {
 	// given is what NewWithProbes was passed; a nil one is the host's.
 	given Probes
 
-	mu            sync.Mutex
-	cfg           Config
-	freshProbe    func() (Resources, error)
-	comfyQueue    func() *int
-	comfyFree     func() error
+	mu         sync.Mutex
+	cfg        Config
+	freshProbe func() (Resources, error)
+	comfyQueue func() *int
+	comfyFree  func() error
+	comfyClear func() error
+	// comfyModel is the model that runs ComfyUI, "" when none does (0030).
+	// comfyJobs is its queue at the last tick, and comfyPending the jobs on
+	// their way to it.
+	comfyModel    string
+	comfyJobs     int
+	comfyPending  int
 	own           Verdict
 	verdict       Verdict
 	manual        *Manual
@@ -158,10 +165,11 @@ func NewWithProbes(cfg Config, models Models, log Logger, p Probes) *Warden {
 }
 
 func (w *Warden) setComfyUI(url string) {
-	w.comfyQueue, w.comfyFree = nil, nil
+	w.comfyQueue, w.comfyFree, w.comfyClear = nil, nil, nil
 	if url != "" {
 		w.comfyQueue = func() *int { return comfyUIQueueDepth(url) }
 		w.comfyFree = func() error { return comfyUIFree(url) }
+		w.comfyClear = func() error { return comfyUIClear(url) }
 	}
 }
 
@@ -261,14 +269,34 @@ func (w *Warden) Tick() Verdict {
 
 	now := w.now()
 	w.mu.Lock()
-	queue := w.comfyQueue
+	queue, pending := w.comfyQueue, w.comfyPending
 	w.mu.Unlock()
 	if queue != nil {
-		res.ComfyUIJobs = queue()
-		w.comfyTick(res.ComfyUIJobs, now)
+		jobs := queue()
+		w.mu.Lock()
+		w.comfyJobs = 0
+		if jobs != nil {
+			w.comfyJobs = *jobs
+		}
+		w.mu.Unlock()
+		// A job on its way in is queued already: ComfyUI may not even be
+		// running yet (0030).
+		if pending > 0 {
+			n := pending
+			if jobs != nil {
+				n += *jobs
+			}
+			jobs = &n
+		}
+		res.ComfyUIJobs = jobs
 	}
-	// Only a model on the GPU holds VRAM (0002).
-	loaded := len(w.runningOn(DeviceGPU)) > 0
+	// Only a model on the GPU holds VRAM (0002). ComfyUI's counts as none,
+	// so its cache is read by the free VRAM rule as any other program's
+	// (0030).
+	loaded := len(w.othersOn(DeviceGPU)) > 0
+	if queue != nil {
+		w.comfyTick(res, loaded, now)
+	}
 
 	w.mu.Lock()
 	w.probeError = nil
@@ -307,6 +335,9 @@ func (w *Warden) act(before, after Verdict) {
 		if n := w.traffic.pause(DeviceGPU, after.Reason); n > 0 {
 			w.log.Infof("Cancelled %d batch request(s)", n)
 		}
+		if after.Priority {
+			w.stopComfyUI(after.Reason)
+		}
 		// The unload is owed once per yield, on the transition (0002). It may
 		// wait for an interactive session to go quiet (0004), but a model a
 		// client loads again during the pause stays loaded.
@@ -323,6 +354,7 @@ func (w *Warden) act(before, after Verdict) {
 		// own: a model loaded again since the first one holds the VRAM it
 		// needs (0017).
 		w.log.Infof("Priority: %s", after.Reason)
+		w.stopComfyUI(after.Reason)
 		w.mu.Lock()
 		w.gpuUnload.pending, w.gpuUnload.deferLogged = true, false
 		w.mu.Unlock()
@@ -385,18 +417,23 @@ func describeLast(last, now time.Time) string {
 	return fmt.Sprintf("in flight or %.0fs ago", now.Sub(last).Seconds())
 }
 
-func (w *Warden) comfyTick(jobs *int, now time.Time) {
+func (w *Warden) comfyTick(res Resources, loaded bool, now time.Time) {
 	w.mu.Lock()
 	previous, free, policy := w.comfy, w.comfyFree, w.cfg.Policy
 	w.mu.Unlock()
-	after, due := ComfyUIFreeDue(previous, jobs, now, policy)
+	others := OthersContend(res, loaded, policy)
+	after, due := ComfyUIFreeDue(previous, res.ComfyUIJobs, now, others, policy)
 	if due {
 		if err := free(); err != nil {
 			// Not marked freed, so the next tick tries again.
 			w.log.Warnf("ComfyUI did not take /free: %v", err)
 			return
 		}
-		w.log.Infof("ComfyUI idle for %ds: models freed", policy.ComfyUIIdleSeconds)
+		if others {
+			w.log.Infof("ComfyUI's queue is empty and other work needs the GPU: models freed")
+		} else {
+			w.log.Infof("ComfyUI idle for %ds: models freed", policy.ComfyUIIdleSeconds)
+		}
 	}
 	w.mu.Lock()
 	w.comfy = after
@@ -414,6 +451,9 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		key, required, known := w.traffic.identify(r)
+		if r.Context().Value(comfyUIListener{}) != nil {
+			key, required, known = w.comfyUIListenerKey(), true, true
+		}
 		if required && !known && !keyless(r) {
 			rw.Header().Set("WWW-Authenticate", `Basic realm="InferMux"`)
 			writeJSON(rw, http.StatusUnauthorized, map[string]string{"detail": "a key from keys.yaml is needed"})
@@ -424,7 +464,10 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			api.ServeHTTP(rw, r)
 			return
 		}
-		if !isInference(r) {
+		// Every request to ComfyUI is a request for its model, a page or a
+		// file too, so a key's allow list covers its outputs (0030).
+		comfy := w.isComfyUI(r)
+		if !isInference(r) && !comfy {
 			next.ServeHTTP(rw, r)
 			return
 		}
@@ -436,8 +479,21 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			writeJSON(rw, http.StatusForbidden, map[string]string{"detail": "key " + key.name + " may not use " + model})
 			return
 		}
+		// A host with no ComfyUI among its models answers 404, and its
+		// models are not stopped for a job that never runs.
+		if comfy && !known {
+			next.ServeHTTP(rw, r)
+			return
+		}
+		// ComfyUI's pages, files and websocket pass untracked: an open tab
+		// and a render's progress frames are not the user's interactive
+		// traffic on the GPU (0030).
+		if comfy && r.Method != http.MethodPost {
+			next.ServeHTTP(rw, r)
+			return
+		}
 		// A stuck agent is only looked for on this host's models (0009, 0015).
-		if known && local {
+		if known && local && !comfy {
 			var done bool
 			if r, model, local, done = w.unstick(rw, r, key, model); done {
 				return
@@ -476,7 +532,13 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 				pause(p)
 			}
 		}
-		id, refusedBy := w.traffic.begin(class, r.URL.Path, devices, stop, session)
+		var id uint64
+		var refusedBy string
+		if comfy {
+			id, refusedBy = w.traffic.beginComfyUI(class, r.URL.Path, devices, stop)
+		} else {
+			id, refusedBy = w.traffic.begin(class, r.URL.Path, devices, stop, session)
+		}
 		if refusedBy == offDevice {
 			w.refuseOff(rw)
 			return
@@ -487,6 +549,10 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 		}
 		defer w.runWhenQuiet()
 		defer w.traffic.end(id)
+		if comfy && isComfyUIJob(r) {
+			done := w.beforeComfyUIJob()
+			defer done()
+		}
 		tracked := &trackedWriter{ResponseWriter: rw, session: session}
 		next.ServeHTTP(tracked, r.WithContext(ctx))
 		var y yielded
@@ -758,6 +824,12 @@ func (w *Warden) status(mux *http.ServeMux) {
 		if err != nil {
 			writeJSON(rw, http.StatusServiceUnavailable, map[string]string{"detail": "probe failed: " + err.Error()})
 			return
+		}
+		w.mu.Lock()
+		queue := w.comfyQueue
+		w.mu.Unlock()
+		if queue != nil {
+			res.ComfyUIJobs = queue()
 		}
 		writeJSON(rw, http.StatusOK, res)
 	})

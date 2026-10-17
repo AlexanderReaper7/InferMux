@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/catalog"
+	"github.com/mostlygeek/llama-swap/internal/config"
 	"github.com/mostlygeek/llama-swap/internal/cpurun"
 	"github.com/mostlygeek/llama-swap/internal/drain"
 	"github.com/mostlygeek/llama-swap/internal/event"
@@ -122,6 +123,9 @@ func (r *replacedServers) running(current *server.Server) map[string]string {
 // host's as <host>/<model>, a peer's as <peer>/<model>, a local one as
 // <this host>/<model>.
 func (a activeModels) Qualify(r *http.Request) (string, bool, bool) {
+	if isComfyUIPath(r) {
+		return a.qualifyComfyUI()
+	}
 	if name, ok := a.remote.get().Qualify(r); ok {
 		return name, false, true
 	}
@@ -251,6 +255,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		runner.ask(*flagCPUSocket)
 	}
 	w := warden.NewWithProbes(runner.add(cfg), activeModels{server: active, host: cfg.Host, remote: remotes, replaced: &replacedServers{}}, log, probes)
+	w.SetComfyUIModel(config.ComfyUIModelID)
 	// A model that stops before it is ready, most often a start that failed,
 	// leaves a line saying what held the card (0016, 3), and its next start
 	// on the GPU waits for more room than it had (0028). Any end of a start
@@ -277,6 +282,9 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	recorder := &stats.Recorder{
 		Capacity: 500,
 		Model: func(r *http.Request) (string, bool) {
+			if isComfyUIPath(r) {
+				return "", false // a render has no first token
+			}
 			if _, ok := remotes.get().Qualify(r); ok {
 				return "", false // recorded on the host that runs it
 			}
@@ -399,6 +407,14 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			os.Exit(1)
 		}
 	}
+	stopComfyUI := func() {}
+	if *flagComfyUIListen != "" {
+		stopComfyUI, err = serveComfyUI(*flagComfyUIListen, httpServer.Handler)
+		if err != nil {
+			slog.Error("failed to open the ComfyUI listener", "comfyui-listen", *flagComfyUIListen, "error", err)
+			os.Exit(1)
+		}
+	}
 	jobStore.Start()
 
 	reloadWarden := func() {
@@ -458,6 +474,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		}
 		unsubscribe()
 		stopControl()
+		stopComfyUI()
 		if err := jobStore.Stop(10 * time.Second); err != nil {
 			log.Warnf("Jobs not written: %v", err)
 		}
