@@ -2,7 +2,7 @@
 
 - Date: 2026-10-12
 - Status: accepted; built and tested 2026-10-12, running on strix by 2026-10-14 (the socket is `infermux:users` 0660 and answers the user without a key); no launch through `infermux-hold` watched yet
-- Amended on 2026-10-17 (item 4): the launch always wins. The unload cuts the requests in flight on the GPU, interactive ones included, and is never refused, and `infermux-hold` starts the command whatever the daemon answers.
+- Amended on 2026-10-17 (item 4): the launch always wins. The unload cuts the requests in flight on the GPU, interactive ones included, and is never refused, and `infermux-hold` starts the command whatever the daemon answers. Deployed on strix and the zbox at 18:22 and 18:30 CEST.
 - Amends [0004](0004-infermux-request-priority.md): an unload by hand cuts an interactive request on the GPU (the rule). Keeps [0017](0017-a-priority-process-takes-the-card.md) (reloads during a yield stay allowed).
 
 ## Context
