@@ -1,7 +1,7 @@
 # 0029. A group stays loaded together on a device that swaps
 
 - Date: 2026-10-16
-- Status: accepted; built 2026-10-16, not deployed, and no group in the signed config yet (Verification, below)
+- Status: accepted; built 2026-10-16, not deployed; the agent's model is in the signed config, its group is not yet (Verification, below)
 - Amends [0022](0022-one-signed-config-placed-by-device.md), item 7 (a device swaps one model at a time, or runs several at once) and the derivation's groups with `exclusive: false`, and [0028](0028-a-start-on-the-gpu-needs-room-on-the-card.md) (two starts at once on one GPU). Keeps 0028's check and 0002's free VRAM rule for the verdict.
 
 ## Context
@@ -49,8 +49,8 @@ The agent's calls:
 - strix's derived file changes on the next deploy from `groups:` to `routing.router.use: matrix`, and so does the zbox's. Under the matrix a device's model never stops another device's, as `exclusive: false` had it.
 - `only_if_idle` (0021) still refuses a GPU that is serving another model's request, and a group member's sibling counts as another model, though no swap would follow. No group member has an `only_if_idle` place.
 - A second start on the GPU waits for the first, up to the first's load time: the reranker's cold start was 5.5 s on 2026-10-16 (0028, Verification). Only group members start at once on a GPU that swaps, since llama-swap queues a start that would stop one in progress.
-- The card holds both members, about 7.5 GB with the agent at its high estimate, against strix's 10,240 MB less the desktop. While they are loaded, a game has less room, and the warden yields and unloads them as for any model.
-- The agent's model file and its group in nixcfg's signed config are a separate step, for the user to publish.
+- The card holds both members, 7.2 GB by their `vram_mb` (the agent's 4200 since revision 10 of 2026-10-17, the reranker's 3000), against strix's 10,240 MB less the desktop. That leaves the desktop 3 GB; at 03:30 CEST on 2026-10-17 it held 4.4 GB, and then the second member to start gets `gpu_no_room` (0028) and the first stays. While both are loaded, a game has less room, and the warden yields and unloads them as for any model.
+- The agent's model is in the signed config since revision 9 of 2026-10-17, with its `vram_mb` since revision 10. Its group is not, since a daemon without 0029 refuses `together` (`field together not found in type placement.Device`, the UI's check on strix that night).
 
 ## Verification
 
@@ -61,5 +61,7 @@ Done, by tests (`go test`, no GPU):
 - `infermux_together_test.go`: the daemon with a signed config whose GPU has the group, on the part it derives, through a real llama-swap and the event wiring. The reranker asked for while the agent starts runs its command only once the agent is ready; both answer 200 and are ready together; a chat model then runs alone.
 
 Eight mutations each failed them: the slot's wait removed (the warden's tests and the daemon's), a refused start keeping the slot, any end freeing it, the group ignored by the derivation, the event wiring removed (which hung the daemon test until the limit was added), the matrix pruning removed, the warning removed, and a group on a concurrent device allowed.
+
+Watched on strix, 2026-10-17, under revision 10 and the daemon without 0029: with SemSearch's eval holding 4,030 MB in its own server, an unmarked request for the agent answered 503 `gpu_no_room`, "needs 4200 MB of VRAM and the card has 1741 MB free", in 0.008 s, and nothing started (0028's check on the new model).
 
 Not yet: deployed, a group in the signed config, the agent's model on the card beside the reranker, and the WARN of a start that waited out the limit.
