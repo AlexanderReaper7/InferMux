@@ -50,12 +50,72 @@ type activeModels struct {
 	server func() *server.Server
 	host   string
 	remote *remoteHolder
+	// replaced, when set, counts the models of a server a config reload
+	// replaced until they have stopped.
+	replaced *replacedServers
 }
 
-func (a activeModels) Running() map[string]string { return a.server().RunningModelStates() }
-func (a activeModels) UnloadAll() []string        { return a.server().UnloadAllModels() }
+// Running is the active server's models, and under replaced those of a
+// server a reload replaced that have not stopped yet: llama-swap makes the
+// new server active before it shuts the old one down, which waits for the
+// old one's requests, and the old models hold their VRAM until they exit. A
+// verdict that saw only the new server read the card as holding no model,
+// and on the zbox, whose loaded embedder leaves 314 MB free, every Publish
+// paused it for 300 s and cancelled its batch work (2026-10-17).
+func (a activeModels) Running() map[string]string {
+	current := a.server()
+	states := current.RunningModelStates()
+	if a.replaced != nil {
+		for id, state := range a.replaced.running(current) {
+			if _, ok := states[id]; !ok {
+				states[id] = state
+			}
+		}
+	}
+	return states
+}
+
+func (a activeModels) UnloadAll() []string { return a.server().UnloadAllModels() }
 func (a activeModels) Unload(ids []string) []string {
 	return a.server().UnloadModels(ids)
+}
+
+// replacedServers follows which server is active, and keeps each one a
+// reload replaced while any of its models is not stopped.
+type replacedServers struct {
+	mu       sync.Mutex
+	last     *server.Server
+	outgoing []*server.Server
+}
+
+// running notes current as the active server and returns the models of
+// the servers it replaced that have not stopped, dropping a server once it
+// has none.
+func (r *replacedServers) running(current *server.Server) map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.last != nil && r.last != current && !slices.Contains(r.outgoing, r.last) {
+		r.outgoing = append(r.outgoing, r.last)
+	}
+	r.last = current
+	states := map[string]string{}
+	kept := r.outgoing[:0]
+	for _, old := range r.outgoing {
+		if old == current {
+			continue
+		}
+		running := old.RunningModelStates()
+		if len(running) == 0 {
+			continue
+		}
+		kept = append(kept, old)
+		for id, state := range running {
+			states[id] = state
+		}
+	}
+	clear(r.outgoing[len(kept):])
+	r.outgoing = kept
+	return states
 }
 
 // Qualify names the model as a key's allow list sees it (0006, 4): another
@@ -190,7 +250,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	if one != nil && *flagCPUSocket != "" {
 		runner.ask(*flagCPUSocket)
 	}
-	w := warden.NewWithProbes(runner.add(cfg), activeModels{server: active, host: cfg.Host, remote: remotes}, log, probes)
+	w := warden.NewWithProbes(runner.add(cfg), activeModels{server: active, host: cfg.Host, remote: remotes, replaced: &replacedServers{}}, log, probes)
 	// A model that stops before it is ready, most often a start that failed,
 	// leaves a line saying what held the card (0016, 3), and its next start
 	// on the GPU waits for more room than it had (0028). Any end of a start
