@@ -102,6 +102,9 @@ type Warden struct {
 	announced Verdict
 	// off is set while the local models are off (0025).
 	off *Off
+	// holds counts the holds infermux-hold has open on the control socket
+	// (0024, 5).
+	holds int
 	// gpuStart is the model whose start holds the GPU's one start slot, ""
 	// when none does, since gpuStartAt, and gpuStartDone is signalled when it
 	// is freed (0029).
@@ -790,6 +793,8 @@ type VerdictState struct {
 	Jobs any `json:"jobs,omitempty"`
 	// Off is set while the local models are off (0025).
 	Off *Off `json:"off"`
+	// Holds is how many holds keep every model off the GPU (0024, 5).
+	Holds int `json:"holds"`
 }
 
 type comfyState struct {
@@ -817,6 +822,7 @@ func (w *Warden) State() VerdictState {
 		ProbeError:    w.probeError,
 		Resources:     w.lastResources,
 		Off:           w.off,
+		Holds:         w.holds,
 	}
 	if w.placement != nil {
 		s.Placement = make(map[string][]string, len(w.placement))
@@ -880,6 +886,7 @@ func (w *Warden) LocalControl() http.Handler {
 	mux := http.NewServeMux()
 	w.status(mux)
 	w.controls(mux)
+	w.holdRoute(mux)
 	return mux
 }
 

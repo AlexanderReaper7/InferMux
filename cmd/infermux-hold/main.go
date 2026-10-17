@@ -7,9 +7,11 @@
 //
 // The launch always wins over every client (the user, 2026-10-17; 0024, 4):
 // the daemon cuts the requests on the GPU, answered 503 gpu_held, and stops
-// ComfyUI and the models. The command always starts. A card that is not clear
-// within -timeout, or a daemon that cannot be reached, is a warning on stderr
-// and the desktop. A daemon that is not running holds nothing.
+// ComfyUI and the models. Until the command exits the daemon starts no model
+// on the GPU, for any client, and answers each start 503 gpu_held (0024, 5).
+// The command always starts. A card that is not clear within -timeout, or a
+// daemon that cannot be reached, is a warning on stderr and the desktop. A
+// daemon that is not running holds nothing.
 package main
 
 import (
@@ -44,20 +46,31 @@ func main() {
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
+	c := hold.Dial(*socket)
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout+10*time.Second)
-	release, err := hold.Dial(*socket).Clear(ctx, *timeout)
+	// The hold first, so that no model starts on the GPU between the unload
+	// and the command's exit (0024, 5).
+	unhold, holdErr := c.Hold(ctx)
+	release, err := c.Clear(ctx, *timeout)
 	cancel()
 	switch {
 	case errors.Is(err, hold.ErrNotRunning):
 		warn("InferMux is not running, so it holds no VRAM; starting anyway")
-	case err != nil:
+	case err != nil || holdErr != nil:
+		if holdErr != nil {
+			err = errors.Join(fmt.Errorf("not held: %w", holdErr), err)
+		}
 		notify("GPU may not be clear", "starting anyway: "+err.Error())
+	}
+	done := func() {
+		handBack(release)
+		unhold()
 	}
 
 	cmd := exec.Command(fs.Arg(0), fs.Args()[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
-		handBack(release)
+		done()
 		refuse(err)
 	}
 	go func() {
@@ -66,7 +79,7 @@ func main() {
 		}
 	}()
 	err = cmd.Wait()
-	handBack(release)
+	done()
 	var exit *exec.ExitError
 	switch {
 	case err == nil:

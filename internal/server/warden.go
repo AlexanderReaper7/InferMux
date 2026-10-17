@@ -1,6 +1,7 @@
 package server
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/mostlygeek/llama-swap/internal/swaputil"
@@ -93,4 +94,12 @@ func (s *Server) PeerModel(name string) (proxy, model string, ok bool) {
 		return "", "", false
 	}
 	return s.cfg.Peers[peerID].Proxy, model, true
+}
+
+// ModelRoutes is each path that dispatches by the model a request names, by
+// how it names it: in a JSON body, in a form, or in a GET's query. Any of
+// them can start a local model. The root's test of a hold walks them, so a
+// route upstream adds is walked too (0024, 5).
+func ModelRoutes() (postJSON, postForm, get []string) {
+	return slices.Clone(modelPostJSONRoutes), slices.Clone(modelPostFormRoutes), slices.Clone(modelGetRoutes)
 }

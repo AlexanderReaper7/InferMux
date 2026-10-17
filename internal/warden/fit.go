@@ -30,14 +30,22 @@ import (
 // had allocated. The slot is held until StartEnded, so the second reads a
 // figure the first's VRAM is in.
 //
-// ComfyUI's own start takes no slot and is not checked: it loads no weights
-// until a job asks for them, and each other model's start sends it /free
-// once the slot is taken (0030).
+// ComfyUI's own start takes no slot and its room is not checked: it loads no
+// weights until a job asks for them, and each other model's start sends it
+// /free once the slot is taken (0030).
+//
+// While a hold is open every start on the GPU is refused, ComfyUI's too,
+// before the slot and again once the card is read (0024, 5).
 func (w *Warden) Fits(model string) error {
 	w.mu.Lock()
-	if !slices.Contains(w.devicesLocked(model), DeviceGPU) || model == w.comfyModel {
+	if !slices.Contains(w.devicesLocked(model), DeviceGPU) {
 		w.mu.Unlock()
 		return nil
+	}
+	// A hold refuses every start on the GPU, ComfyUI's too (0024, 5).
+	if err := w.heldLocked(model); err != nil || model == w.comfyModel {
+		w.mu.Unlock()
+		return err
 	}
 	if w.gpuStart != "" {
 		w.log.Infof("<%s> waits for <%s> to finish starting on the GPU, so its reading of the card includes that model", model, w.gpuStart)
@@ -60,6 +68,23 @@ func (w *Warden) Fits(model string) error {
 	}
 	w.gpuStart, w.gpuStartAt = model, time.Now()
 	w.mu.Unlock()
+	if err := w.room(model); err != nil {
+		return err
+	}
+	// A hold that began while the start waited for the slot or read the card.
+	w.mu.Lock()
+	err := w.heldLocked(model)
+	w.mu.Unlock()
+	if err != nil {
+		w.StartEnded(model)
+	}
+	return err
+}
+
+// room is the rest of Fits once the model holds the start slot: ComfyUI's
+// /free, then the card's free figure against the model's need. A refusal
+// frees the slot.
+func (w *Warden) room(model string) error {
 	w.freeComfyUIFor(model)
 	w.mu.Lock()
 	need := w.placement[model].VRAMMB

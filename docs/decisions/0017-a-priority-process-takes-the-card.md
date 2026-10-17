@@ -3,7 +3,8 @@
 - Date: 2026-10-06
 - Status: accepted; built and tested 2026-10-06, not deployed or watched
 - Amended by [0030](0030-comfyui-runs-under-infermux.md) on 2026-10-17: the yield also stops ComfyUI, its queue cleared and its job interrupted first (the rule).
-- Rule: `priority_processes` in `warden.yaml` names processes whose CUDA work takes the card. One of them in NVML's compute list is contention at any load. The yield it causes unloads the models without waiting out `interactive_recent_seconds`, but never under a request in flight, and stops ComfyUI, its queue cleared and its job interrupted first, render or not (0030). One arriving during a pause that has already unloaded owes another unload. Requests during the yield are served as in any yield (0002, 2): an interactive one loads its model again. A name in both `desktop_processes` and `priority_processes` is refused.
+- Amended by [0024](0024-a-game-clears-the-card-before-it-starts.md) on 2026-10-17: while `infermux-hold` holds the GPU, no request loads a model there (the rule, 0024, 5).
+- Rule: `priority_processes` in `warden.yaml` names processes whose CUDA work takes the card. One of them in NVML's compute list is contention at any load. The yield it causes unloads the models without waiting out `interactive_recent_seconds`, but never under a request in flight, and stops ComfyUI, its queue cleared and its job interrupted first, render or not (0030). One arriving during a pause that has already unloaded owes another unload. Requests during the yield are served as in any yield (0002, 2): an interactive one loads its model again, except while `infermux-hold` holds the GPU (0024, 5). A name in both `desktop_processes` and `priority_processes` is refused.
 - Keeps 0004, 1 (the user's own requests are never killed) and 0004, 5 (desktop processes by name).
 
 ## Context

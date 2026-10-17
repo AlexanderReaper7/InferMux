@@ -111,10 +111,10 @@ With `-control-socket` (the module's `controlGroup`), the verdict, the probe and
 
 ```sh
 infermux-hold -- gamescope -W 3840 -H 2160 -f -- %command%   # a Steam launch option
-curl --unix-socket /run/infermux/control.sock http://infermux/warden/verdict
+curl --unix-socket /run/infermux/control.sock http://infermux/warden/verdict   # "holds": how many hold the GPU
 ```
 
-It pauses by hand, unloads, and waits up to `-timeout` (10 s) for InferMux to hold no VRAM, then starts the command whatever happened; what did not happen goes to stderr and a notification. When the command exits it sets `auto`. The launch always wins (0024, 4): the unload is never refused, and cuts every request in flight on the GPU, yours included. One whose answer has not started gets 503 `gpu_held` with `resume_quiet_seconds` as `Retry-After`, and a model with another place fails over to it; a stream already running breaks off, a job is held for `resume_quiet_seconds`, and ComfyUI's job is interrupted and its queue cleared. The CPU's models stay while a request of yours runs on them.
+It opens a hold, pauses by hand, unloads, and waits up to `-timeout` (10 s) for InferMux to hold no VRAM, then starts the command whatever happened; what did not happen goes to stderr and a notification. When the command exits it sets `auto` and closes the hold. While a hold is open no model starts on the GPU, whoever asks, a GET to `/upstream/` and preload included: each start gets 503 `gpu_held` with `resume_quiet_seconds` as `Retry-After` (0024, 5). The hold is one request to `POST /warden/hold` on the socket, kept open, so it ends when `infermux-hold` dies, and holds stack. The launch always wins (0024, 4): the unload is never refused, and cuts every request in flight on the GPU, yours included. One whose answer has not started gets 503 `gpu_held` with `resume_quiet_seconds` as `Retry-After`, and a model with another place fails over to it; a stream already running breaks off, a job is held for `resume_quiet_seconds`, and ComfyUI's job is interrupted and its queue cleared. The CPU's models stay while a request of yours runs on them.
 
 A key with `class: batch` makes its requests batch. While the verdict is pause such a request gets:
 

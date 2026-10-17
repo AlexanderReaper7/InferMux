@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -180,5 +181,109 @@ func TestHold_NoDaemonIsNotRunning(t *testing.T) {
 	_, err := client(filepath.Join(t.TempDir(), "absent.sock")).Clear(context.Background(), time.Second)
 	if !errors.Is(err, ErrNotRunning) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// holdDaemon answers /warden/hold on a Unix socket as the daemon does, and
+// counts the holds open.
+type holdDaemon struct {
+	mu    sync.Mutex
+	holds int
+}
+
+func (d *holdDaemon) open() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.holds
+}
+
+func (d *holdDaemon) serve(t *testing.T, socket string) (stop func()) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /warden/hold", func(rw http.ResponseWriter, r *http.Request) {
+		d.mu.Lock()
+		d.holds++
+		d.mu.Unlock()
+		defer func() {
+			d.mu.Lock()
+			d.holds--
+			d.mu.Unlock()
+		}()
+		rw.WriteHeader(http.StatusOK)
+		rw.Write([]byte(`{"holds":1}` + "\n"))
+		http.NewResponseController(rw).Flush()
+		<-r.Context().Done()
+	})
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: mux}
+	go server.Serve(ln)
+	return func() { server.Close() }
+}
+
+func (d *holdDaemon) until(t *testing.T, holds int) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); d.open() != holds; {
+		if time.Now().After(deadline) {
+			t.Fatalf("holds %d, want %d", d.open(), holds)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// shortSocket is a socket path under the 108 bytes a socket's may have.
+func shortSocket(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "hold")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s")
+}
+
+// A hold is open from Hold's return until release (0024, 5).
+func TestHold_AHoldLastsUntilReleased(t *testing.T) {
+	socket := shortSocket(t)
+	d := &holdDaemon{}
+	defer d.serve(t, socket)()
+	release, err := client(socket).Hold(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.open() != 1 {
+		t.Fatalf("holds %d after Hold returned", d.open())
+	}
+	release()
+	d.until(t, 0)
+}
+
+// A daemon that is not running yet, or that restarts, is held as soon as it
+// is back: the hold dials again until release.
+func TestHold_AHoldDialsAgainUntilReleased(t *testing.T) {
+	socket := shortSocket(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	release, err := client(socket).Hold(ctx)
+	if !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("no daemon: %v", err)
+	}
+	d := &holdDaemon{}
+	stop := d.serve(t, socket)
+	d.until(t, 1)
+	stop()
+	d.until(t, 0)
+	os.Remove(socket)
+	stop = d.serve(t, socket)
+	defer stop()
+	d.until(t, 1)
+	release()
+	d.until(t, 0)
+	// Released, it dials no more.
+	time.Sleep(50 * time.Millisecond)
+	if d.open() != 0 {
+		t.Fatalf("holds %d after release", d.open())
 	}
 }
