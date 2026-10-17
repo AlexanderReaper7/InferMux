@@ -63,9 +63,6 @@ func TestUnloadAndForgiveOverHTTP(t *testing.T) {
 	done := make(chan struct{})
 	go func() { post(handler, "/v1/chat/completions", nil); close(done) }()
 	<-inside
-	if code, out := control(handler, "/warden/unload", ""); code != http.StatusConflict || h.models.unloads != 0 {
-		t.Fatalf("unload under an interactive request: %d %v, unloads %d", code, out, h.models.unloads)
-	}
 	h.reading = busy(60)
 	h.w.Tick() // owed, deferred under the request
 	if code, out := control(handler, "/warden/forgive", ""); code != 200 || out["was_owed"] != true {
@@ -80,8 +77,22 @@ func TestUnloadAndForgiveOverHTTP(t *testing.T) {
 	if h.models.unloads != 0 {
 		t.Fatal("a forgiven unload was paid")
 	}
-	if code, out := control(handler, "/warden/unload", ""); code != 200 || h.models.unloads != 1 {
-		t.Fatalf("unload when quiet: %d %v", code, out)
+	// Never refused, under the user's own request too (0024, 4).
+	cut := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			<-r.Context().Done()
+		}
+	}))
+	answered := make(chan int)
+	go func() { answered <- post(cut, "/v1/chat/completions", nil).Code }()
+	for len(h.w.traffic.state().InFlight) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if code, out := control(cut, "/warden/unload", ""); code != 200 || h.models.unloads != 1 {
+		t.Fatalf("unload under an interactive request: %d %v, unloads %d", code, out, h.models.unloads)
+	}
+	if code := <-answered; code != http.StatusServiceUnavailable {
+		t.Fatalf("the cut request answered %d", code)
 	}
 }
 

@@ -27,7 +27,7 @@ var ErrNotRunning = errors.New("InferMux is not running")
 
 type Client struct {
 	HTTP *http.Client
-	// Poll is how often a refused unload is tried again.
+	// Poll is how often the card is read while InferMux's VRAM comes back.
 	Poll time.Duration
 }
 
@@ -40,17 +40,18 @@ func Dial(socket string) *Client {
 				return d.DialContext(ctx, "unix", socket)
 			},
 		}},
-		Poll: time.Second,
+		Poll: 250 * time.Millisecond,
 	}
 }
 
-// Clear pauses the warden by hand, unloads the models, and waits until
-// InferMux holds no VRAM. An unload is refused while an interactive request
-// is in flight (0004), so it is tried again until timeout; once one is
-// taken, only the probe is read again. On success,
-// release hands the verdict back to the warden; on failure the verdict is
-// already handed back. A pause the user had set by hand is left in place
-// either way.
+// Clear pauses the warden by hand, unloads the models, and waits up to
+// timeout until InferMux holds no VRAM. A game launch always wins over every
+// client (the user, 2026-10-17; 0024, 4): the daemon's unload cuts the
+// requests on the GPU and is never refused, so nothing is tried again, and
+// whatever did not happen is a warning, never a reason not to launch. err
+// says what did not happen. release hands the verdict back to the warden
+// once the command exits, and is nil only when the daemon could not be read
+// at all. A pause the user had set by hand is left in place.
 func (c *Client) Clear(ctx context.Context, timeout time.Duration) (release func(context.Context) error, err error) {
 	var state struct {
 		Manual *struct {
@@ -66,42 +67,35 @@ func (c *Client) Clear(ctx context.Context, timeout time.Duration) (release func
 		}
 		return c.call(ctx, http.MethodPost, "/warden/manual", map[string]string{"action": "auto"}, nil)
 	}
-	fail := func(err error) (func(context.Context) error, error) {
-		if rerr := release(context.WithoutCancel(ctx)); rerr != nil {
-			err = fmt.Errorf("%w; and the pause was not handed back: %v", err, rerr)
-		}
-		return nil, err
-	}
+	var missed []error
+	// A disabled warden refuses a manual verdict; its models unload all the
+	// same.
 	if err := c.call(ctx, http.MethodPost, "/warden/manual", map[string]string{"action": "pause"}, nil); err != nil {
-		return fail(err)
+		missed = append(missed, fmt.Errorf("not paused: %w", err))
 	}
+	if err := c.call(ctx, http.MethodPost, "/warden/unload", nil, nil); err != nil {
+		return release, errors.Join(append(missed, fmt.Errorf("not unloaded: %w", err))...)
+	}
+	// The models are stopped; the driver frees their memory a moment after
+	// the processes exit.
 	deadline := time.Now().Add(timeout)
-	unloaded := false
 	for {
-		var err error
-		if !unloaded {
-			err = c.call(ctx, http.MethodPost, "/warden/unload", nil, nil)
-			unloaded = err == nil
+		var res struct {
+			OurVRAMMB int `json:"our_vram_mb"`
 		}
-		if unloaded {
-			// The models are stopped; the driver frees their memory a moment
-			// after the processes exit.
-			var res struct {
-				OurVRAMMB int `json:"our_vram_mb"`
-			}
-			if err = c.call(ctx, http.MethodGet, "/warden/resources", nil, &res); err == nil && res.OurVRAMMB > 0 {
-				err = fmt.Errorf("InferMux still holds %d MiB of VRAM", res.OurVRAMMB)
-			}
-			if err == nil {
-				return release, nil
-			}
+		err := c.call(ctx, http.MethodGet, "/warden/resources", nil, &res)
+		if err == nil && res.OurVRAMMB == 0 {
+			return release, errors.Join(missed...)
+		}
+		if err == nil {
+			err = fmt.Errorf("InferMux still holds %d MiB of VRAM", res.OurVRAMMB)
 		}
 		if time.Now().Add(c.Poll).After(deadline) {
-			return fail(fmt.Errorf("the card is not clear after %s: %w", timeout, err))
+			return release, errors.Join(append(missed, fmt.Errorf("the card is not clear after %s: %w", timeout, err))...)
 		}
 		select {
 		case <-ctx.Done():
-			return fail(ctx.Err())
+			return release, errors.Join(append(missed, ctx.Err())...)
 		case <-time.After(c.Poll):
 		}
 	}

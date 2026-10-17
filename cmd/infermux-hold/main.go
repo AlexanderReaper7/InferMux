@@ -1,14 +1,15 @@
 // infermux-hold clears this host's card before it starts a command, and hands
 // the GPU back to the warden's judgement when the command exits (0024).
 //
-//	infermux-hold [-socket /run/infermux/control.sock] [-timeout 30s] -- <command>
+//	infermux-hold [-socket /run/infermux/control.sock] [-timeout 10s] -- <command>
 //
 // As a Steam launch option: infermux-hold -- gamescope ... -- %command%
 //
-// A card that does not come clear within -timeout, because an interactive
-// request is still running, refuses the launch: a game started beside a model
-// keeps its render targets in system memory for its whole run. A daemon that
-// is not running holds nothing, so the command starts with a warning.
+// The launch always wins over every client (the user, 2026-10-17; 0024, 4):
+// the daemon cuts the requests on the GPU, answered 503 gpu_held, and stops
+// ComfyUI and the models. The command always starts. A card that is not clear
+// within -timeout, or a daemon that cannot be reached, is a warning on stderr
+// and the desktop. A daemon that is not running holds nothing.
 package main
 
 import (
@@ -28,7 +29,7 @@ import (
 func main() {
 	fs := flag.NewFlagSet("infermux-hold", flag.ExitOnError)
 	socket := fs.String("socket", "/run/infermux/control.sock", "the daemon's control socket")
-	timeout := fs.Duration("timeout", 30*time.Second, "how long to wait for the card to come clear before refusing")
+	timeout := fs.Duration("timeout", 10*time.Second, "how long to wait for InferMux's VRAM to come back before starting anyway")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: infermux-hold [-socket <path>] [-timeout <duration>] -- <command> [args...]")
 		fs.PrintDefaults()
@@ -50,7 +51,7 @@ func main() {
 	case errors.Is(err, hold.ErrNotRunning):
 		warn("InferMux is not running, so it holds no VRAM; starting anyway")
 	case err != nil:
-		refuse(err)
+		notify("GPU may not be clear", "starting anyway: "+err.Error())
 	}
 
 	cmd := exec.Command(fs.Arg(0), fs.Args()[1:]...)
@@ -96,13 +97,17 @@ func warn(msg string) {
 	fmt.Fprintln(os.Stderr, "infermux-hold:", msg)
 }
 
-// refuse says why on stderr and, since a Steam launch has no terminal, on
+// notify says msg on stderr and, since a Steam launch has no terminal, on
 // the desktop as well.
-func refuse(err error) {
-	msg := "not started: " + err.Error()
+func notify(title, msg string) {
 	warn(msg)
-	if notify, lookErr := exec.LookPath("notify-send"); lookErr == nil {
-		exec.Command(notify, "--app-name=infermux-hold", "--urgency=critical", "GPU not clear", msg).Run()
+	if send, err := exec.LookPath("notify-send"); err == nil {
+		exec.Command(send, "--app-name=infermux-hold", "--urgency=critical", title, msg).Run()
 	}
+}
+
+// refuse is a command that could not be started.
+func refuse(err error) {
+	notify("Not started", "not started: "+err.Error())
 	os.Exit(1)
 }

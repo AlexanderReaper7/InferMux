@@ -99,7 +99,7 @@ imx '127.0.0.1:5001/warden/requests?hosts=all'   # the last requests and their t
 
 # controls; a write needs the X-InferMux header
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/manual -d '{"action":"pause"}'   # or resume, auto
-imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/unload         # 409 while a request of yours runs
+imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/unload         # cuts what runs on the GPU, yours too
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/forgive        # drop an owed unload
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/cancel-batch
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/comfyui/free
@@ -114,7 +114,7 @@ infermux-hold -- gamescope -W 3840 -H 2160 -f -- %command%   # a Steam launch op
 curl --unix-socket /run/infermux/control.sock http://infermux/warden/verdict
 ```
 
-It pauses by hand, unloads, and waits up to `-timeout` (30 s) for InferMux to hold no VRAM; if the card is still not clear, typically because one of your requests is running, it refuses to start the command and says why in a notification. When the command exits it sets `auto`.
+It pauses by hand, unloads, and waits up to `-timeout` (10 s) for InferMux to hold no VRAM, then starts the command whatever happened; what did not happen goes to stderr and a notification. When the command exits it sets `auto`. The launch always wins (0024, 4): the unload is never refused, and cuts every request in flight on the GPU, yours included. One whose answer has not started gets 503 `gpu_held` with `resume_quiet_seconds` as `Retry-After`, and a model with another place fails over to it; a stream already running breaks off, a job is held for `resume_quiet_seconds`, and ComfyUI's job is interrupted and its queue cleared. The CPU's models stay while a request of yours runs on them.
 
 A key with `class: batch` makes its requests batch. While the verdict is pause such a request gets:
 

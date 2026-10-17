@@ -397,10 +397,11 @@ func (w *Warden) disabledTick() Verdict {
 
 // closeSessions ends the open sessions with 1013 before their models stop,
 // so a client learns why rather than seeing its connection drop (0018, 7).
-// Every one is idle by now: one that moves data defers the unload.
+// On a yield every one is idle by now, since one that moves data defers the
+// unload; an unload by hand closes a moving one too (0024, 4).
 func (w *Warden) closeSessions(device, reason string) {
 	if n := w.traffic.closeSessions(device, stream.TryAgainLater, reason); n > 0 {
-		w.log.Infof("Closed %d idle session(s): %s", n, reason)
+		w.log.Infof("Closed %d session(s): %s", n, reason)
 	}
 }
 
@@ -526,7 +527,7 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			hold := time.Duration(w.config().Policy.ResumeQuietSeconds) * time.Second
 			stop = func(device, why string) {
 				p := Pause{Device: device, Reason: why}
-				if device == "" {
+				if device == "" || device == heldDevice {
 					p.Hold = hold
 				}
 				pause(p)
@@ -572,6 +573,11 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 			case offDevice:
 				// Failover takes it to the next place, as for any 503 (0016).
 				w.refuseOff(rw)
+			case heldDevice:
+				// The GPU's window, so a retry does not load the model into
+				// the card while the game reads its budget; failover takes
+				// it to the next place at once (0016).
+				writeRefusal(rw, "gpu_held", "request cut: the GPU was cleared by hand or for a game", w.config().Policy.ResumeQuietSeconds)
 			default:
 				w.refuse(rw, y.device, "batch request cancelled, "+deviceName(y.device)+" was yielded: ")
 			}
@@ -587,12 +593,18 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 // cancel by hand.
 type yielded struct{ device string }
 
+// heldDevice stands for the GPU in a cancel by an unload by hand or by
+// infermux-hold, which cuts every class (0024, 4).
+const heldDevice = "held"
+
 func (y yielded) Error() string {
 	switch y.device {
 	case "":
 		return "cancelled by hand"
 	case offDevice:
 		return "the local models are off"
+	case heldDevice:
+		return "the GPU was cleared by hand"
 	}
 	return deviceName(y.device) + " was yielded"
 }

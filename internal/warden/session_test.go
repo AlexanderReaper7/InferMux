@@ -188,18 +188,16 @@ func TestTheEndOfAnIdleSessionIsNotActivity(t *testing.T) {
 	}
 }
 
-func TestUnloadByHandWaitsOnlyForAMovingSession(t *testing.T) {
+// An unload by hand closes even a session moving data, with 1013 and why,
+// before the model under it stops (0024, 4; 0018, 7).
+func TestAnUnloadByHandClosesAMovingSession(t *testing.T) {
 	h, c, front := sessionHarness(t)
 	client := openSession(t, front, "my-key")
 	c.at(time.Second)
 	client.RoundTrip(2, []byte("pcm"))
 	c.at(2 * time.Second)
-	if _, err := h.w.UnloadNow(); err == nil {
-		t.Fatal("unloaded by hand under a session moving data")
-	}
-	c.at(12 * time.Second)
-	if _, err := h.w.UnloadNow(); err != nil {
-		t.Fatalf("an idle session refused the unload: %v", err)
+	if unloaded := h.w.UnloadNow(); len(unloaded) == 0 {
+		t.Fatal("nothing unloaded under a session moving data")
 	}
 	if code, reason := client.Closed(); code != 1013 || reason != "infermux: the models were unloaded by hand" {
 		t.Fatalf("closed with %d %q", code, reason)

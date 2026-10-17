@@ -19,6 +19,7 @@ type daemon struct {
 	calls    []string
 	manual   string // the manual verdict before Clear: "" or "pause"
 	refusals int    // unloads refused before one succeeds; -1 for all of them
+	disabled bool   // a disabled warden, which refuses a manual verdict
 	ourVRAM  []int  // our_vram_mb, one per /warden/resources, the last repeated
 }
 
@@ -47,6 +48,12 @@ func (d *daemon) serve(t *testing.T) string {
 	mux.HandleFunc("POST /warden/manual", func(rw http.ResponseWriter, r *http.Request) {
 		var body struct{ Action string }
 		json.NewDecoder(r.Body).Decode(&body)
+		if d.disabled {
+			d.record(body.Action + "-refused")
+			rw.WriteHeader(http.StatusConflict)
+			rw.Write([]byte(`{"detail":"the warden is disabled"}`))
+			return
+		}
 		d.record(body.Action)
 		rw.Write([]byte("{}"))
 	})
@@ -113,27 +120,47 @@ func TestHold_ClearPausesUnloadsAndHandsBack(t *testing.T) {
 	}
 }
 
-func TestHold_ARefusedUnloadIsTriedAgain(t *testing.T) {
-	d := &daemon{refusals: 2}
-	if _, err := client(d.serve(t)).Clear(context.Background(), time.Second); err != nil {
-		t.Fatal(err)
+// A game launch always wins (0024, 4): an unload that fails is a warning
+// and is not tried again, and the pause stays for the command's run.
+func TestHold_AFailedUnloadIsAWarningAndKeepsThePause(t *testing.T) {
+	d := &daemon{refusals: -1}
+	release, err := client(d.serve(t)).Clear(context.Background(), time.Second)
+	if err == nil || !strings.Contains(err.Error(), "not unloaded") || !strings.Contains(err.Error(), "interactive request(s) in flight") {
+		t.Fatalf("the warning is lost: %v", err)
 	}
-	if got := d.log(); got != "pause unload-refused unload-refused unload" {
+	if release == nil {
+		t.Fatal("no release, so the pause would outlive the command")
+	}
+	if got := d.log(); got != "pause unload-refused" {
+		t.Fatalf("before the command: %q", got)
+	}
+	release(context.Background())
+	if got := d.log(); got != "pause unload-refused auto" {
+		t.Fatalf("after the command: %q", got)
+	}
+}
+
+// A card that stays busy past the timeout is a warning, and the pause stays.
+func TestHold_ACardThatStaysBusyIsAWarning(t *testing.T) {
+	d := &daemon{ourVRAM: []int{5838}}
+	release, err := client(d.serve(t)).Clear(context.Background(), 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "still holds 5838 MiB") || release == nil {
+		t.Fatalf("%v, release %v", err, release != nil)
+	}
+	if got := d.log(); got != "pause unload" {
 		t.Fatalf("%q", got)
 	}
 }
 
-func TestHold_ACardThatStaysBusyRefusesAndHandsBack(t *testing.T) {
-	d := &daemon{refusals: -1}
-	release, err := client(d.serve(t)).Clear(context.Background(), 50*time.Millisecond)
-	if err == nil || release != nil {
-		t.Fatal("cleared a card whose unload was always refused")
+// A disabled warden refuses the manual pause; the models unload all the same.
+func TestHold_ADisabledWardenStillUnloads(t *testing.T) {
+	d := &daemon{disabled: true}
+	release, err := client(d.serve(t)).Clear(context.Background(), time.Second)
+	if err == nil || !strings.Contains(err.Error(), "not paused") || release == nil {
+		t.Fatalf("%v, release %v", err, release != nil)
 	}
-	if !strings.Contains(err.Error(), "interactive request(s) in flight") {
-		t.Errorf("the reason is lost: %v", err)
-	}
-	if got := d.log(); !strings.HasPrefix(got, "pause unload-refused") || !strings.HasSuffix(got, "auto") {
-		t.Fatalf("the pause was not handed back: %q", got)
+	if got := d.log(); got != "pause-refused unload" {
+		t.Fatalf("%q", got)
 	}
 }
 

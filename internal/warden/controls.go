@@ -77,22 +77,36 @@ func (w *Warden) Forgive() bool {
 	return owed
 }
 
-// UnloadNow unloads every model, unless an interactive request is in flight:
-// the user's own request is never killed (0004), not even by the user's click.
-func (w *Warden) UnloadNow() ([]string, error) {
-	if n := w.traffic.interactiveInFlight(); n > 0 {
-		return nil, fmt.Errorf("%d interactive request(s) in flight", n)
+// UnloadNow takes the card at once, for the user's click and for
+// infermux-hold, and is never refused: a game launch always wins over every
+// client (the user, 2026-10-17; 0024, 4). Every request in flight on the GPU
+// is cut, answered 503 gpu_held, its stream broken or its job paused;
+// ComfyUI's queue is cleared and its job interrupted; and the GPU's models
+// stop. The CPU's stop too, unless an interactive request is in flight on
+// the CPU, which holds no VRAM, so 0004 still keeps it.
+func (w *Warden) UnloadNow() []string {
+	// A session gets its close frame before its request is cancelled.
+	w.closeSessions(DeviceGPU, "infermux: the models were unloaded by hand")
+	if n := w.traffic.cutOn(DeviceGPU, "the models were unloaded by hand"); n > 0 {
+		w.log.Infof("Cut %d request(s) on the GPU, cleared by hand", n)
 	}
-	w.closeSessions("", "infermux: the models were unloaded by hand")
 	// ComfyUI stops with the rest, its job interrupted first (0030).
 	w.clearComfyUI()
-	unloaded := w.models.UnloadAll()
+	stop := w.runningOn(DeviceGPU)
+	cpu := slices.DeleteFunc(w.runningOn(DeviceCPU), func(id string) bool { return slices.Contains(stop, id) })
+	if busy, _ := w.traffic.interactiveRecent(0, DeviceCPU); busy && len(cpu) > 0 {
+		w.log.Infof("Left running on the CPU, an interactive request is in flight there: %s", strings.Join(cpu, ", "))
+	} else {
+		w.closeSessions(DeviceCPU, "infermux: the models were unloaded by hand")
+		stop = append(stop, cpu...)
+	}
+	unloaded := w.models.Unload(stop)
 	w.mu.Lock()
 	w.gpuUnload.pending, w.cpu.unload.pending = false, false
 	w.gpuUnload.last = unloaded
 	w.mu.Unlock()
 	w.log.Infof("Models unloaded by hand: %s", orNone(strings.Join(unloaded, ", ")))
-	return unloaded, nil
+	return unloaded
 }
 
 // CancelBatch cancels every batch request in flight without refusing new ones.
@@ -284,12 +298,7 @@ func (w *Warden) controls(mux *http.ServeMux) {
 		writeJSON(rw, http.StatusOK, map[string]bool{"was_owed": w.Forgive()})
 	})
 	mux.HandleFunc("POST /warden/unload", func(rw http.ResponseWriter, r *http.Request) {
-		unloaded, err := w.UnloadNow()
-		if err != nil {
-			writeJSON(rw, http.StatusConflict, map[string]string{"detail": err.Error()})
-			return
-		}
-		writeJSON(rw, http.StatusOK, map[string][]string{"unloaded": unloaded})
+		writeJSON(rw, http.StatusOK, map[string][]string{"unloaded": w.UnloadNow()})
 	})
 	mux.HandleFunc("POST /warden/cancel-batch", func(rw http.ResponseWriter, r *http.Request) {
 		writeJSON(rw, http.StatusOK, map[string]int{"cancelled": w.CancelBatch()})

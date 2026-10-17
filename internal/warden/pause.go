@@ -11,8 +11,9 @@ import (
 
 // Pause is what the warden tells a job whose batch request it would cancel.
 type Pause struct {
-	// Device is the device that yielded, "" for a cancel by hand, and "off"
-	// when the local models went off (0025).
+	// Device is the device that yielded, "" for a cancel by hand, "off"
+	// when the local models went off (0025), and "held" for an unload by
+	// hand or by infermux-hold (0024, 4).
 	Device string
 	Reason string
 	// Hold is how long a cancel by hand keeps the job back: the GPU's

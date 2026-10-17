@@ -3,6 +3,7 @@
 - Date: 2026-10-10
 - Status: built 2026-10-11 (`internal/jobs`), running on both hosts since 2026-10-14 (`/warden/jobs` answers); Episteme does not send jobs yet
 - Amended by [0026](0026-a-deploy-waits-for-the-requests-running.md): a deploy lets the job attempts running finish first.
+- Amended by [0024](0024-a-game-clears-the-card-before-it-starts.md) on 2026-10-17: an unload by hand pauses a job and holds it, as a cancel by hand does.
 - Would replace [0001](0001-the-warden-decides-and-says-so.md)'s pause and resume pushed to consumers, for first-party consumers. Replaces item 4 of [0022](0022-one-signed-config-placed-by-device.md)'s "The warden covers every device". Keeps [0004](0004-infermux-request-priority.md): the user's own request is never killed, and now never paused.
 
 ## Context
@@ -77,7 +78,7 @@ OpenRouter, the one config's only cloud, through strix. The nemotron stream is `
 - **`/warden/jobs` sits behind the key check** like any `/warden/*` route, writes need `X-InferMux` as the other writes do, and a job belongs to the key that made it: another key gets 404 for it.
 - **An attempt is an in-process request through the failover handler**, with the client's `Authorization` and `X-Api-Key`, so the lanes, the gate and the stats see it as any request. `warden.WithPauser` on its context makes a yield or a cancel by hand call the job instead of cancelling the request.
 - **The key is never written to disk.** A job read back after a restart waits, with no limit, until its client's next `/warden/jobs` request brings the key. Without `keys_file` it goes on at once.
-- **A cancel by hand holds a job for the GPU's `resume_quiet_seconds`**, what `Retry-After` tells any other client, and a resume does not cut the hold short. A yield holds nothing, since another place may take the job.
+- **A cancel by hand, or an unload by hand (0024, 4), holds a job for the GPU's `resume_quiet_seconds`**, what `Retry-After` tells any other client, and a resume does not cut the hold short. A yield holds nothing, since another place may take the job.
 - **The continuation:** the assistant message always carries `content`, `""` if nothing was said yet. A client's own trailing assistant message is merged with the reply so far. `max_tokens`, `max_completion_tokens` and `n_predict` go down by one per text chunk received, to at least 1.
 - **A `json_schema` reply is continued like any other**, on the one measurement above.
 - **A chat or completion attempt is always streamed**, whatever the client asked for. The events carry the chunks either way.

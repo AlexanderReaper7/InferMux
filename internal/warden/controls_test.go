@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -89,15 +90,50 @@ func TestAutoAndAManualVerdictEqualToTheOwnClearTheHold(t *testing.T) {
 
 // --- actions ----------------------------------------------------------------
 
-func TestUnloadNowRefusesUnderAnInteractiveRequest(t *testing.T) {
+// An unload by hand, and so infermux-hold, is never refused and never waits
+// (the user, 2026-10-17; 0024, 4): the user's own request on the GPU is cut
+// and answered 503 gpu_held with the GPU's window as Retry-After, and the
+// models stop under it.
+func TestAnUnloadByHandCutsTheUsersRequestOnTheGPU(t *testing.T) {
 	h := newHarness(t, nil)
-	id, _ := h.w.traffic.begin(Interactive, "/v1/messages", gpu, func(string, string) {}, nil)
-	if _, err := h.w.UnloadNow(); err == nil || h.models.unloads != 0 {
-		t.Fatal("unloaded under the user's own request")
+	inside := make(chan struct{})
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		close(inside)
+		<-r.Context().Done()
+	}))
+	done := make(chan *httptest.ResponseRecorder)
+	go func() { done <- post(handler, "/v1/chat/completions", nil) }()
+	<-inside
+	unloaded := h.w.UnloadNow()
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the request was not cut; unloaded %v", unloaded)
+	}
+	if !slices.Equal(unloaded, []string{"qwen"}) || h.models.Running()["qwen"] != "" {
+		t.Fatalf("unloaded %v, running %v", unloaded, h.models.Running())
+	}
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), `"type":"gpu_held"`) || rec.Header().Get("Retry-After") != "300" {
+		t.Fatalf("%d, Retry-After %q: %s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+}
+
+// The CPU holds no VRAM, so an interactive request in flight there keeps
+// the CPU's models through an unload by hand, and the GPU's stop all the
+// same (0004).
+func TestAnUnloadByHandLeavesTheCPUUnderTheUsersRequest(t *testing.T) {
+	h := newHarness(t, nil)
+	h.models.running = map[string]string{"qwen": "ready", "embed": "ready"}
+	h.w.SetPlacement(Placement{"qwen": {Devices: []string{DeviceGPU}}, "embed": {Devices: []string{DeviceCPU}}})
+	cut := false
+	id, _ := h.w.traffic.begin(Interactive, "/v1/embeddings", []string{DeviceCPU}, func(string, string) { cut = true }, nil)
+	if unloaded := h.w.UnloadNow(); !slices.Equal(unloaded, []string{"qwen"}) || cut {
+		t.Fatalf("unloaded %v, the CPU's request cut %v", unloaded, cut)
 	}
 	h.w.traffic.end(id)
-	if unloaded, err := h.w.UnloadNow(); err != nil || len(unloaded) != 1 {
-		t.Fatalf("%v %v", unloaded, err)
+	if unloaded := h.w.UnloadNow(); !slices.Equal(unloaded, []string{"embed"}) {
+		t.Fatalf("unloaded %v", unloaded)
 	}
 }
 

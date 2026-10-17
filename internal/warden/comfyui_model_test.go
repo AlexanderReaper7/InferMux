@@ -238,9 +238,9 @@ func TestAPriorityProcessStopsComfyUI(t *testing.T) {
 // An unload by hand clears ComfyUI's queue before it stops it with the rest.
 func TestAnUnloadByHandClearsComfyUIFirst(t *testing.T) {
 	h := newComfyHarness(t)
-	unloaded, err := h.w.UnloadNow()
-	if err != nil || h.clears != 1 || !slices.Contains(unloaded, "comfyui_auto") {
-		t.Fatalf("%v %v, clears %d", unloaded, err, h.clears)
+	unloaded := h.w.UnloadNow()
+	if h.clears != 1 || !slices.Contains(unloaded, "comfyui_auto") {
+		t.Fatalf("%v, clears %d", unloaded, h.clears)
 	}
 }
 

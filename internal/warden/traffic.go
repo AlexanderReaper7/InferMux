@@ -311,6 +311,24 @@ func (t *traffic) cancelBatch(device, why string) int {
 	return len(batch)
 }
 
+// cutOn cancels every request in flight on device, whatever its class, for
+// an unload by hand or by infermux-hold (0024, 4); a job's request is paused.
+// The caller closes the sessions first. Returns how many.
+func (t *traffic) cutOn(device, why string) int {
+	t.mu.Lock()
+	var on []*flight
+	for _, f := range t.flights {
+		if f.on(device) {
+			on = append(on, f)
+		}
+	}
+	t.mu.Unlock()
+	for _, f := range on {
+		f.cancel(heldDevice, why)
+	}
+	return len(on)
+}
+
 // closeSessions closes every upgraded session on device, "" for all, with
 // code and reason, before the models under them stop (0018, 7). Returns how
 // many.

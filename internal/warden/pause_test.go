@@ -70,6 +70,32 @@ func TestACancelByHandHoldsAJobForTheResumeWindow(t *testing.T) {
 	close(release)
 }
 
+// An unload by hand pauses a job's request on the GPU, for the GPU's window,
+// rather than failing it (0024, 4).
+func TestAnUnloadByHandHoldsAJobForTheResumeWindow(t *testing.T) {
+	h := newHarness(t, nil)
+	h.w.Tick()
+	told := make(chan Pause, 1)
+	inside := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	handler := h.wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		close(inside)
+		<-release
+	}))
+	go handler.ServeHTTP(httptest.NewRecorder(), jobRequest(func(p Pause) { told <- p }))
+	<-inside
+	h.w.UnloadNow()
+	select {
+	case p := <-told:
+		if p.Device != heldDevice || p.Reason != "the models were unloaded by hand" || p.Hold != 300*time.Second {
+			t.Fatalf("told %+v", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the job was not paused")
+	}
+}
+
 func TestAJobsBatchRequestIsStillRefusedWhileYielded(t *testing.T) {
 	h := newHarness(t, nil)
 	h.reading = busy(60)

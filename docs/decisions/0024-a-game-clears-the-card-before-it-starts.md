@@ -2,7 +2,8 @@
 
 - Date: 2026-10-12
 - Status: accepted; built and tested 2026-10-12, running on strix by 2026-10-14 (the socket is `infermux:users` 0660 and answers the user without a key); no launch through `infermux-hold` watched yet
-- Keeps [0004](0004-infermux-request-priority.md) (an interactive request in flight is never unloaded under) and [0017](0017-a-priority-process-takes-the-card.md) (reloads during a yield stay allowed).
+- Amended on 2026-10-17 (item 4): the launch always wins. The unload cuts the requests in flight on the GPU, interactive ones included, and is never refused, and `infermux-hold` starts the command whatever the daemon answers.
+- Amends [0004](0004-infermux-request-priority.md): an unload by hand cuts an interactive request on the GPU (the rule). Keeps [0017](0017-a-priority-process-takes-the-card.md) (reloads during a yield stay allowed).
 
 ## Context
 
@@ -23,14 +24,21 @@ The user, 2026-10-12, each asked in turn.
 1. **The game's launch clears the card first.** `infermux-hold -- <command>` sets a manual pause, unloads the models, waits until InferMux holds no VRAM, then runs the command. When the command exits it sets `auto`. As a Steam launch option: `infermux-hold -- gamescope ... -- %command%`. Rejected: noticing the game by process name, which is still after the budget is read.
 2. **A command of InferMux's, not a script in nixcfg.** It ships and is tested with the API it calls.
 3. **No key.** The daemon also listens on a Unix socket, `-control-socket`, mode 0660 and owned by `-control-group`, that answers only `/warden/verdict`, `/warden/resources` and the controls (`/warden/manual`, `unload`, `forgive`, `cancel-batch`, `comfyui/free`), without a key. File permissions are the authorization. Rejected: exempting loopback, because `tailscale serve` forwards tailnet requests to the daemon from 127.0.0.1, so any tailnet device could have paused the warden and unloaded models. Also rejected: a key file for the command.
-4. **A card that will not come clear refuses the launch.** The unload is refused while an interactive request is in flight (0004), so it is tried every second for `-timeout` (30 s). If the card is still not clear, the pause is handed back, the reason goes to stderr and `notify-send`, and the command does not start. Rejected: launching anyway with a warning, which gives exactly the 2 fps run this exists to prevent.
+4. **The launch always wins.** The user, 2026-10-17: `infermux-hold` is never refused and never waits, for any client. The requests in flight on the GPU are cut, each client gets an error it can retry, and ComfyUI gets `/interrupt`, a queue clear and a stop (0030). Replaced: from 2026-10-12 the unload was refused while an interactive request was in flight (0004), tried every second for 30 s, and a card still not clear refused the launch.
+
+   How it is done (the agent's choices):
+
+   - `/warden/unload` is never refused, for the user's click as for `infermux-hold`. It cuts every request in flight on the GPU, interactive and batch. A cut request whose answer has not started gets 503 with `{"error":{"type":"gpu_held",...}}` and `resume_quiet_seconds` (300) as `Retry-After`. A model with another place fails over to it at once, as on any 503. The 300 s keeps a client that obeys the header from loading the model again while the game reads its budget, and it is what a batch request gets during a pause. An answer already streaming is broken off. A job is paused and held for the same 300 s (0023). A session is closed with 1013, moving data or not (0018, 7).
+   - The CPU's models stop too, unless an interactive request is in flight on the CPU. They hold no VRAM, so 0004 still keeps them.
+   - `infermux-hold` pauses, unloads once and reads `/warden/resources` every 250 ms for up to `-timeout` (10 s) until InferMux holds no VRAM. That wait is for the driver to free the stopped servers' memory, never for a client. A refused pause (a disabled warden answers 409), a failed unload, or a card still not clear at the timeout is a warning on stderr and in `notify-send`, and the command starts.
 
 How it is built (the agent's choice): `Warden.LocalControl` is the keyless handler. `serveControl` in `infermux_control.go` binds the socket. The client is `internal/hold`, and the command is `cmd/infermux-hold`. The module's `services.infermux.controlGroup` turns on both and puts `infermux-hold` on the PATH. "Clear" means `/warden/unload` answered 200 and `/warden/resources` shows `our_vram_mb` at 0. A daemon that is not running (no socket, or connection refused) holds no models, since they are its children, so the command starts with a warning.
 
 ## Consequences
 
-- The by-hand unload skips `interactive_recent_seconds`. A model used a minute before the launch is unloaded, and the next request loads it again. Launching a game is the user's own statement that the card is wanted.
-- `/warden/unload` stops every model, the CPU device's too (0022), although those hold no VRAM.
+- The by-hand unload skips `interactive_recent_seconds` and cuts what is in flight on the GPU. A reply the user is reading as it streams stops mid-sentence, and the next request loads the model again. Launching a game, or pressing Unload all, is the user's own statement that the card is wanted.
+- `/warden/unload` stops every model, the CPU device's too (0022), although those hold no VRAM, except while an interactive request is in flight there.
+- A card InferMux could not clear launches the game anyway, with the 2 fps run of 2026-10-12 as the risk. The unload no longer waits for anything, so what is left is a server that takes over 10 s to exit, or another program's VRAM, which InferMux does not hold and cannot free.
 - A manual pause ends once the warden's own verdict changes (README). With the game's load at or above 25%, the warden pauses on its own and keeps the card until 300 s after the game exits. A game below 25% keeps the manual pause until `infermux-hold` exits. If `infermux-hold` is killed with SIGKILL before the game creates load, the pause stays until the next verdict change or a hand `auto`. That is the 0001 residual risk in a new form, not mitigated here.
 - An interactive request during the game can still load a model (0017, 3). The game then loses only what it allocates afterwards, not what it placed at start.
 - If the user had set a manual pause before the launch, `infermux-hold` leaves it in place at exit.
@@ -38,4 +46,8 @@ How it is built (the agent's choice): `Warden.LocalControl` is the keyless handl
 - The daemon joins `controlGroup` to hand it the socket. On strix that group is `users`, so the user's existing session can open the socket without logging in again.
 - Handing the socket to the group is an `fchownat`, which the unit's `~@privileged` filter forbids. The first deploy on strix, 2026-10-12, was killed with SIGSYS at start. The user chose to allow `@chown` when `controlGroup` is set, over a systemd socket unit (no chown and no group for the daemon, but a connection to a stopped InferMux would start it). A dynamic user can only chown its own files to groups it is in.
 
-Verified: `TestLocalControlTakesNoKeyAndServesOnlyTheControls`, `TestControl_TheSocketIsTheGroupsOrOnlyOurs` and `internal/hold`'s five tests. A keyless handler that also served the keyed routes failed the first, and a release that cleared the user's own pause failed `TestHold_AUsersOwnPauseIsLeftInPlace`.
+## Verification
+
+Tests: `TestLocalControlTakesNoKeyAndServesOnlyTheControls`, `TestControl_TheSocketIsTheGroupsOrOnlyOurs`, `internal/hold`'s six tests and `cmd/infermux-hold`'s `TestHold_TheCommandStartsWhateverTheDaemonAnswers`. A keyless handler that also served the keyed routes failed the first, and a release that cleared the user's own pause failed `TestHold_AUsersOwnPauseIsLeftInPlace`.
+
+Item 4's amendment, in `internal/warden`: `TestAnUnloadByHandCutsTheUsersRequestOnTheGPU` (503 `gpu_held`, `Retry-After: 300`, the model stopped), `TestAnUnloadByHandLeavesTheCPUUnderTheUsersRequest`, `TestAnUnloadByHandHoldsAJobForTheResumeWindow`, `TestAnUnloadByHandClosesAMovingSession` and `TestUnloadAndForgiveOverHTTP`. In `internal/hold`: `TestHold_AFailedUnloadIsAWarningAndKeepsThePause`, `TestHold_ACardThatStaysBusyIsAWarning` and `TestHold_ADisabledWardenStillUnloads`. Each failed against the code before the amendment, and eleven mutations of the amendment each failed one. No launch through `infermux-hold` watched yet, and the cut not watched running.
