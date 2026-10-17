@@ -126,12 +126,12 @@ in
   '';
 
   # The warden's and the UI's tests, the e2e runs' check of the card, and
-  # llama-swap's for the two places InferMux touches. The rest of upstream's
+  # llama-swap's for the three places InferMux touches. The rest of upstream's
   # suite starts processes and is upstream's to run, internal/process's
   # included: only our start gate's test runs there.
   checkPhase = ''
     runHook preCheck
-    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/ ./cmd/infermux-config/ ./cmd/infermux-hold/ ./e2e/ ./internal/server/ .
+    go test -count=1 ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/ ./cmd/infermux-config/ ./cmd/infermux-hold/ ./e2e/ ./internal/server/ ./internal/swaputil/ .
     go test -count=1 -run '^TestTheStartGate' ./internal/process/
     runHook postCheck
   '';

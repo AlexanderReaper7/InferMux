@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mostlygeek/llama-swap/internal/stream"
@@ -522,7 +523,7 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 		if name, ok := w.local(model); ok && known {
 			devices = w.devices(name)
 		}
-		stop := func(device, why string) { cancel(yielded{device}) }
+		stop := func(device, why string) { cancel(w.cut(device)) }
 		if pause := PauserOf(r.Context()); pause != nil {
 			hold := time.Duration(w.config().Policy.ResumeQuietSeconds) * time.Second
 			stop = func(device, why string) {
@@ -557,30 +558,18 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 		tracked := &trackedWriter{ResponseWriter: rw, session: session}
 		next.ServeHTTP(tracked, r.WithContext(ctx))
 		var y yielded
-		if !errors.As(context.Cause(ctx), &y) || tracked.hijacked {
-			// A cancelled session has had its close frame (0018, 7).
+		if !errors.As(context.Cause(ctx), &y) || tracked.hijacked || y.sent.Load() {
+			// A cancelled session has had its close frame (0018, 7), and a
+			// refusal llama-swap wrote is the answer.
 			return
 		}
-		// llama-swap returns without a word when the request's context ends,
-		// and Go would send that as an empty 200. A cancelled batch request
-		// has to read as a failure to the client that sent it.
+		// A cancelled request has to read as a failure to the client that
+		// sent it, and Go would send nothing written as an empty 200.
+		// llama-swap writes the refusal itself where its writer records the
+		// status (yielded), and this is for a path that did not.
 		if !tracked.started {
-			switch y.device {
-			case "":
-				// The GPU's window, as before there were devices: a client that
-				// honours Retry-After must not send the work straight back.
-				writeRefusal(rw, "cancelled", "batch request cancelled by hand", w.config().Policy.ResumeQuietSeconds)
-			case offDevice:
-				// Failover takes it to the next place, as for any 503 (0016).
-				w.refuseOff(rw)
-			case heldDevice:
-				// The GPU's window, so a retry does not load the model into
-				// the card while the game reads its budget; failover takes
-				// it to the next place at once (0016).
-				writeRefusal(rw, "gpu_held", "request cut: the GPU was cleared by hand or for a game", w.config().Policy.ResumeQuietSeconds)
-			default:
-				w.refuse(rw, y.device, "batch request cancelled, "+deviceName(y.device)+" was yielded: ")
-			}
+			kind, message, retry := y.refusal()
+			writeRefusal(rw, kind, message, retry)
 			return
 		}
 		// Mid-stream: the status is gone, so break the connection rather than
@@ -590,8 +579,71 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 }
 
 // yielded is a request's cancel cause: the device that yielded, "" for a
-// cancel by hand.
-type yielded struct{ device string }
+// cancel by hand. It is the request's answer too, with the methods of
+// llama-swap's HTTPError. The context llama-swap's access log remembers as
+// the client's is the warden's, so a cancel reads to llama-swap as a client
+// that hung up, and InferMux's hook in its swaputil writes such a cause
+// where it would record 499. Its access log, its activity and the stats
+// then record the 503 the client gets.
+type yielded struct {
+	device string
+	*answer
+}
+
+// answer is a cancelled request's refusal, read from the warden once, when
+// llama-swap or Wrap first asks for it, since the verdict's reason is in it.
+type answer struct {
+	w             *Warden
+	device        string
+	once          sync.Once
+	kind, message string
+	retry         int
+	// sent is set once llama-swap has the body to write.
+	sent atomic.Bool
+}
+
+func (w *Warden) cut(device string) yielded {
+	return yielded{device: device, answer: &answer{w: w, device: device}}
+}
+
+// refusal is what the refusal says, by the device that was cancelled.
+func (a *answer) refusal() (kind, message string, retry int) {
+	a.once.Do(func() {
+		w := a.w
+		quiet := w.config().Policy.ResumeQuietSeconds
+		switch a.device {
+		case "":
+			// The GPU's window, as before there were devices: a client that
+			// honours Retry-After must not send the work straight back.
+			a.kind, a.message, a.retry = "cancelled", "batch request cancelled by hand", quiet
+		case offDevice:
+			// Failover takes it to the next place, as for any 503 (0016).
+			e := w.offRefusal()
+			a.kind, a.message, a.retry = "off", e.Error(), e.RetryAfter
+		case heldDevice:
+			// The GPU's window, so a retry does not load the model into the
+			// card while the game reads its budget; failover takes it to the
+			// next place at once (0016).
+			a.kind, a.message, a.retry = "gpu_held", "request cut: the GPU was cleared by hand or for a game", quiet
+		default:
+			a.kind, a.message, a.retry = w.refusal(a.device, "batch request cancelled, "+deviceName(a.device)+" was yielded: ")
+		}
+	})
+	return a.kind, a.message, a.retry
+}
+
+func (y yielded) StatusCode() int { return http.StatusServiceUnavailable }
+
+func (y yielded) Header() http.Header {
+	_, _, retry := y.refusal()
+	return refusalHeader(retry)
+}
+
+func (y yielded) Body() []byte {
+	kind, message, _ := y.refusal()
+	y.sent.Store(true)
+	return refusalBody(kind, message)
+}
 
 // heldDevice stands for the GPU in a cancel by an unload by hand or by
 // infermux-hold, which cuts every class (0024, 4).
@@ -626,21 +678,30 @@ func (w *Warden) IsBatch(r *http.Request) bool {
 // refuse answers 503 for a device's yield, with its reason and its own
 // resume window as Retry-After.
 func (w *Warden) refuse(rw http.ResponseWriter, device, why string) {
+	kind, message, retry := w.refusal(device, why)
+	writeRefusal(rw, kind, message, retry)
+}
+
+func (w *Warden) refusal(device, why string) (kind, message string, retry int) {
 	w.mu.Lock()
-	reason := w.verdictLocked(device).Reason
-	retry := w.cfg.Policy.ResumeQuietSeconds
+	defer w.mu.Unlock()
+	retry = w.cfg.Policy.ResumeQuietSeconds
 	if device == DeviceCPU {
 		retry = w.cfg.CPU.ResumeQuietSeconds
 	}
-	w.mu.Unlock()
-	writeRefusal(rw, device+"_yielded", why+reason, retry)
+	return device + "_yielded", why + w.verdictLocked(device).Reason, retry
 }
 
 func writeRefusal(rw http.ResponseWriter, kind, message string, retry int) {
-	rw.Header().Set("Content-Type", "application/json")
-	rw.Header().Set("Retry-After", strconv.Itoa(retry))
+	for k, v := range refusalHeader(retry) {
+		rw.Header()[k] = v
+	}
 	rw.WriteHeader(http.StatusServiceUnavailable)
 	rw.Write(refusalBody(kind, message))
+}
+
+func refusalHeader(retry int) http.Header {
+	return http.Header{"Content-Type": {"application/json"}, "Retry-After": {strconv.Itoa(retry)}}
 }
 
 func refusalBody(kind, message string) []byte {

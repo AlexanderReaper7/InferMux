@@ -152,6 +152,10 @@ func MarkClientClosed(w http.ResponseWriter, r *http.Request) bool {
 	if !ok || marker.WroteHeader() || ClientContext(r.Context()).Err() == nil {
 		return false
 	}
+	// InferMux: a cancel by the warden in front, answered (infermux.go).
+	if answerCut(w, r) {
+		return true
+	}
 	marker.MarkStatus(StatusClientClosedRequest)
 	return true
 }

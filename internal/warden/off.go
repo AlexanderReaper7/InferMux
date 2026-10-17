@@ -71,13 +71,18 @@ func (w *Warden) SetOff(reason string) {
 // refuseOff answers 503 for a local model while the models are off, with the
 // GPU's resume window as Retry-After, which a job waits at most.
 func (w *Warden) refuseOff(rw http.ResponseWriter) {
+	e := w.offRefusal()
+	writeRefusal(rw, "off", e.Error(), e.RetryAfter)
+}
+
+func (w *Warden) offRefusal() OffError {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	e := OffError{RetryAfter: w.cfg.Policy.ResumeQuietSeconds}
 	if w.off != nil {
 		e.Reason = w.off.Reason
 	}
-	w.mu.Unlock()
-	writeRefusal(rw, "off", e.Error(), e.RetryAfter)
+	return e
 }
 
 // OffError is a model start refused while off, with the answer the gate
