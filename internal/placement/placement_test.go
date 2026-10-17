@@ -125,6 +125,17 @@ func TestTodayZbox(t *testing.T) {
 	if immich.CheckEndpoint != "/ping" || !immich.Unlisted || !slices.Equal(immich.Env, []string{"IMMICH_HOST=127.0.0.1", "CUDA_VISIBLE_DEVICES=0"}) {
 		t.Errorf("immich-ml %+v", immich)
 	}
+	// Under the matrix the embedder and immich-ml take turns on the GPU, as
+	// they did as one exclusive group (0006, 11; 0029).
+	if ls.Routing.Router.Use != "matrix" {
+		t.Fatalf("router %q", ls.Routing.Router.Use)
+	}
+	if got := evicts(ls, "immich-ml", "Octen-Embedding-4B.Q8_0"); !slices.Equal(got, []string{"Octen-Embedding-4B.Q8_0"}) {
+		t.Errorf("immich-ml beside the embedder stopped %v", got)
+	}
+	if got := evicts(ls, "Octen-Embedding-4B.Q8_0", "immich-ml"); !slices.Equal(got, []string{"immich-ml"}) {
+		t.Errorf("the embedder beside immich-ml stopped %v", got)
+	}
 }
 
 // loadLlamaSwap runs the part through llama-swap's own loader, with the

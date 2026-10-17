@@ -101,6 +101,47 @@ balance:
 	}
 }
 
+// A variable never takes a local model's name, since llama-swap reads a
+// variable before a model of the same name: with a model named v1 here,
+// embed@gpu is v2, and both still swap with each other (review of 0029, 4).
+func TestAVariableSkipsALocalModelsName(t *testing.T) {
+	models := map[string]string{"v1": "cmd: ${llama-server} --port ${PORT}\n"}
+	for name, m := range togetherModels {
+		models[name] = m
+	}
+	cfg, _, err := Parse(files(togetherHosts+`
+balance:
+  agent: [a/gpu]
+  reranker: [a/gpu]
+  v1: [a/gpu]
+  embed: [a/cpu, a/gpu]
+`, models))
+	if err != nil {
+		t.Fatal(err)
+	}
+	part, err := cfg.Derive("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(part.LlamaSwap), "v2: embed@gpu") || strings.Contains(string(part.LlamaSwap), "v1: embed@gpu") {
+		t.Fatalf("embed@gpu's variable:\n%s", part.LlamaSwap)
+	}
+	ls := loadLlamaSwap(t, part)
+	for _, c := range []struct {
+		target  string
+		running []string
+		want    []string
+	}{
+		{"embed@gpu", []string{"v1", "embed"}, []string{"v1"}},
+		{"v1", []string{"embed@gpu", "embed"}, []string{"embed@gpu"}},
+		{"v1", []string{"agent", "reranker"}, []string{"agent", "reranker"}},
+	} {
+		if got := evicts(ls, c.target, c.running...); !slices.Equal(got, c.want) {
+			t.Errorf("%s beside %v stopped %v, want %v", c.target, c.running, got, c.want)
+		}
+	}
+}
+
 // A group with one member placed on the device keeps nothing beside it: the
 // member swaps like any other model there, and the config says so.
 func TestAGroupWithOneMemberPlacedSwaps(t *testing.T) {
