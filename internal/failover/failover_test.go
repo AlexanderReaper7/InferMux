@@ -525,6 +525,21 @@ func TestTheFailoverLane(t *testing.T) {
 			}
 		})
 	}
+	// An interactive request has no failover lane, so strix's card is the
+	// last place. When it cannot take the request, as at 12:40 on
+	// 2026-10-17 when its card had 5765 MB free for Octen's 5900 and
+	// answered 503 gpu_no_room, the request waits at the zbox's limit rather
+	// than taking strix's refusal (0019).
+	for _, status := range []int{502, 503, 504} {
+		p := &busyPlaces{places: places{status: map[string]int{"m": status}}, busy: map[string]string{"zbox/m": "capacity"}}
+		h := New(p, "strix", nopLog{})
+		h.Batch = func(*http.Request) bool { return false }
+		h.Set(map[string][]Place{"m": {{Place: "zbox", MaxInflight: 2}, {Place: "strix", MaxInflight: 1, OnlyIfIdle: true}, {Place: "strix/m@cpu", Failover: true, BatchOnly: true}}})
+		rw := post(t, h, "m", nil)
+		if rw.Code != 200 || fmt.Sprint(p.attempts) != "[zbox/m busy m zbox/m]" || rw.Header().Get(PlaceHeader) != "zbox/m" {
+			t.Fatalf("strix's %d: attempts %v status %d at %q, want [zbox/m busy m zbox/m] and 200 at zbox/m", status, p.attempts, rw.Code, rw.Header().Get(PlaceHeader))
+		}
+	}
 	// A batch-only failover place is no place for an interactive request.
 	p := &places{status: map[string]int{"zbox/m": 502, "m": 502}}
 	h := New(p, "strix", nopLog{})

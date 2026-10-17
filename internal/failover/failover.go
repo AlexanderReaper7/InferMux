@@ -134,9 +134,9 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// try attempts each place in order until one serves. The last place of
-	// the request's last lane answers the client even with a failure. It
-	// returns the first place that was only at its limit, where the request
-	// can wait.
+	// the request's last lane answers the client even with a failure, unless
+	// a place before it was only at its limit: the request waits there
+	// instead (0019). It returns the first such place.
 	try := func(lane []Place, last bool, next []Place) (bool, *Place) {
 		var queue *Place
 		for i, place := range lane {
@@ -145,7 +145,7 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 				swaputil.SendResponse(rw, r, http.StatusBadRequest, err.Error())
 				return true, nil
 			}
-			held := &heldWriter{rw: rw, header: http.Header{}, place: h.where(place.Place, model), final: last && i == len(lane)-1}
+			held := &heldWriter{rw: rw, header: http.Header{}, place: h.where(place.Place, model), final: last && i == len(lane)-1 && queue == nil}
 			h.next.ServeHTTP(held, attempt)
 			if !held.failed {
 				return true, nil
