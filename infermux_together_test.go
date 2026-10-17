@@ -25,17 +25,25 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/warden"
 )
 
-// The deep search agent and the reranker stay loaded together on the GPU
-// (0029), through llama-swap's matrix router as the daemon derives it. The
-// reranker asked for while the agent starts waits for the agent's start to
-// end before its own command runs, so its fit check reads a card the agent
-// is on; once both are up neither has stopped the other; and a chat model
-// on the same GPU stops both.
-func TestAGroupStaysLoadedTogetherAndItsStartsTakeTurns(t *testing.T) {
+// groupRig is the daemon with a signed config whose GPU keeps the agent
+// and the reranker loaded together (0029), on the part it derives, through
+// a real llama-swap. Each model's command touches <name>.ran in dir; the
+// agent's /health answers only once agentReady is set.
+type groupRig struct {
+	t          *testing.T
+	dir        string
+	agentReady *atomic.Bool
+	srv        *server.Server
+	front      *httptest.Server
+}
+
+// newGroupRig starts it. agentCmd is the agent's command after its touch.
+func newGroupRig(t *testing.T, agentCmd string) *groupRig {
+	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("STATE_DIRECTORY", dir)
-	var agentReady atomic.Bool
-	model := func(name string, ready func() bool) string {
+	rig := &groupRig{t: t, dir: dir, agentReady: new(atomic.Bool)}
+	model := func(name, then string, ready func() bool) string {
 		backend := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/health" && !ready() {
 				http.Error(rw, "loading", http.StatusServiceUnavailable)
@@ -45,19 +53,15 @@ func TestAGroupStaysLoadedTogetherAndItsStartsTakeTurns(t *testing.T) {
 		}))
 		t.Cleanup(backend.Close)
 		ran := filepath.Join(dir, name+".ran")
-		return fmt.Sprintf("cmd: sh -c \"touch %s; exec sleep 3600\"\nproxy: %s\ncheckEndpoint: /health\nvram_mb: 3000\n", ran, backend.URL)
+		return fmt.Sprintf("cmd: sh -c \"touch %s; %s\"\nproxy: %s\ncheckEndpoint: /health\nvram_mb: 3000\n", ran, then, backend.URL)
 	}
 	always := func() bool { return true }
 	files := map[string][]byte{
 		"infermux.yaml": []byte("hosts:\n  test:\n    url: http://127.0.0.1:1\n    devices:\n      gpu:\n        kind: gpu\n        together:\n          deep-search: [agent, reranker]\n" +
 			"balance:\n  agent: [test/gpu]\n  reranker: [test/gpu]\n  chat: [test/gpu]\n"),
-		"models/agent.yaml":    []byte(model("agent", agentReady.Load)),
-		"models/reranker.yaml": []byte(model("reranker", always)),
-		"models/chat.yaml":     []byte(model("chat", always)),
-	}
-	ran := func(name string) bool {
-		_, err := os.Stat(filepath.Join(dir, name+".ran"))
-		return err == nil
+		"models/agent.yaml":    []byte(model("agent", agentCmd, rig.agentReady.Load)),
+		"models/reranker.yaml": []byte(model("reranker", "exec sleep 3600", always)),
+		"models/chat.yaml":     []byte(model("chat", "exec sleep 3600", always)),
 	}
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -77,7 +81,7 @@ func TestAGroupStaysLoadedTogetherAndItsStartsTakeTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	*flagConfigTrustedKeys, *flagConfigSeed = trusted, seed
-	t.Cleanup(func() { *flagConfigTrustedKeys, *flagConfigSeed = "", "" })
+	t.Cleanup(func() { *flagConfigTrustedKeys, *flagConfigSeed, *flagOffFile = "", "", "" })
 	reloadSignal = func() {}
 	t.Cleanup(func() { reloadSignal = func() { syscall.Kill(os.Getpid(), syscall.SIGHUP) } })
 	was := probes
@@ -107,83 +111,153 @@ func TestAGroupStaysLoadedTogetherAndItsStartsTakeTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	t.Cleanup(func() { st.Close() })
 	logs := logmon.NewGroup(io.Discard, true, true, true)
-	srv, err := server.New(cfg, logs, nil, st, server.BuildInfo{}, nil, nil)
+	rig.srv, err = server.New(cfg, logs, nil, st, server.BuildInfo{}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srv.Shutdown(5 * time.Second)
-	httpServer := &http.Server{Handler: srv}
+	t.Cleanup(func() { rig.srv.Shutdown(5 * time.Second) })
+	httpServer := &http.Server{Handler: rig.srv}
 	wfile := filepath.Join(dir, "warden.yaml")
 	if err := os.WriteFile(wfile, []byte("host: test\npolicy:\n  enabled: false\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stop := startWarden(wfile, "", filepath.Join(dir, "derived"), httpServer, func() *server.Server { return srv }, logs.ProxyLogs)
-	defer stop()
-	front := httptest.NewServer(httpServer.Handler)
-	defer front.Close()
+	stop := startWarden(wfile, "", filepath.Join(dir, "derived"), httpServer, func() *server.Server { return rig.srv }, logs.ProxyLogs)
+	t.Cleanup(stop)
+	rig.front = httptest.NewServer(httpServer.Handler)
+	t.Cleanup(rig.front.Close)
+	return rig
+}
 
-	ask := func(name string) chan int {
-		status := make(chan int, 1)
-		go func() {
-			resp, err := http.Post(front.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"`+name+`","messages":[]}`))
-			if err != nil {
-				status <- 0
-				return
-			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			status <- resp.StatusCode
-		}()
-		return status
-	}
-	until := func(what string, ok func() bool) {
-		t.Helper()
-		for deadline := time.Now().Add(10 * time.Second); !ok(); time.Sleep(20 * time.Millisecond) {
-			if time.Now().After(deadline) {
-				t.Fatalf("never: %s; running %v", what, srv.RunningModelStates())
-			}
+func (r *groupRig) ran(name string) bool {
+	_, err := os.Stat(filepath.Join(r.dir, name+".ran"))
+	return err == nil
+}
+
+func (r *groupRig) ask(name string) chan int {
+	status := make(chan int, 1)
+	go func() {
+		resp, err := http.Post(r.front.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"model":"`+name+`","messages":[]}`))
+		if err != nil {
+			status <- 0
+			return
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+	return status
+}
+
+func (r *groupRig) until(what string, ok func() bool) {
+	r.t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); !ok(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			r.t.Fatalf("never: %s; running %v", what, r.srv.RunningModelStates())
 		}
 	}
-	running := func() []string {
-		var names []string
-		for name, state := range srv.RunningModelStates() {
-			if state == "ready" {
-				names = append(names, name)
-			}
-		}
-		slices.Sort(names)
-		return names
-	}
+}
 
-	agent := ask("agent")
-	until("the agent's command ran", func() bool { return ran("agent") })
-	reranker := ask("reranker")
+// answer is the status a request answered with, within 10 s; the GPU start
+// slot's own limit is 60 s.
+func (r *groupRig) answer(name string, status chan int) int {
+	r.t.Helper()
+	select {
+	case code := <-status:
+		return code
+	case <-time.After(10 * time.Second):
+		r.t.Fatalf("%s never answered; running %v", name, r.srv.RunningModelStates())
+	}
+	return 0
+}
+
+func (r *groupRig) running() []string {
+	var names []string
+	for name, state := range r.srv.RunningModelStates() {
+		if state == "ready" {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// The reranker asked for while the agent starts waits for the agent's start
+// to end before its own command runs, so its fit check reads a card the
+// agent is on; once both are up neither has stopped the other; and a chat
+// model on the same GPU stops both.
+func TestAGroupStaysLoadedTogetherAndItsStartsTakeTurns(t *testing.T) {
+	r := newGroupRig(t, "exec sleep 3600")
+	agent := r.ask("agent")
+	r.until("the agent's command ran", func() bool { return r.ran("agent") })
+	reranker := r.ask("reranker")
 	time.Sleep(300 * time.Millisecond)
-	if ran("reranker") {
+	if r.ran("reranker") {
 		t.Fatal("the reranker started while the agent was still starting, so its fit check read a card without the agent")
 	}
-	agentReady.Store(true)
-	answer := func(name string, status chan int) {
-		t.Helper()
-		select {
-		case code := <-status:
-			if code != http.StatusOK {
-				t.Fatalf("%s answered %d", name, code)
-			}
-		case <-time.After(10 * time.Second):
-			t.Fatalf("%s never answered; running %v", name, srv.RunningModelStates())
+	r.agentReady.Store(true)
+	for name, status := range map[string]chan int{"the agent": agent, "the reranker": reranker} {
+		if code := r.answer(name, status); code != http.StatusOK {
+			t.Fatalf("%s answered %d", name, code)
 		}
 	}
-	answer("the agent", agent)
-	answer("the reranker", reranker)
-	if got := running(); !slices.Equal(got, []string{"agent", "reranker"}) {
+	if got := r.running(); !slices.Equal(got, []string{"agent", "reranker"}) {
 		t.Fatalf("running %v, want the agent beside the reranker", got)
 	}
 
-	answer("chat", ask("chat"))
-	if got := running(); !slices.Equal(got, []string{"chat"}) {
+	if code := r.answer("chat", r.ask("chat")); code != http.StatusOK {
+		t.Fatalf("chat answered %d", code)
+	}
+	if got := r.running(); !slices.Equal(got, []string{"chat"}) {
 		t.Fatalf("running %v, want chat alone", got)
+	}
+}
+
+// A start that fails frees the slot as one that is ready does: the reranker
+// waiting behind the agent starts once the agent's server has exited, not at
+// the slot's limit (review of 0029, 2).
+func TestAFailedStartFreesTheGPUForTheNext(t *testing.T) {
+	r := newGroupRig(t, "sleep 1; exit 1")
+	agent := r.ask("agent")
+	r.until("the agent's command ran", func() bool { return r.ran("agent") })
+	reranker := r.ask("reranker")
+	if code := r.answer("the reranker", reranker); code != http.StatusOK {
+		t.Fatalf("the reranker answered %d", code)
+	}
+	if code := r.answer("the agent", agent); code == http.StatusOK {
+		t.Fatal("the agent, whose server exited, answered 200")
+	}
+}
+
+// An off file written while a start waits for the GPU's start slot refuses
+// that start (0025): the gate read the file before the wait (review of
+// 0029, 1). The flag is set once the daemon runs, so no watcher polls the
+// file and the gate alone answers, as it must between two polls.
+func TestAnOffFileWrittenWhileAStartWaitsRefusesIt(t *testing.T) {
+	off := filepath.Join(t.TempDir(), "off")
+	r := newGroupRig(t, "exec sleep 3600")
+	*flagOffFile = off
+	r.ask("agent")
+	r.until("the agent's command ran", func() bool { return r.ran("agent") })
+	reranker := r.ask("reranker")
+	time.Sleep(300 * time.Millisecond)
+	if err := os.WriteFile(off, []byte("quiet hours\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.agentReady.Store(true)
+	if code := r.answer("the reranker", reranker); code == http.StatusOK {
+		t.Fatal("the reranker answered 200 after the off file was written")
+	}
+	if r.ran("reranker") {
+		t.Fatal("the reranker's command ran after the off file was written")
+	}
+	// The refused start left the slot free: once the file is gone the
+	// reranker starts beside the agent, not at the slot's limit.
+	if err := os.Remove(off); err != nil {
+		t.Fatal(err)
+	}
+	if code := r.answer("the reranker", r.ask("reranker")); code != http.StatusOK {
+		t.Fatalf("the reranker answered %d once the off file was gone", code)
 	}
 }

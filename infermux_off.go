@@ -29,7 +29,7 @@ const offPoll = time.Second
 // from the moment the file is there, not from the next poll, and before the
 // warden exists: preload starts as server.New makes the server. Once the
 // warden exists, a start the file allows still needs room on the card
-// (warden.Fits).
+// (warden.Fits), and the file is read again once that has answered.
 func init() { process.SetStartGate(gateStart) }
 
 // gateWarden is the warden once it exists: the Retry-After of a start
@@ -44,7 +44,15 @@ func gateStart(id string) error {
 	case reason != "":
 		return warden.OffError{Reason: reason}
 	case w != nil:
-		return w.Fits(id)
+		if err := w.Fits(id); err != nil {
+			return err
+		}
+		// Fits may have waited up to a minute for the GPU's start slot
+		// (0029), and a file written meanwhile still refuses the start.
+		if reason := offNow(); reason != "" {
+			w.StartEnded(id)
+			return w.OffError(reason)
+		}
 	}
 	return nil
 }
