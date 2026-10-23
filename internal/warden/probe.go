@@ -49,6 +49,15 @@ type Resources struct {
 	ComfyUIVRAMMB     int     `json:"comfyui_vram_mb"`
 }
 
+// GPUAbsent is a reading that found no GPU on the host: no NVIDIA driver
+// loaded, no NVML library, or no device at the probe's index (0032). It is a
+// state the warden logs once and shows, not a probe that failed.
+type GPUAbsent struct {
+	Detail string
+}
+
+func (e GPUAbsent) Error() string { return e.Detail }
+
 type Process struct {
 	PID     uint32  `json:"pid"`
 	Name    string  `json:"name"`

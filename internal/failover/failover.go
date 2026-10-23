@@ -155,9 +155,11 @@ func (h *Handler) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 				queue = &copy
 			}
 			// A place at its limit is the balance working, not a failure,
-			// and its host's /warden/requests counts each one (0019).
+			// and its host's /warden/requests counts each one (0019). So is
+			// a place on a GPU the host does not have now, which its warden
+			// logs once per absence (0032).
 			logf := h.log.Warnf
-			if held.header.Get(BusyHeader) == "capacity" {
+			if held.header.Get(BusyHeader) == "capacity" || held.header.Get(AbsentHeader) != "" {
 				logf = h.log.Debugf
 			}
 			switch {

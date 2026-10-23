@@ -17,6 +17,11 @@ const (
 	BusyHeader        = "X-InferMux-Busy"
 )
 
+// AbsentHeader is on the warden's refusal of a place on a device the host
+// does not have now, such as a passthrough GPU bound to vfio-pci (0032). The
+// warden's warden.AbsentHeader is the same name.
+const AbsentHeader = "X-InferMux-Absent"
+
 // PlaceHeader names, on an answer, the place that gave it as host/model, so
 // a job (0023) can show where it runs.
 const PlaceHeader = "X-InferMux-Place"

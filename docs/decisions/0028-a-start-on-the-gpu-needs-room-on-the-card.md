@@ -5,6 +5,7 @@
 - Amended on 2026-10-16 by the user: starts on the GPU take turns, so a second one reads the card once the first has ended ([0029](0029-a-group-stays-loaded-together-on-a-device-that-swaps.md)).
 - Amended on 2026-10-17 by the agent, on the aide's request to stop a start loop: a start on the GPU that stopped before it was ready holds the model's next start there for 60 s while the card has no more free than it had then (item 6). `Octen-Embedding-4B.Q8_0` has `vram_mb: 5900` since revision 12.
 - Amended by [0030](0030-comfyui-runs-under-infermux.md) on 2026-10-17: ComfyUI's own start is not checked, and every other start sends an idle ComfyUI `/free` and waits up to 10 s for the card to show its VRAM back before the check reads it.
+- Amended by [0032](0032-the-gpu-may-be-absent.md) on 2026-10-23: a card the start gate cannot read because the host has no GPU refuses a start of a model the one config places there, rather than letting it through.
 - Amends [0004](0004-infermux-request-priority.md): a third exception to "the user's own request is never killed". Keeps [0025](0025-a-safety-stop-takes-the-local-models-off.md)'s start gate, which this check is part of, [0016](0016-a-model-fails-over-between-places.md) (a 503 fails over) and [0002](0002-linux-nvml-router-unload-comfyui.md)'s free VRAM rule for the verdict.
 
 ## Context

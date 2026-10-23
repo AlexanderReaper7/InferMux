@@ -123,6 +123,8 @@ export interface VerdictState {
   last_unload: string[] | null;
   comfyui: { url: string; busy_at: string; freed: boolean } | null;
   probe_error: string | null;
+  // why the host has no GPU now, null while it has one or before a reading (0032)
+  gpu_absent: string | null;
   resources: Resources | null;
   // the one config's (0022), null outside it
   cpu: CPUState | null;

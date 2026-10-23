@@ -3,6 +3,7 @@
 package warden
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -32,19 +33,28 @@ func (p *nvmlProbe) sample() (Resources, error) {
 
 	// libnvidia-ml.so.1 is dlopened here, on first use, so a host without the
 	// driver still runs InferMux and only the probe fails. A failed init is
-	// tried again next call: at boot the driver may not be up yet.
+	// tried again next call: at boot the driver may not be up yet, and a
+	// passthrough card bound to vfio-pci gets its driver only when the user
+	// hands it to the host (0032).
 	if !p.initialised {
 		if ret := nvml.Init(); ret != nvml.SUCCESS {
-			return Resources{}, fmt.Errorf("nvml init: %s", nvml.ErrorString(ret))
+			return Resources{}, initError(ret)
 		}
 		p.initialised = true
 	}
 	device, ret := nvml.DeviceGetHandleByIndex(p.device)
 	if ret != nvml.SUCCESS {
-		return Resources{}, fmt.Errorf("nvml device %d: %s", p.device, nvml.ErrorString(ret))
+		// The card or its driver went away under an initialised NVML. Shut
+		// it down, so the next call initialises again and reads what is
+		// there then.
+		p.reset()
+		return Resources{}, deviceError(p.device, ret)
 	}
 	memory, ret := device.GetMemoryInfo()
 	if ret != nvml.SUCCESS {
+		if gone(ret) {
+			p.reset()
+		}
 		return Resources{}, fmt.Errorf("nvml memory: %s", nvml.ErrorString(ret))
 	}
 	var gpuPercent *float64
@@ -93,4 +103,43 @@ func (p *nvmlProbe) sample() (Resources, error) {
 	}
 
 	return Summarise(vram, util, compute, int(memory.Used>>20), int(memory.Total>>20), gpuPercent, p.attr), nil
+}
+
+func (p *nvmlProbe) reset() {
+	nvml.Shutdown()
+	p.initialised, p.lastSeen = false, 0
+}
+
+// initError is a failed nvml.Init. No driver loaded and no NVIDIA library
+// are the GPU absent, a state, not a failure (0032): in the rtx3080-passthrough
+// boot the card is bound to vfio-pci and nvidia is blacklisted, so NVML
+// answers ERROR_DRIVER_NOT_LOADED on every call until the card is handed to
+// the host. Anything else is a probe that failed.
+func initError(ret nvml.Return) error {
+	detail := "nvml init: " + nvml.ErrorString(ret)
+	switch ret {
+	case nvml.ERROR_DRIVER_NOT_LOADED, nvml.ERROR_LIBRARY_NOT_FOUND:
+		return GPUAbsent{Detail: detail}
+	}
+	return errors.New(detail)
+}
+
+// deviceError is a failed handle for the device the probe reads. No device
+// at that index is the GPU absent; a card that fell off the bus is a failure.
+func deviceError(index int, ret nvml.Return) error {
+	detail := fmt.Sprintf("nvml device %d: %s", index, nvml.ErrorString(ret))
+	switch ret {
+	case nvml.ERROR_INVALID_ARGUMENT, nvml.ERROR_NOT_FOUND, nvml.ERROR_DRIVER_NOT_LOADED:
+		return GPUAbsent{Detail: detail}
+	}
+	return errors.New(detail)
+}
+
+// gone is an answer after which NVML has to be initialised again.
+func gone(ret nvml.Return) bool {
+	switch ret {
+	case nvml.ERROR_UNINITIALIZED, nvml.ERROR_DRIVER_NOT_LOADED, nvml.ERROR_GPU_IS_LOST, nvml.ERROR_INVALID_ARGUMENT, nvml.ERROR_NOT_FOUND:
+		return true
+	}
+	return false
 }

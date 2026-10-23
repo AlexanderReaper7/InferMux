@@ -166,7 +166,7 @@ func (w *Warden) freeComfyUIFor(model string) {
 	}
 	held := 0
 	if unit != "" {
-		res, err := probe()
+		res, err := w.read(probe)
 		if err != nil || res.ComfyUIVRAMMB <= comfyIdleMB {
 			return
 		}
@@ -186,7 +186,7 @@ func (w *Warden) freeComfyUIFor(model string) {
 	started, last := time.Now(), held
 	for time.Since(started) < comfyFreeWait {
 		time.Sleep(comfyFreePoll)
-		res, err := probe()
+		res, err := w.read(probe)
 		if err != nil {
 			break
 		}

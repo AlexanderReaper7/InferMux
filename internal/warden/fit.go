@@ -1,6 +1,7 @@
 package warden
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -35,13 +36,18 @@ import (
 // /free once the slot is taken (0030).
 //
 // While a hold is open every start on the GPU is refused, ComfyUI's too,
-// before the slot and again once the card is read (0024, 5).
+// before the slot and again once the card is read (0024, 5). So is a start
+// of a model the one config places on the GPU while the host has none
+// (0032).
 func (w *Warden) Fits(model string) error {
-	w.mu.Lock()
-	if !slices.Contains(w.devicesLocked(model), DeviceGPU) {
-		w.mu.Unlock()
+	if !w.onGPU(model) {
 		return nil
 	}
+	// A host without its GPU refuses a start there, ComfyUI's too (0032).
+	if err := w.absentFor(model); err != nil {
+		return err
+	}
+	w.mu.Lock()
 	// A hold refuses every start on the GPU, ComfyUI's too (0024, 5).
 	if err := w.heldLocked(model); err != nil || model == w.comfyModel {
 		w.mu.Unlock()
@@ -81,6 +87,12 @@ func (w *Warden) Fits(model string) error {
 	return err
 }
 
+func (w *Warden) onGPU(model string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Contains(w.devicesLocked(model), DeviceGPU)
+}
+
 // room is the rest of Fits once the model holds the start slot: ComfyUI's
 // /free, then the card's free figure against the model's need. A refusal
 // frees the slot.
@@ -98,7 +110,13 @@ func (w *Warden) room(model string) error {
 	if need == 0 && !held {
 		return nil
 	}
-	res, err := probe()
+	res, err := w.read(probe)
+	if errors.As(err, new(GPUAbsent)) {
+		if refused := w.absentFor(model); refused != nil {
+			w.StartEnded(model)
+			return refused
+		}
+	}
 	if err == nil && res.VRAMFreeMB == nil {
 		err = fmt.Errorf("no free figure")
 	}

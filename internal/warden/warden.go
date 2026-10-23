@@ -90,7 +90,9 @@ type Warden struct {
 	comfy         ComfyIdle
 	lastResources *Resources
 	probeError    *string
-	gpuUnload     unloadState
+	// gpu is whether the last reading found the card (0032).
+	gpu       gpuSeen
+	gpuUnload unloadState
 	// placement is nil outside the one config, and cpu unused (0022).
 	placement   Placement
 	cpu         cpuDevice
@@ -260,14 +262,22 @@ func (w *Warden) Tick() Verdict {
 	defer w.announce()
 	defer w.cpuTick(cfg)
 
-	res, err := w.probe()
+	res, err := w.read(w.probe)
+	if errors.As(err, new(GPUAbsent)) {
+		return w.absentTick(err, cfg)
+	}
 	if err != nil {
+		// Warned once per failure, not every poll: the UI shows it while
+		// it lasts.
 		detail := err.Error()
 		w.mu.Lock()
+		repeat := w.probeError != nil && *w.probeError == detail
 		w.probeError = &detail
 		v := w.verdict
 		w.mu.Unlock()
-		w.log.Warnf("Warden probe failed, verdict unchanged: %s", detail)
+		if !repeat {
+			w.log.Warnf("Warden probe failed, verdict unchanged: %s", detail)
+		}
 		return v
 	}
 
@@ -303,6 +313,9 @@ func (w *Warden) Tick() Verdict {
 	}
 
 	w.mu.Lock()
+	if w.probeError != nil {
+		w.log.Infof("Warden probe reads the card again after: %s", *w.probeError)
+	}
 	w.probeError = nil
 	w.lastResources = &res
 	w.own = Decide(w.own, res, now, loaded, cfg.Policy)
@@ -311,6 +324,24 @@ func (w *Warden) Tick() Verdict {
 	w.verdict = after
 	w.mu.Unlock()
 
+	w.act(before, after)
+	return after
+}
+
+// absentTick is a tick that found no GPU on the host (0032). Nothing can
+// contend for a card the host does not have and no model can run on it, so
+// the GPU's verdict resumes by the usual rule, and the last reading of a card
+// that was there is dropped.
+func (w *Warden) absentTick(err error, cfg Config) Verdict {
+	now := w.now()
+	w.mu.Lock()
+	w.probeError = nil
+	w.lastResources = nil
+	w.own = decide(w.own, contention{why: "no GPU on this host: " + err.Error()}, now, cfg.Policy.ResumeQuietSeconds)
+	before := w.verdict
+	after := w.effectiveLocked()
+	w.verdict = after
+	w.mu.Unlock()
 	w.act(before, after)
 	return after
 }
@@ -525,6 +556,13 @@ func (w *Warden) Wrap(next http.Handler) http.Handler {
 		devices := []string{DeviceGPU, DeviceCPU}
 		if name, ok := w.local(model); ok && known {
 			devices = w.devices(name)
+			// Refused here, before llama-swap, so failover moves on with
+			// no start attempted and no upstream WARN (0032).
+			var absent GPUAbsentError
+			if errors.As(w.absentFor(name), &absent) {
+				writeAbsent(rw, absent)
+				return
+			}
 		}
 		stop := func(device, why string) { cancel(w.cut(device)) }
 		if pause := PauserOf(r.Context()); pause != nil {
@@ -786,7 +824,10 @@ type VerdictState struct {
 	Placement  map[string][]string `json:"placement"`
 	ComfyUI    *comfyState         `json:"comfyui"`
 	ProbeError *string             `json:"probe_error"`
-	Resources  *Resources          `json:"resources"`
+	// GPUAbsent is why the host has no GPU now, nil while it has one or
+	// it has not been read (0032).
+	GPUAbsent *string    `json:"gpu_absent"`
+	Resources *Resources `json:"resources"`
 	// Remotes is the other hosts and what they list (0006, 2).
 	Remotes any `json:"remotes"`
 	// Jobs counts the jobs (0023).
@@ -820,6 +861,7 @@ func (w *Warden) State() VerdictState {
 		PendingUnload: w.gpuUnload.pending,
 		LastUnload:    w.gpuUnload.last,
 		ProbeError:    w.probeError,
+		GPUAbsent:     w.absentDetailLocked(),
 		Resources:     w.lastResources,
 		Off:           w.off,
 		Holds:         w.holds,
@@ -900,7 +942,11 @@ func (w *Warden) status(mux *http.ServeMux) {
 		w.mu.Lock()
 		probe := w.freshProbe
 		w.mu.Unlock()
-		res, err := probe()
+		res, err := w.read(probe)
+		if errors.As(err, new(GPUAbsent)) {
+			writeJSON(rw, http.StatusServiceUnavailable, map[string]string{"detail": "no GPU on this host: " + err.Error()})
+			return
+		}
 		if err != nil {
 			writeJSON(rw, http.StatusServiceUnavailable, map[string]string{"detail": "probe failed: " + err.Error()})
 			return
@@ -926,7 +972,7 @@ func (w *Warden) NotStarted(model string) {
 	w.mu.Lock()
 	probe := w.freshProbe
 	w.mu.Unlock()
-	res, err := probe()
+	res, err := w.read(probe)
 	if err != nil {
 		w.log.Warnf("<%s> stopped before it was ready; the card could not be read: %v", model, err)
 		return

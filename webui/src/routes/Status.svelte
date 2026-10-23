@@ -117,11 +117,19 @@
     <section class="card lg:col-span-2">
       <div class="mb-3 flex items-baseline gap-4">
         <h2 class="font-medium">GPU</h2>
-        {#if res}
+        {#if s.gpu_absent}
+          <span class="text-sm text-neutral-400">absent</span>
+        {:else if res}
           <span class="text-sm text-neutral-500">sampled {ago(res.sampled_at)}</span>
         {/if}
       </div>
-      {#if res}
+      {#if s.gpu_absent}
+        <div class="text-neutral-300">This host has no GPU now: {s.gpu_absent}.</div>
+        <div class="mt-1 text-sm text-neutral-500">
+          A start of a model placed on the GPU is refused with 503 gpu_absent, and its other places take its requests.
+          The card is read every poll and used at the next start once it is there.
+        </div>
+      {:else if res}
         <div class="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div>
             <div class="label">Foreign</div>

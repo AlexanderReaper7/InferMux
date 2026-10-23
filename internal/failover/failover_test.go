@@ -767,3 +767,50 @@ func TestAModelCannotSendInferMuxTrailers(t *testing.T) {
 		}
 	}
 }
+
+// absentCard is strix with its GPU absent (0032): the GPU's place answers
+// the warden's 503 gpu_absent with AbsentHeader, every other the places'.
+type absentCard struct{ places }
+
+func (p *absentCard) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
+	var body struct{ Model string }
+	json.Unmarshal(raw, &body)
+	if body.Model != "m" {
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		p.places.ServeHTTP(rw, r)
+		return
+	}
+	p.mu.Lock()
+	p.attempts = append(p.attempts, body.Model)
+	p.mu.Unlock()
+	rw.Header().Set(AbsentHeader, "gpu")
+	rw.Header().Set("Retry-After", "30")
+	rw.WriteHeader(http.StatusServiceUnavailable)
+	fmt.Fprint(rw, `{"error":{"type":"gpu_absent","message":"m is placed on the GPU and this host has none now"}}`)
+}
+
+// A place on an absent GPU is routing, not a failure: the hop from it is
+// logged at debug, since the warden logged the absence once, and a request
+// it is the last place for gets the warden's own answer.
+func TestAPlaceOnAnAbsentGPUIsLoggedAtDebug(t *testing.T) {
+	log := &lines{}
+	p := &absentCard{places{status: map[string]int{"zbox/m": 502}}}
+	h := New(p, "strix", log)
+	h.Set(map[string][]Place{"m": {{Place: "zbox"}, {Place: "strix"}, {Place: "strix/m@cpu", Failover: true}}})
+	if rw := post(t, h, "m", nil); rw.Code != 200 || fmt.Sprint(p.attempts) != "[zbox/m m m@cpu]" {
+		t.Fatalf("attempts %v status %d", p.attempts, rw.Code)
+	}
+	toCPU := "Failover: m answered 503, the last balance place; trying the failover lane at m@cpu"
+	if fmt.Sprint(log.debug) != fmt.Sprint([]string{toCPU}) || fmt.Sprint(log.warn) != fmt.Sprint([]string{"Failover: zbox/m answered 502, trying m"}) {
+		t.Fatalf("debug %q warn %q", log.debug, log.warn)
+	}
+
+	p = &absentCard{places{status: map[string]int{"zbox/m": 502}}}
+	h = New(p, "strix", nopLog{})
+	h.Set(map[string][]Place{"m": {{Place: "zbox"}, {Place: "strix"}}})
+	rw := post(t, h, "m", nil)
+	if rw.Code != 503 || !strings.Contains(rw.Body.String(), "gpu_absent") || rw.Header().Get("Retry-After") != "30" {
+		t.Fatalf("last place: %d %v %s", rw.Code, rw.Header(), rw.Body)
+	}
+}
