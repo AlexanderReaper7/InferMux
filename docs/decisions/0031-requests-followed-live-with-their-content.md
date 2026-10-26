@@ -1,7 +1,7 @@
 # 0031. Requests followed live with their content, in InferMux's own handler
 
 - Date: 2026-10-19
-- Status: accepted; built and tested 2026-10-19 (Verification). Not deployed.
+- Status: accepted; built and tested 2026-10-19, deployed with InferMux a7ee4dc on strix at 21:31 and the zbox at 23:05 CET on 2026-10-26 (Verification).
 - Keeps 0004 (no upstream file changes), 0006 (behind the same key check as the rest of `/warden/`), 0009 (only this host's models) and 0014 (the same place in the chain as the stats).
 
 ## Context
@@ -34,4 +34,5 @@ Rejected: extending llama-swap's in-flight tracker (the merge cost above); a Web
 - 2026-10-19, tests: `internal/live` (a streamed reply's chunk is seen while the backend still holds the rest; finished entries kept to `Keep`; only this host's model POSTs; binary bodies sized, not kept, and still reaching the backend whole; bodies cut at the limit; a split UTF-8 character; a follower that reads nothing does not hold a request), `TestLiveShowsARequestWhileItRuns` through the daemon's own chain with llama-swap, and `webui/test/livetext.test.ts`.
 - 2026-10-19, `e2e/run.sh run.py` against the nix-built binaries, headless Chromium at 2560x1300: the Active tab showed a streamed chat to the fake model with its key and its message `hi`, read `w0 w1` and `streaming` while the client had not finished, and ended with all 40 tokens and 200.
 - 2026-10-26, `e2e/run.sh` against the nix-built binaries: 75 and 41 checks passed, none failed, the Active tab's included. The check older than 0024, 4 that had Unload all refused while a reply ran now has it cut the interactive stream mid-reply and stop the model.
-- Not yet watched: the tab against the deployed daemon with a real model, in the user's browser.
+- 2026-10-26 21:42 CET, the deployed daemon on strix: `curl -N` on infermux-ui's `/daemon/warden/live` while a streamed chat for `Qwen3.5-4B-Q4_K_M` with 40 tokens ran through the same proxy. The follower got a `snapshot`, a `start` with the request's body, a `head`, 41 `chunk` events and an `end` with 200 and 12601 bytes in 6.7 s, the model's start included.
+- Not yet watched: the tab in the user's browser, and a reply with reasoning or tool calls.
