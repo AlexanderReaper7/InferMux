@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { api } from "../lib/api";
   import { prompt, reply, type LiveEntry } from "../lib/livetext";
 
   // This host's running requests and its last finished ones, followed as
@@ -47,6 +48,12 @@
         e.response_bytes += utf8.encode(c.text).length;
       }
     });
+    // Sent to every page following this host, whichever one asked.
+    on("wiped", (w: { through: number }) => {
+      for (const e of entries) {
+        if (e.id <= w.through) Object.assign(e, { request: "", response: "", wiped: true });
+      }
+    });
     on("end", (x: { id: number; status: number; duration_ms: number; response_bytes: number; response_truncated?: boolean }) => {
       const e = find(x.id);
       if (e) Object.assign(e, x, { done: true });
@@ -68,6 +75,21 @@
   const current = $derived(entries.find((e) => e.id === selected) ?? null);
   const asked = $derived(current?.request_kept ? prompt(current.request) : null);
   const answered = $derived(current?.response_kept ? reply(current.response, current.response_type) : null);
+
+  let wiping = $state(false);
+  let wipeError = $state("");
+  async function wipe() {
+    if (!confirm("Clear every request and reply body this host holds, this page's and llama-swap's captures? Sizes, times and status stay.")) return;
+    wiping = true;
+    wipeError = "";
+    try {
+      await api.wipeContent();
+    } catch (err) {
+      wipeError = String(err);
+    } finally {
+      wiping = false;
+    }
+  }
 
   function pick(id: number) {
     selected = id;
@@ -125,7 +147,11 @@
       <label class="ml-auto flex items-center gap-2 text-neutral-400">
         <input type="checkbox" bind:checked={follow} /> show the newest
       </label>
+      <button class="btn" disabled={wiping} onclick={wipe}>Clear content</button>
     </div>
+    {#if wipeError}
+      <div class="border-b border-neutral-800 px-4 py-2 text-sm text-red-300">{wipeError}</div>
+    {/if}
     {#if !entries.length}
       <div class="px-4 py-3 text-sm text-neutral-500">No requests since the page opened or the daemon started.</div>
     {/if}
@@ -168,7 +194,9 @@
           <h2 class="label mb-2">
             Request · {bytes(current.request_bytes)}{current.request_truncated ? " · cut at 4 MB" : ""}
           </h2>
-          {#if !current.request_kept}
+          {#if current.wiped}
+            <div class="text-sm text-neutral-500">Cleared.</div>
+          {:else if !current.request_kept}
             <div class="text-sm text-neutral-500">{current.request_type || "a body"} that is not text, not kept.</div>
           {:else if raw || !asked}
             <pre class="text-sm break-words whitespace-pre-wrap text-neutral-200">{current.request}</pre>
@@ -197,7 +225,9 @@
           <h2 class="label mb-2">
             Reply · {bytes(current.response_bytes)}{current.response_truncated ? " · cut at 4 MB" : ""}
           </h2>
-          {#if !current.status && !current.done}
+          {#if current.wiped}
+            <div class="text-sm text-neutral-500">Cleared{current.done ? "" : "; the rest of the reply is not kept"}.</div>
+          {:else if !current.status && !current.done}
             <div class="text-sm text-neutral-500">Waiting for the model: a load, a swap or the queue.</div>
           {:else if !current.response_kept}
             <div class="text-sm text-neutral-500">{current.response_type || "a body"} that is not text, not kept.</div>

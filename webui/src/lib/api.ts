@@ -73,6 +73,9 @@ export const api = {
   verdict: () => call<VerdictState>("GET", "/daemon/warden/verdict"),
   manual: (action: "pause" | "resume" | "auto") => call("POST", "/daemon/warden/manual", { action }),
   forgive: () => call<{ was_owed: boolean }>("POST", "/daemon/warden/forgive"),
+  // Every request and reply body this host holds: the Active tab's and
+  // llama-swap's captures (0031).
+  wipeContent: () => call<{ requests: number; capture_bytes: number }>("POST", "/daemon/warden/live/wipe"),
   unloadAll: () => call<{ unloaded: string[] }>("POST", "/daemon/warden/unload"),
   cancelBatch: () => call<{ cancelled: number }>("POST", "/daemon/warden/cancel-batch"),
   freeComfyUI: () => call("POST", "/daemon/warden/comfyui/free"),

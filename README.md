@@ -83,7 +83,7 @@ The Config tab's "Model from Hugging Face" reads a file's SHA-256 and size for `
 
 The Performance tab shows each host's last 500 requests for the models it serves, kept in memory since the daemon started, and per model the median and 95th percentile of time to the first token, the prefill and decode rates, the prompt cache's share and drafts accepted ([0014](docs/decisions/0014-performance-measured-at-the-front-door.md)).
 
-The Active tab follows this host's requests for its models while they run: the request as it arrived, and the reply's reasoning, text and tool calls as the model writes them, or either body raw. The last 20 finished ones stay listed. Any key can follow it, so any key reads every client's prompts ([0031](docs/decisions/0031-requests-followed-live-with-their-content.md)).
+The Active tab follows this host's requests for its models while they run: the request as it arrived, and the reply's reasoning, text and tool calls as the model writes them, or either body raw. The last 20 finished ones stay listed. Any key can follow it, so any key reads every client's prompts. Clear content wipes every request and reply body the host holds in memory, llama-swap's captures included, and keeps the sizes, times and status ([0031](docs/decisions/0031-requests-followed-live-with-their-content.md)).
 
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
 
@@ -106,6 +106,7 @@ imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/unload         # cuts what
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/forgive        # drop an owed unload
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/cancel-batch
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/comfyui/free
+imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/live/wipe        # drop every request and reply body this host holds
 ```
 
 A manual pause or resume holds until the warden's own verdict changes, then the warden takes over again. A browser POST from another origin, or to a name that is neither loopback nor in `trusted_hosts`, gets 403.

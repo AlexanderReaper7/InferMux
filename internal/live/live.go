@@ -48,6 +48,9 @@ type Entry struct {
 	ResponseKept      bool    `json:"response_kept"`
 	Done              bool    `json:"done"`
 	DurationMs        float64 `json:"duration_ms,omitempty"`
+	// Wiped is set by Wipe: the bodies are gone, and a running request keeps
+	// no more of its reply. The sizes, times and status stay.
+	Wiped bool `json:"wiped,omitempty"`
 
 	tail []byte // the reply's last bytes, an unfinished UTF-8 character
 }
@@ -81,6 +84,12 @@ type End struct {
 	ResponseTruncated bool    `json:"response_truncated,omitempty"`
 }
 
+// Wiped is sent when Wipe has run: every entry up to Through has lost its
+// bodies, and a page drops what it kept of them.
+type Wiped struct {
+	Through uint64 `json:"through"`
+}
+
 // Board keeps the running requests and the last Keep finished ones.
 type Board struct {
 	// Keep is how many finished requests stay listed.
@@ -99,6 +108,10 @@ type Board struct {
 	finished  []*Entry
 	followers map[chan Event]struct{}
 	now       func() time.Time
+	// wipedThrough is the last request the last Wipe reached, told to each
+	// follower after its snapshot, so a page that was reconnecting during
+	// the wipe drops what it kept too.
+	wipedThrough uint64
 }
 
 // Followed is how many events a follower may fall behind by before it is
@@ -156,6 +169,7 @@ func (e *Entry) copy() Entry {
 
 // Follow returns the board as it is and every event after it, until stop.
 // The channel is closed if the follower falls behind.
+// A board that has been wiped puts its last wipe first on the channel.
 func (b *Board) Follow() (snapshot []Entry, events <-chan Event, stop func()) {
 	ch := make(chan Event, Followed)
 	b.mu.Lock()
@@ -164,6 +178,9 @@ func (b *Board) Follow() (snapshot []Entry, events <-chan Event, stop func()) {
 		b.followers = map[chan Event]struct{}{}
 	}
 	b.followers[ch] = struct{}{}
+	if b.wipedThrough > 0 {
+		ch <- Event{"wiped", Wiped{Through: b.wipedThrough}}
+	}
 	return b.snapshot(), ch, func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
@@ -210,7 +227,7 @@ func (b *Board) write(e *Entry, p []byte) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	e.ResponseBytes += int64(len(p))
-	if !e.ResponseKept || e.ResponseTruncated {
+	if !e.ResponseKept || e.ResponseTruncated || e.Wiped {
 		return
 	}
 	data := append(e.tail, p...)
@@ -227,6 +244,24 @@ func (b *Board) write(e *Entry, p []byte) {
 	s := string(data[:cut])
 	e.Response += s
 	b.send(Event{"chunk", Chunk{ID: e.ID, Text: s}})
+}
+
+// Wipe drops every body the board holds, the running requests' included,
+// and keeps each entry's sizes, times and status. A request running now
+// keeps nothing more of its reply. It returns how many entries it wiped.
+func (b *Board) Wipe() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := 0
+	for _, list := range [][]*Entry{b.finished, b.running} {
+		for _, e := range list {
+			e.Request, e.Response, e.tail, e.Wiped = "", "", nil, true
+			n++
+		}
+	}
+	b.wipedThrough = b.next
+	b.send(Event{"wiped", Wiped{Through: b.next}})
+	return n
 }
 
 // complete is how much of data ends on a whole UTF-8 character, so a

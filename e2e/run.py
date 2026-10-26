@@ -72,6 +72,15 @@ def http(method, url, body=None, headers=None):
         return e.code, e.read().decode()
 
 
+def live_snapshot():
+    """The first event of /warden/live, which never ends on its own."""
+    req = urllib.request.Request(DAEMON + "/warden/live", headers={"Authorization": "Bearer my-key"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        for line in resp:
+            if line.startswith(b"data: "):
+                return json.loads(line[6:])
+
+
 def verdict():
     return json.loads(http("GET", DAEMON + "/warden/verdict")[1])
 
@@ -394,6 +403,14 @@ def run(cfg, signed, off):
               visible(reply_pane.get_by_text(re.compile(r"w39 ")), 10) and visible(page.locator("button", has_text="e2e/alpha").first.get_by_text("200"), 5),
               reply_pane.inner_text())
         shot("active-done")
+        page.get_by_role("button", name="Clear content").click()
+        check("clear content empties the reply and keeps its size and status",
+              visible(reply_pane.get_by_text("Cleared."), 5) and reply_pane.get_by_text(re.compile(r"w39 ")).count() == 0
+              and visible(page.locator("button", has_text="e2e/alpha").first.get_by_text("200"), 2),
+              reply_pane.inner_text())
+        snap = live_snapshot()
+        check("the daemon's board holds no body", all(e.get("wiped") and not e["request"] and not e["response"] for e in snap), snap[-1:])
+        shot("active-cleared")
 
         # --- The reload waits for the user's reply ------------------------------------
         reply = Stream("alpha", 60)

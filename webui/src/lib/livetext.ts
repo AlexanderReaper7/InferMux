@@ -22,6 +22,8 @@ export interface LiveEntry {
   response_kept: boolean;
   done: boolean;
   duration_ms?: number;
+  // The bodies were cleared; the sizes, times and status stay.
+  wiped?: boolean;
 }
 
 export interface Reply {

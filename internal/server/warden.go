@@ -103,3 +103,15 @@ func (s *Server) PeerModel(name string) (proxy, model string, ok bool) {
 func ModelRoutes() (postJSON, postForm, get []string) {
 	return slices.Clone(modelPostJSONRoutes), slices.Clone(modelPostFormRoutes), slices.Clone(modelGetRoutes)
 }
+
+// ClearCaptures drops every request and reply body llama-swap has captured,
+// and returns how many bytes they held. The activity log's rows stay; their
+// has_capture reads false from then on (0031).
+func (s *Server) ClearCaptures() int {
+	if s.metrics == nil || s.metrics.captureCache == nil {
+		return 0
+	}
+	n := s.metrics.captureCache.Size()
+	s.metrics.captureCache.Clear()
+	return n
+}

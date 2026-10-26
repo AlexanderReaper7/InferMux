@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -279,5 +280,99 @@ func TestLive_AFollowerThatFallsBehindIsCutNotWaitedFor(t *testing.T) {
 	}
 	if n != Followed {
 		t.Fatalf("follower got %d events before its channel closed, want %d", n, Followed)
+	}
+}
+
+// A wipe drops the bodies of the finished requests and of the one running,
+// keeps their sizes, times and status, and the running one keeps nothing of
+// the reply it writes after it. A follower hears it.
+func TestLive_AWipeDropsEveryBodyAndKeepsTheSizes(t *testing.T) {
+	b := board()
+	b.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		io.WriteString(rw, "the answer")
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"secret":"finished"}`)))
+
+	release := make(chan struct{})
+	backend := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(rw, "before ")
+		http.NewResponseController(rw).Flush()
+		<-release
+		io.WriteString(rw, "after")
+	})
+	srv := httptest.NewServer(b.Wrap(backend))
+	defer srv.Close()
+	// Before srv.Close, which waits for the handler: a failure ends the test.
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	defer free()
+	f := follow(t, b)
+	var snap []Entry
+	f.next("snapshot", &snap)
+	done := make(chan string)
+	go func() {
+		res, err := http.Post(srv.URL+"/v1/chat/completions", "application/json", strings.NewReader(`{"secret":"running"}`))
+		if err != nil {
+			t.Error(err)
+			close(done)
+			return
+		}
+		got, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		done <- string(got)
+	}()
+	var start Entry
+	f.next("start", &start)
+	var head Head
+	f.next("head", &head)
+	var chunk Chunk
+	f.next("chunk", &chunk)
+
+	if n := b.Wipe(); n != 2 {
+		t.Fatalf("wiped %d, want 2", n)
+	}
+	var wiped Wiped
+	f.next("wiped", &wiped)
+	if wiped.Through != start.ID {
+		t.Fatalf("wiped through %d, want %d", wiped.Through, start.ID)
+	}
+	free()
+	// The client still gets its whole reply; the board keeps none of it.
+	if got := <-done; got != "before after" {
+		t.Fatalf("client got %q", got)
+	}
+	var end End
+	f.next("end", &end)
+	if end.ResponseBytes != int64(len("before after")) || end.Status != 200 {
+		t.Fatalf("end %+v", end)
+	}
+	got := b.Snapshot()
+	if len(got) != 2 {
+		t.Fatalf("snapshot %+v, want 2 entries", got)
+	}
+	for _, e := range got {
+		if !e.Wiped || e.Request != "" || e.Response != "" {
+			t.Fatalf("entry %d kept a body: %+v", e.ID, e)
+		}
+		if e.RequestBytes <= 0 || e.ResponseBytes <= 0 || e.Status != 200 || !e.Done || e.Model == "" || e.Time.IsZero() {
+			t.Fatalf("entry %d lost its sizes or times: %+v", e.ID, e)
+		}
+	}
+
+	// A page that follows after the wipe is told of it after its snapshot,
+	// and drops what it kept of the requests before.
+	late := follow(t, b)
+	late.next("snapshot", &snap)
+	late.next("wiped", &wiped)
+	if wiped.Through != start.ID {
+		t.Fatalf("a later follower: wiped through %d, want %d", wiped.Through, start.ID)
+	}
+
+	// A request after the wipe is kept as before.
+	b.Wrap(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		io.WriteString(rw, "new")
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`)))
+	if got := b.Snapshot(); got[len(got)-1].Wiped || got[len(got)-1].Response != "new" {
+		t.Fatalf("a request after the wipe: %+v", got[len(got)-1])
 	}
 }

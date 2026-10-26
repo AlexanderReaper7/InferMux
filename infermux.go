@@ -295,6 +295,15 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 	// every client sends, as llama-swap's /api/captures already allows (0031).
 	board := &live.Board{Keep: 20, Model: servedHere, Client: warden.Client}
 	w.Handle("GET /warden/live", live.Handler(board))
+	// Wipe is every body this host holds in memory: the board's and
+	// llama-swap's captures. The stats and the activity log hold none.
+	w.Handle("POST /warden/live/wipe", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		requests := board.Wipe()
+		captured := active().ClearCaptures()
+		log.Infof("Content wiped: %d live request(s), %d bytes of captures", requests, captured)
+		rw.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(rw).Encode(map[string]int{"requests": requests, "capture_bytes": captured})
+	}))
 	w.Handle("GET /warden/requests", stats.Handler(recorder, cfg.Host, func(ctx context.Context) []stats.Host {
 		var hosts []stats.Host
 		for _, reply := range remotes.get().Each(ctx, "/warden/requests") {
