@@ -30,6 +30,7 @@ This file is rules and navigation only, with llama-swap's own guide below them. 
 | `infermux_comfyui.go` | ours: the keyless loopback listener that serves ComfyUI's `/comfyui/` at its root for the Tailscale URL, and `/comfyui` qualified as this host's `comfyui_auto` (0030) |
 | `infermux_control.go`, `internal/hold/`, `cmd/infermux-hold/` | ours: the keyless control socket, and the command that clears the card through it before a game starts and holds it, one request kept open, until the game exits (0024) |
 | `internal/stats/` | ours: each request this host serves, timed to its first token, with llama-server's timings; kept in memory, summarised per model (0014) |
+| `internal/live/` | ours: each running request for a local model with its body and its reply as written, and the last 20 finished, followed through `GET /warden/live` as server-sent events; read by the Active tab (0031) |
 | `internal/stream/` | ours: a WebSocket followed frame by frame for the warden and the stats, closed with a code of ours, and routed by `?model=` (0018); `wstest/` is the tests' frame client and echo backend |
 | `e2e/` | ours: the end-to-end runs, `run.sh` and its Playwright scripts, and `load-check.sh`, the check of the card a run starts with, which `loadcheck_test.go` runs with a fake nvidia-smi |
 | `infermux.go` | ours: wires the warden in front of whichever llama-swap server is active, and owns the config watchers |
@@ -45,10 +46,10 @@ This file is rules and navigation only, with llama-swap's own guide below them. 
 ## Commands
 
 ```sh
-nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/ ./cmd/infermux-config/ ./cmd/infermux-hold/ ./e2e/  # no GPU or model needed; sops and age come from the shell
+nix develop -c go test ./internal/warden/ ./internal/remote/ ./internal/failover/ ./internal/catalog/ ./internal/muxui/ ./internal/adapter/ ./internal/stats/ ./internal/live/ ./internal/stream/... ./internal/placement/ ./internal/configstore/ ./internal/cpurun/ ./internal/fetch/ ./internal/jobs/ ./internal/hold/ ./internal/drain/ ./cmd/infermux-config/ ./cmd/infermux-hold/ ./e2e/  # no GPU or model needed; sops and age come from the shell
 (cd webui && npm run check && npm run build && bun test)   # the frontend; bun runs webui/test
 nix develop -c go test -short ./internal/server/ ./internal/process/ ./internal/swaputil/ .  # upstream's tests where we touch it
-nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_comfyui.go infermux_comfyui_test.go infermux_control.go infermux_control_test.go infermux_loadbalance_test.go infermux_off.go infermux_off_test.go infermux_stream_test.go infermux_jobs_test.go infermux_drain_test.go infermux_main_test.go infermux_test.go infermux_fit_test.go infermux_absent_test.go infermux_hold_test.go infermux_together_test.go infermux_binary_test.go infermux_reload_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs internal/hold internal/drain cmd e2e internal/server/warden.go internal/server/warden_test.go internal/process/warden.go internal/process/warden_test.go internal/swaputil/infermux.go internal/swaputil/infermux_test.go
+nix develop -c gofmt -l infermux.go infermux_config.go infermux_config_test.go infermux_comfyui.go infermux_comfyui_test.go infermux_control.go infermux_control_test.go infermux_loadbalance_test.go infermux_off.go infermux_off_test.go infermux_stream_test.go infermux_jobs_test.go infermux_drain_test.go infermux_live_test.go infermux_main_test.go infermux_test.go infermux_fit_test.go infermux_absent_test.go infermux_hold_test.go infermux_together_test.go infermux_binary_test.go infermux_reload_test.go internal/warden internal/remote internal/failover internal/catalog internal/muxui internal/adapter internal/stats internal/live internal/stream internal/placement internal/configstore internal/cpurun internal/fetch internal/jobs internal/hold internal/drain cmd e2e internal/server/warden.go internal/server/warden_test.go internal/process/warden.go internal/process/warden_test.go internal/swaputil/infermux.go internal/swaputil/infermux_test.go
 nix develop -c go test -run '^$' -bench BenchmarkFrame ./internal/stream/  # what a session costs per frame
 nix build                                                  # the package; runs the Go tests above and webui's
 e2e/run.sh                                                 # after nix build: the UI and daemon end to end, isolated; reads NVML and loads no model; refuses to start while a card is at 90% or more, or nvidia-smi fails or reads one as no number (`e2e/load-check.sh`), since its warden yields at 100% and run.py then fails at "pause by hand" (sol, reviews 15 and 18)
@@ -58,6 +59,7 @@ e2e/run.sh config.py                                       # only the Config tab
 curl 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
 curl 127.0.0.1:5001/warden/resources    # a fresh NVML probe
 curl '127.0.0.1:5001/warden/requests?hosts=all'  # the last requests' timings, every host's
+curl -N 127.0.0.1:5001/warden/live      # this host's requests as they run, bodies included (0031)
 curl 127.0.0.1:5001/running             # llama-swap: which models are up
 journalctl -u infermux -f
 ```

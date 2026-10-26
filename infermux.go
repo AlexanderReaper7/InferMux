@@ -24,6 +24,7 @@ import (
 	"github.com/mostlygeek/llama-swap/internal/failover"
 	"github.com/mostlygeek/llama-swap/internal/fetch"
 	"github.com/mostlygeek/llama-swap/internal/jobs"
+	"github.com/mostlygeek/llama-swap/internal/live"
 	"github.com/mostlygeek/llama-swap/internal/logmon"
 	"github.com/mostlygeek/llama-swap/internal/placement"
 	"github.com/mostlygeek/llama-swap/internal/process"
@@ -279,20 +280,21 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 		os.Exit(1)
 	}
 	models := activeModels{server: active, host: cfg.Host, remote: remotes}
-	recorder := &stats.Recorder{
-		Capacity: 500,
-		Model: func(r *http.Request) (string, bool) {
-			if isComfyUIPath(r) {
-				return "", false // a render has no first token
-			}
-			if _, ok := remotes.get().Qualify(r); ok {
-				return "", false // recorded on the host that runs it
-			}
-			name, _, ok := models.Qualify(r)
-			return name, ok
-		},
-		Client: warden.Client,
+	servedHere := func(r *http.Request) (string, bool) {
+		if isComfyUIPath(r) {
+			return "", false // a render has no first token
+		}
+		if _, ok := remotes.get().Qualify(r); ok {
+			return "", false // recorded on the host that runs it
+		}
+		name, _, ok := models.Qualify(r)
+		return name, ok
 	}
+	recorder := &stats.Recorder{Capacity: 500, Model: servedHere, Client: warden.Client}
+	// Behind the key check like the rest of /warden/: any key can read what
+	// every client sends, as llama-swap's /api/captures already allows (0031).
+	board := &live.Board{Keep: 20, Model: servedHere, Client: warden.Client}
+	w.Handle("GET /warden/live", live.Handler(board))
 	w.Handle("GET /warden/requests", stats.Handler(recorder, cfg.Host, func(ctx context.Context) []stats.Host {
 		var hosts []stats.Host
 		for _, reply := range remotes.get().Each(ctx, "/warden/requests") {
@@ -338,7 +340,7 @@ func startWarden(path, configPath, configDir string, httpServer *http.Server, ac
 			return strings.TrimPrefix(name, cfg.Host+"/"), ok && local
 		}, Files: one.localFiles, Fetcher: one.fetcher}).Wrap(codex)
 	}
-	failovers := failover.New(w.Wrap(recorder.Wrap(admission.Wrap(served))), cfg.Host, log)
+	failovers := failover.New(w.Wrap(board.Wrap(recorder.Wrap(admission.Wrap(served)))), cfg.Host, log)
 	failovers.Batch = w.IsBatch
 	jobStore.Serve = failovers
 	setFailover := func(routes warden.Failover) {

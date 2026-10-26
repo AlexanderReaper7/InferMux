@@ -8,7 +8,7 @@ It was Episteme's `hostagent/` until 2026-09-13 ([0001](docs/decisions/0001-the-
 
 ## What is InferMux's and what is llama-swap's
 
-InferMux is a fork of llama-swap that merges each upstream release rather than vendoring it, so most of the tree and most of the history are upstream's. InferMux's own code is `infermux.go`, `internal/warden/`, `internal/remote/`, `internal/failover/`, `internal/catalog/`, `internal/stats/`, `internal/stream/`, `internal/placement/`, `internal/configstore/`, `internal/cpurun/`, `internal/fetch/`, `internal/adapter/`, `internal/muxui/`, `internal/server/warden.go`, `infermux_config.go`, `cmd/infermux-ui/`, `cmd/infermux-adapter/`, `cmd/infermux-config/`, `cmd/infermux-cpu/`, `webui/`, `nix/`, `e2e/` and `docs/decisions/`. [AGENTS.md](AGENTS.md) has the full map.
+InferMux is a fork of llama-swap that merges each upstream release rather than vendoring it, so most of the tree and most of the history are upstream's. InferMux's own code is `infermux.go`, `internal/warden/`, `internal/remote/`, `internal/failover/`, `internal/catalog/`, `internal/stats/`, `internal/live/`, `internal/stream/`, `internal/placement/`, `internal/configstore/`, `internal/cpurun/`, `internal/fetch/`, `internal/adapter/`, `internal/muxui/`, `internal/server/warden.go`, `infermux_config.go`, `cmd/infermux-ui/`, `cmd/infermux-adapter/`, `cmd/infermux-config/`, `cmd/infermux-cpu/`, `webui/`, `nix/`, `e2e/` and `docs/decisions/`. [AGENTS.md](AGENTS.md) has the full map.
 
 The Go module path is still `github.com/mostlygeek/llama-swap` for the same reason. Renaming it would rewrite every upstream import, and every later merge would conflict on all of them.
 
@@ -83,6 +83,8 @@ The Config tab's "Model from Hugging Face" reads a file's SHA-256 and size for `
 
 The Performance tab shows each host's last 500 requests for the models it serves, kept in memory since the daemon started, and per model the median and 95th percentile of time to the first token, the prefill and decode rates, the prompt cache's share and drafts accepted ([0014](docs/decisions/0014-performance-measured-at-the-front-door.md)).
 
+The Active tab follows this host's requests for its models while they run: the request as it arrived, and the reply's reasoning, text and tool calls as the model writes them, or either body raw. The last 20 finished ones stay listed. Any key can follow it, so any key reads every client's prompts ([0031](docs/decisions/0031-requests-followed-live-with-their-content.md)).
+
 From a checkout, `cd webui && npm install && npm run dev` serves the UI on :5173 against an `infermux-ui` on :5010.
 
 ## Talk to it
@@ -96,6 +98,7 @@ imx 127.0.0.1:5001/running             # llama-swap: which are up
 imx 127.0.0.1:5001/warden/verdict      # what it decided, who has heard it, what is in flight
 imx 127.0.0.1:5001/warden/resources    # a fresh NVML probe, on purpose
 imx '127.0.0.1:5001/warden/requests?hosts=all'   # the last requests and their timings, every host's
+imx -N 127.0.0.1:5001/warden/live                # this host's requests as they run, bodies included
 
 # controls; a write needs the X-InferMux header
 imx -XPOST -H 'X-InferMux: cli' 127.0.0.1:5001/warden/manual -d '{"action":"pause"}'   # or resume, auto

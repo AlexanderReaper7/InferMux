@@ -5,11 +5,13 @@
   import Changes from "./routes/Changes.svelte";
   import Keys from "./routes/Keys.svelte";
   import Performance from "./routes/Performance.svelte";
+  import Active from "./routes/Active.svelte";
   import { api } from "./lib/api";
 
   const tabs = [
     { id: "status", label: "Status" },
     { id: "config", label: "Config" },
+    { id: "active", label: "Active" },
     { id: "performance", label: "Performance" },
     { id: "settings", label: "Warden" },
     { id: "keys", label: "Keys" },
@@ -49,7 +51,7 @@
   });
 </script>
 
-<div class="mx-auto p-6 {tab === 'llama-swap' || tab === 'config' ? '' : 'max-w-7xl'}">
+<div class="mx-auto p-6 {tab === 'llama-swap' || tab === 'config' || tab === 'active' ? '' : 'max-w-7xl'}">
   <header class="mb-6 flex items-center gap-6 border-b border-neutral-800 pb-4">
     <h1 class="text-xl font-semibold tracking-tight text-neutral-100">InferMux</h1>
     <nav class="flex gap-1">
@@ -83,6 +85,8 @@
     {#await import("./routes/Config.svelte") then { default: Config }}
       <Config />
     {/await}
+  {:else if tab === "active"}
+    <Active />
   {:else if tab === "performance"}
     <Performance />
   {:else if tab === "settings"}

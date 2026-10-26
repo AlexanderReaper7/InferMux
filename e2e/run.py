@@ -377,6 +377,24 @@ def run(cfg, signed, off):
         check("the summary has the median decode rate", "10.0" in alpha_row.inner_text(), alpha_row.inner_text())
         shot("performance")
 
+        # --- Active: a reply read while the model is still writing it (0031) ----
+        open_tab("active")
+        check("the active tab follows the daemon", visible(page.get_by_text("following"), 5))
+        writing = Stream("alpha", 40)
+        writing.start()
+        reply_pane = page.locator("section", has_text="Reply ·").last
+        check("the new request is shown with its key and messages",
+              visible(page.locator("button", has_text="e2e/alpha").first, 10) and visible(page.locator("section", has_text="Request ·").get_by_text("hi", exact=True), 5))
+        check("its reply shows tokens while it streams",
+              visible(reply_pane.get_by_text(re.compile(r"w0 w1 ")), 10) and visible(page.get_by_text("streaming"), 2) and writing.ended is None,
+              reply_pane.inner_text() if reply_pane.count() else "no reply pane")
+        shot("active-streaming")
+        writing.join(30)
+        check("and ends with the whole reply and its status",
+              visible(reply_pane.get_by_text(re.compile(r"w39 ")), 10) and visible(page.locator("button", has_text="e2e/alpha").first.get_by_text("200"), 5),
+              reply_pane.inner_text())
+        shot("active-done")
+
         # --- The reload waits for the user's reply ------------------------------------
         reply = Stream("alpha", 60)
         reply.start()
@@ -417,14 +435,11 @@ def run(cfg, signed, off):
         page.get_by_role("button", name="Cancel batch requests").click()
         batch.join(10)
         check("cancel batch ends the batch stream early", batch.ended and not batch.done and batch.chunks < 100, f"{batch.chunks} chunks")
-        unload = page.get_by_role("button", name="Unload all")
-        unload.click()
-        check("unload all is refused while a reply runs", visible(page.locator(".border-red-900", has_text="interactive request")))
-        mine.join(30)
-        check("the interactive stream was untouched", mine.done and mine.chunks == 30, f"{mine.chunks} chunks")
-        page.wait_for_timeout(2500)
-        unload.click()
-        check("unload all after it stops the model", wait_for(lambda: json.loads(http("GET", DAEMON + "/running")[1])["running"] == [], 10))
+        # The user's click always wins, and cuts the reply on the GPU (0024, 4).
+        page.get_by_role("button", name="Unload all").click()
+        mine.join(10)
+        check("unload all cuts the interactive stream mid-reply", mine.ended and not mine.done and mine.chunks < 30, f"{mine.chunks} chunks")
+        check("and stops the model", wait_for(lambda: json.loads(http("GET", DAEMON + "/running")[1])["running"] == [], 10))
 
         # --- A job is paused mid-reply and goes on where it stopped (0023) ------------
         jobs_headers = {"Authorization": "Bearer batch-key", "X-InferMux": "1"}
