@@ -274,6 +274,14 @@ in
       '';
     };
 
+    steam.enable = lib.mkEnableOption ''
+      `infermux-steam`, a user service that clears the card for each game
+      Steam starts, from the start of the game's reaper to its exit, as
+      `infermux-hold` does for a launch through it, so that no game needs a
+      launch option (0024, 6). It runs for each user in `controlGroup` who
+      has Steam at `~/.steam/root`
+    '';
+
     comfyuiListen = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -508,6 +516,10 @@ in
           message = "services.infermux.ui edits the one config: it needs signedConfig.trustedKeys, signedConfig.seed, the copy it edits, and ui.configKey, the key Publish signs with.";
         }
         {
+          assertion = cfg.steam.enable -> cfg.controlGroup != null;
+          message = "services.infermux.steam talks to the control socket: it needs services.infermux.controlGroup.";
+        }
+        {
           assertion = cfg.signedConfig.seed != null -> signed;
           message = "services.infermux.signedConfig.seed needs signedConfig.trustedKeys to check it against.";
         }
@@ -668,6 +680,23 @@ in
           RuntimeDirectory = "infermux-cpu";
           RuntimeDirectoryMode = "0700";
           Restart = "always";
+          RestartSec = 5;
+        };
+      };
+
+      # As each user, not in the daemon: inotify tells a watcher of Steam's
+      # directory when the reaper starts, and the user's own Steam is the
+      # user's to read (0024, 6).
+      systemd.user.services.infermux-steam = lib.mkIf cfg.steam.enable {
+        description = "InferMux: clear the card for each game Steam starts";
+        wantedBy = [ "default.target" ];
+        unitConfig = {
+          ConditionGroup = cfg.controlGroup;
+          ConditionPathIsDirectory = "%h/.steam/root/ubuntu12_32";
+        };
+        serviceConfig = {
+          ExecStart = "${lib.getExe holdTool} -socket ${controlSocket} -steam %h/.steam/root";
+          Restart = "on-failure";
           RestartSec = 5;
         };
       };
