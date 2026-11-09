@@ -113,7 +113,7 @@
     </div>
   {/if}
 
-  <div class="grid gap-4 lg:grid-cols-3">
+  <div class="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-3">
     <section class="card lg:col-span-2">
       <div class="mb-3 flex items-baseline gap-4">
         <h2 class="font-medium">GPU</h2>
@@ -155,6 +155,7 @@
             </div>
           </div>
         </div>
+        <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="text-left text-neutral-500">
             <tr><th class="py-1 font-normal">Process</th><th class="font-normal">Unit</th><th class="font-normal">Whose</th><th class="text-right font-normal">GPU</th><th class="text-right font-normal">VRAM</th></tr>
@@ -172,6 +173,7 @@
             {/each}
           </tbody>
         </table>
+        </div>
       {:else}
         <div class="text-neutral-500">No measurement yet.</div>
       {/if}

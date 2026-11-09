@@ -4,6 +4,11 @@
   :root {
     color-scheme: dark;
   }
+  /* A path or URL longer than a phone's width breaks instead of widening the
+     page. A word that fits its line is never broken. */
+  body {
+    overflow-wrap: break-word;
+  }
   input,
   select,
   textarea {

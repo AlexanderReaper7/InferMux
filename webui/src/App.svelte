@@ -51,10 +51,10 @@
   });
 </script>
 
-<div class="mx-auto p-6 {tab === 'llama-swap' || tab === 'config' || tab === 'active' ? '' : 'max-w-7xl'}">
-  <header class="mb-6 flex items-center gap-6 border-b border-neutral-800 pb-4">
+<div class="mx-auto p-3 sm:p-6 {tab === 'llama-swap' || tab === 'config' || tab === 'active' ? '' : 'max-w-7xl'}">
+  <header class="mb-6 flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-neutral-800 pb-4">
     <h1 class="text-xl font-semibold tracking-tight text-neutral-100">InferMux</h1>
-    <nav class="flex gap-1">
+    <nav class="order-last flex w-full flex-wrap gap-1 lg:order-none lg:w-auto">
       {#each tabs as t}
         <a
           href={"#" + t.id}

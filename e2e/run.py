@@ -557,6 +557,20 @@ def run(cfg, signed, off):
         check("the frame is kept across tabs", page.locator('iframe[title="llama-swap"]').count() == 1)
         check("there is no header link any more", page.get_by_role("link", name=re.compile("llama-swap ↗")).count() == 0)
 
+        # --- A phone's width ---------------------------------------------------------------
+        # Below lg the tabs wrap under the title and the panes stack; a table
+        # or the editor scrolls in its own box, never the page. Until
+        # 2026-11-09 every tab was 841 px wide at 375 (the user: "unusably bad
+        # on mobile").
+        page.set_viewport_size({"width": 375, "height": 812})
+        for tab in ("status", "config", "active", "performance", "settings", "keys", "changes", "llama-swap"):
+            open_tab(tab)
+            page.wait_for_timeout(300)
+            wide = page.evaluate("[document.documentElement.scrollWidth, document.documentElement.clientWidth]")
+            check(f"{tab} fits a phone's width", wide[0] <= wide[1], f"{wide[0]} px wide in {wide[1]}")
+            shot(f"phone-{tab}")
+        page.set_viewport_size({"width": 2560, "height": 1300})
+
         # --- The guard, from a real browser ---------------------------------------------
         open_tab("status")
         code = page.evaluate("fetch('/api/warden', {method: 'PUT', body: '{}'}).then(r => r.status)")

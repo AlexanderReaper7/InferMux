@@ -139,9 +139,9 @@
   The last finished ones stay listed. Bodies over 4 MB are cut, and audio, images and uploads are listed by size only.
 </p>
 
-<div class="grid grid-cols-[minmax(0,32rem)_minmax(0,1fr)] gap-4">
-  <section class="card h-[calc(100vh-12rem)] overflow-y-auto p-0">
-    <div class="flex items-center gap-3 border-b border-neutral-800 px-4 py-2 text-sm">
+<div class="grid gap-4 lg:grid-cols-[minmax(0,32rem)_minmax(0,1fr)]">
+  <section class="card h-[40dvh] overflow-y-auto p-0 lg:h-[calc(100vh-12rem)]">
+    <div class="flex flex-wrap items-center gap-3 border-b border-neutral-800 px-4 py-2 text-sm">
       <span class={connected ? "text-emerald-300" : "text-red-300"}>{connected ? "following" : "reconnecting"}</span>
       <span class="text-neutral-500">{running} running</span>
       <label class="ml-auto flex items-center gap-2 text-neutral-400">
@@ -163,25 +163,25 @@
           : ''}"
       >
         <div class="flex items-center gap-3">
-          <span class="font-mono text-neutral-500">{time(e.time)}</span>
+          <span class="shrink-0 font-mono text-neutral-500">{time(e.time)}</span>
           <span class="truncate text-neutral-100">{e.model}</span>
-          <span class="ml-auto font-mono {statusColour(e)}">{status(e)}</span>
+          <span class="ml-auto shrink-0 font-mono {statusColour(e)}">{status(e)}</span>
         </div>
         <div class="flex gap-3 text-xs text-neutral-500">
-          <span>{e.client || "no key"}</span>
+          <span class="shrink-0">{e.client || "no key"}</span>
           <span class="truncate">{e.path}</span>
-          <span class="ml-auto font-mono">{seconds(e)} · {bytes(e.response_bytes)}</span>
+          <span class="ml-auto shrink-0 font-mono whitespace-nowrap">{seconds(e)} · {bytes(e.response_bytes)}</span>
         </div>
       </button>
     {/each}
   </section>
 
   {#if current}
-    <section class="flex h-[calc(100vh-12rem)] min-w-0 flex-col gap-4">
+    <section class="flex min-w-0 flex-col gap-4 lg:h-[calc(100vh-12rem)]">
       <div class="card flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         <span class="font-medium text-neutral-100">{current.model}</span>
         <span class="text-neutral-400">{current.client || "no key"}</span>
-        <span class="font-mono text-neutral-400">{current.path}</span>
+        <span class="font-mono break-all text-neutral-400">{current.path}</span>
         <span class="font-mono {statusColour(current)}">{status(current)}</span>
         <span class="font-mono text-neutral-400">{seconds(current)}</span>
         <label class="ml-auto flex items-center gap-2 text-neutral-400">
@@ -189,8 +189,8 @@
         </label>
       </div>
 
-      <div class="grid min-h-0 flex-1 grid-cols-2 gap-4">
-        <div class="card min-h-0 overflow-y-auto">
+      <div class="grid min-h-0 flex-1 gap-4 lg:grid-cols-2">
+        <div class="card max-h-[70dvh] min-h-0 overflow-y-auto lg:max-h-none">
           <h2 class="label mb-2">
             Request · {bytes(current.request_bytes)}{current.request_truncated ? " · cut at 4 MB" : ""}
           </h2>
@@ -215,7 +215,7 @@
         </div>
 
         <div
-          class="card min-h-0 overflow-y-auto"
+          class="card max-h-[70dvh] min-h-0 overflow-y-auto lg:max-h-none"
           bind:this={pane}
           onscroll={(ev) => {
             const el = ev.currentTarget;

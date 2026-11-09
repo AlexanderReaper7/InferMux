@@ -73,7 +73,8 @@
     {:else if !h.requests?.length}
       <div class="text-sm text-neutral-500">No requests since it started.</div>
     {:else}
-      <table class="mb-4 w-full text-sm">
+      <div class="mb-4 overflow-x-auto">
+        <table class="w-full text-sm">
         <thead class="text-left text-neutral-500">
           <tr>
             <th class="py-1 font-normal">Model</th>
@@ -106,13 +107,15 @@
             </tr>
           {/each}
         </tbody>
-      </table>
+        </table>
+      </div>
 
       {@const sessions = h.requests.filter((r) => r.session)}
       {@const requests = h.requests.filter((r) => !r.session)}
       {#if sessions.length}
         <h3 class="mb-1 text-sm text-neutral-400">Sessions</h3>
-        <table class="mb-4 w-full text-sm">
+        <div class="mb-4 overflow-x-auto">
+          <table class="w-full text-sm">
           <thead class="text-left text-neutral-500">
             <tr>
               <th class="py-1 font-normal">Time</th>
@@ -151,11 +154,13 @@
               </tr>
             {/each}
           </tbody>
-        </table>
+          </table>
+        </div>
       {/if}
 
       {#if requests.length}
-        <table class="w-full text-sm">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
           <thead class="text-left text-neutral-500">
             <tr>
               <th class="py-1 font-normal">Time</th>
@@ -198,7 +203,8 @@
               </tr>
             {/each}
           </tbody>
-        </table>
+          </table>
+        </div>
       {/if}
       {#if Math.max(requests.length, sessions.length) > shown}
         <button class="btn mt-2" onclick={() => (shown = Infinity)}>Show all {h.requests.length}</button>

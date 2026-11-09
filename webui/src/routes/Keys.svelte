@@ -79,7 +79,7 @@
       {made.name} is made. Give it to its client; it can be read again here with Show.
     </div>
     <div class="flex items-center gap-2">
-      <code class="select-all rounded bg-neutral-900 px-2 py-1 font-mono text-sm">{made.key}</code>
+      <code class="min-w-0 select-all rounded bg-neutral-900 px-2 py-1 font-mono text-sm break-all">{made.key}</code>
       <button class="btn" onclick={() => navigator.clipboard.writeText(made!.key)}>Copy</button>
       <button class="btn" onclick={() => (made = null)}>Done</button>
     </div>
@@ -91,9 +91,9 @@
     Hashes in {keys.file}, read by both hosts. Plaintext in {keys.secrets || "nowhere: infermux-ui has no -key-secrets"}. Commit both from Changes.
   </div>
 
-  <label class="card mb-4 flex items-center gap-3">
+  <label class="card mb-4 flex flex-wrap items-center gap-3">
     <span class="label whitespace-nowrap">Passphrase</span>
-    <input type="password" autocomplete="off" class="w-80" bind:value={passphrase} />
+    <input type="password" autocomplete="off" class="w-full sm:w-80" bind:value={passphrase} />
     <span class="text-xs text-neutral-500"
       >Opens the age identity for Make key, Show and Revoke. Kept in this page only; the UI forgets it after each one.</span
     >
@@ -101,6 +101,7 @@
 
   <section class="card mb-4">
     <h2 class="mb-3 font-medium">Keys</h2>
+    <div class="overflow-x-auto">
     <table class="w-full text-sm">
       <thead class="text-left text-neutral-500">
         <tr>
@@ -144,24 +145,25 @@
         {/each}
       </tbody>
     </table>
+    </div>
   </section>
 
   <section class="card">
     <h2 class="mb-3 font-medium">New key</h2>
     <div class="grid gap-3 sm:grid-cols-3">
-      <label class="flex flex-col gap-1">
+      <label class="flex min-w-0 flex-col gap-1">
         <span class="label">Name</span>
         <input bind:value={draft.name} placeholder="episteme-batch" />
         <span class="text-xs text-neutral-500">Letters, digits, '.', '_' and '-'.</span>
       </label>
-      <label class="flex flex-col gap-1">
+      <label class="flex min-w-0 flex-col gap-1">
         <span class="label">Class</span>
-        <select bind:value={draft.class}>
+        <select class="w-full min-w-0" bind:value={draft.class}>
           <option value="interactive">interactive: never killed</option>
           <option value="batch">batch: refused and cancelled when the GPU is wanted</option>
         </select>
       </label>
-      <label class="flex flex-col gap-1">
+      <label class="flex min-w-0 flex-col gap-1">
         <span class="label"><input type="checkbox" bind:checked={draft.limited} /> Only these models</span>
         {#if draft.limited}
           <textarea class="h-16 font-mono text-xs" bind:value={draft.allow} placeholder={"zbox/*\nopenrouter/*"}></textarea>

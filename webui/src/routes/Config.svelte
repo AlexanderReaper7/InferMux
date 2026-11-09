@@ -384,7 +384,7 @@
   />
 {/if}
 
-<div class="grid grid-cols-[minmax(0,1fr)_28rem] gap-4">
+<div class="grid grid-cols-[minmax(0,1fr)] gap-4 lg:grid-cols-[minmax(0,1fr)_28rem]">
   <div>
     <div class="mb-2 flex flex-wrap items-center gap-1">
       {#each fileNames as f}
