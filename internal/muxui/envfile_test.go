@@ -303,31 +303,41 @@ func TestTheLoadersRuntimeReadsNoVariableOfTheFile(t *testing.T) {
 	}
 }
 
-// asLimitedEnv marks the test binary's run of one test under an address-space
-// limit.
-const asLimitedEnv = "INFERMUX_TEST_AS_LIMITED"
+// dataLimitedEnv marks the test binary's run of one test under a limit on its
+// data, RLIMIT_DATA.
+const dataLimitedEnv = "INFERMUX_TEST_DATA_LIMITED"
 
 // raceDetector is whether the test binary is built with -race (race_test.go).
 var raceDetector bool
 
 // The second load's child starts with no variable either, so its runtime
 // takes no stand-in as a setting. A GOMAXPROCS of 735700357 at start has the
-// runtime ask for a block of 5.9 GB, so the test runs itself again under an
-// address-space limit of 2 GiB, which the loader children inherit: a child
-// that took the stand-in stops at once with out of memory, where without the
-// limit it grew to 58.5 GB in 10 s (sol's TestSolR18SecondLoadRuntime,
-// review 18, M1). It cannot run under -race.
+// runtime ask for a block of 5.9 GB, so the test runs itself again under a
+// data limit of 2 GiB, which the loader children inherit: a child that took
+// the stand-in stops at once with out of memory, where without the limit it
+// grew to 58.5 GB in 10 s (sol's TestSolR18SecondLoadRuntime, review 18, M1).
+// The limit is on data, the private writable mappings, which the runtime's
+// block is. Until 2026-11-19 it was on address space, which also counts what
+// nothing writes: the 1097 MiB the Go runtime reserves at start for its page
+// allocator, and 64 MiB of glibc's for each thread that starts another, since
+// cgo's thread start mallocs on that thread. On strix's 24 threads the test
+// then needed between 1664 and 1792 MiB, peaked at 1800 in 120 runs under
+// load, and once in nix build's check failed to start a thread under the
+// 2 GiB, with pthread_create's EAGAIN. Its data needs between 416 and 448 MiB,
+// scrypt's 256 MiB in newConfigUI included, and a loader child's peaked at
+// 129 MiB, so the 2 GiB leaves room for 200 more thread stacks of 8 MiB. It
+// cannot run under -race.
 func TestTheSecondLoadsRuntimeTakesNoStandIn(t *testing.T) {
 	if raceDetector {
-		t.Skip("the race detector's shadow memory does not fit under the limit")
+		t.Skip("the race detector's shadow memory leaves the limit little room")
 	}
-	if os.Getenv(asLimitedEnv) == "" {
+	if os.Getenv(dataLimitedEnv) == "" {
 		self, err := os.Executable()
 		if err != nil {
 			t.Fatal(err)
 		}
 		cmd := exec.Command(self, "-test.run", "^"+t.Name()+"$", "-test.count=1", "-test.v")
-		cmd.Env = append(os.Environ(), asLimitedEnv+"=1")
+		cmd.Env = append(os.Environ(), dataLimitedEnv+"=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil || !strings.Contains(string(out), "--- PASS: "+t.Name()) {
 			t.Fatalf("under the limit: %v\n%s", err, out)
@@ -335,7 +345,7 @@ func TestTheSecondLoadsRuntimeTakesNoStandIn(t *testing.T) {
 		return
 	}
 	limit := syscall.Rlimit{Cur: 2 << 30, Max: 2 << 30}
-	if err := syscall.Setrlimit(syscall.RLIMIT_AS, &limit); err != nil {
+	if err := syscall.Setrlimit(syscall.RLIMIT_DATA, &limit); err != nil {
 		t.Fatal(err)
 	}
 	u := newConfigUI(t)
